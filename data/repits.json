@@ -1,0 +1,12 @@
+[
+  {
+    "id": "repit_1",
+    "title": "Highest in the room",
+    "artist": "Travis Scott",
+    "createdAt": "2026-03-01T10:00:00.000Z",
+    "platform": "spotify",
+    "songLink": "https://open.spotify.com/track/example",
+    "status": "shared",
+    "templateId": "sunrise"
+  }
+]
