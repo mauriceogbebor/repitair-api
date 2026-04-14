@@ -1,7 +1,8 @@
-import { BadRequestException, Body, Controller, Get, Headers, Patch, Post, UnauthorizedException } from "@nestjs/common";
-import { JwtService } from "@nestjs/jwt";
+import { BadRequestException, Body, Controller, Get, Patch, Post, UnauthorizedException, UseGuards } from "@nestjs/common";
 import { IsOptional, IsString, MinLength } from "class-validator";
 
+import { CurrentUser, CurrentUserPayload } from "../../common/decorators/current-user.decorator";
+import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { UsersService } from "./users.service";
 
 class ConnectPlatformDto {
@@ -17,6 +18,10 @@ class UpdateProfileDto {
   @IsOptional()
   @IsString()
   email?: string;
+
+  @IsOptional()
+  @IsString()
+  country?: string;
 }
 
 class ChangePasswordDto {
@@ -24,105 +29,73 @@ class ChangePasswordDto {
   currentPassword!: string;
 
   @IsString()
-  @MinLength(6)
+  @MinLength(8)
   newPassword!: string;
 }
 
 @Controller("me")
+@UseGuards(JwtAuthGuard)
 export class UsersController {
-  constructor(
-    private readonly usersService: UsersService,
-    private readonly jwtService: JwtService,
-  ) {}
-
-  private extractUserId(authHeader?: string): string {
-    if (!authHeader?.startsWith("Bearer ")) {
-      throw new UnauthorizedException("Missing token");
-    }
-
-    const token = authHeader.slice(7);
-
-    let payload: { sub: string; email: string };
-    try {
-      payload = this.jwtService.verify(token);
-    } catch {
-      throw new UnauthorizedException("Invalid or expired token");
-    }
-
-    return payload.sub;
-  }
+  constructor(private readonly usersService: UsersService) {}
 
   @Get()
-  async getProfile(@Headers("authorization") authHeader?: string) {
-    const userId = this.extractUserId(authHeader);
-    const user = await this.usersService.findById(userId);
-    if (!user) {
+  async getProfile(@CurrentUser() user: CurrentUserPayload) {
+    const foundUser = await this.usersService.findById(user.sub);
+    if (!foundUser) {
       throw new UnauthorizedException("User not found");
     }
 
     return {
-      id: user.id,
-      fullName: user.fullName,
-      email: user.email,
-      country: user.country,
-      connectedPlatforms: user.connectedPlatforms,
+      id: foundUser.id,
+      fullName: foundUser.fullName,
+      email: foundUser.email,
+      country: foundUser.country,
+      connectedPlatforms: foundUser.connectedPlatforms,
     };
   }
 
   @Patch()
-  async updateProfile(
-    @Headers("authorization") authHeader: string,
-    @Body() body: UpdateProfileDto,
-  ) {
-    const userId = this.extractUserId(authHeader);
-    const user = await this.usersService.updateProfile(userId, body);
-    if (!user) {
+  async updateProfile(@CurrentUser() user: CurrentUserPayload, @Body() body: UpdateProfileDto) {
+    const foundUser = await this.usersService.updateProfile(user.sub, body);
+    if (!foundUser) {
       throw new UnauthorizedException("User not found");
     }
 
     return {
-      id: user.id,
-      fullName: user.fullName,
-      email: user.email,
-      country: user.country,
-      connectedPlatforms: user.connectedPlatforms,
+      id: foundUser.id,
+      fullName: foundUser.fullName,
+      email: foundUser.email,
+      country: foundUser.country,
+      connectedPlatforms: foundUser.connectedPlatforms,
     };
   }
 
   @Post("change-password")
-  async changePassword(
-    @Headers("authorization") authHeader: string,
-    @Body() body: ChangePasswordDto,
-  ) {
-    const userId = this.extractUserId(authHeader);
-    const user = await this.usersService.findById(userId);
-    if (!user) {
+  async changePassword(@CurrentUser() user: CurrentUserPayload, @Body() body: ChangePasswordDto) {
+    const foundUser = await this.usersService.findById(user.sub);
+    if (!foundUser) {
       throw new UnauthorizedException("User not found");
     }
 
-    const valid = await this.usersService.validatePassword(user, body.currentPassword);
+    const valid = await this.usersService.validatePassword(foundUser, body.currentPassword);
     if (!valid) {
       throw new BadRequestException("Current password is incorrect");
     }
 
-    await this.usersService.changePassword(userId, body.newPassword);
+    await this.usersService.changePassword(user.sub, body.newPassword);
     return { message: "Password updated successfully" };
   }
 
   @Post("connect-platform")
-  async connectPlatform(
-    @Headers("authorization") authHeader: string,
-    @Body() body: ConnectPlatformDto,
-  ) {
-    const userId = this.extractUserId(authHeader);
-    const user = await this.usersService.connectPlatform(userId, body.platform);
-    if (!user) {
+  async connectPlatform(@CurrentUser() user: CurrentUserPayload, @Body() body: ConnectPlatformDto) {
+    const foundUser = await this.usersService.connectPlatform(user.sub, body.platform);
+    if (!foundUser) {
       throw new UnauthorizedException("User not found");
     }
 
     return {
-      id: user.id,
-      connectedPlatforms: user.connectedPlatforms,
+      id: foundUser.id,
+      connectedPlatforms: foundUser.connectedPlatforms,
     };
   }
 }

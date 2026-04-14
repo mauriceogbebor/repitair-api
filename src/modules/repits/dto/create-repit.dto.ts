@@ -1,11 +1,17 @@
-import { IsOptional, IsString } from "class-validator";
+import { IsEnum, IsOptional, IsString, IsUrl } from "class-validator";
+
+enum Platform {
+  SPOTIFY = "spotify",
+  APPLE_MUSIC = "apple-music",
+}
 
 export class CreateRepitDto {
   @IsString()
   templateId!: string;
 
+  @IsOptional()
   @IsString()
-  songLink!: string;
+  songLink?: string;
 
   @IsOptional()
   @IsString()
@@ -16,7 +22,7 @@ export class CreateRepitDto {
   artistName?: string;
 
   @IsOptional()
-  @IsString()
+  @IsEnum(Platform)
   platform?: string;
 
   @IsOptional()

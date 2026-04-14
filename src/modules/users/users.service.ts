@@ -1,38 +1,37 @@
-import { ConflictException, Injectable, OnModuleInit } from "@nestjs/common";
+import { ConflictException, Injectable } from "@nestjs/common";
+import { InjectRepository } from "@nestjs/typeorm";
+import { Repository, ILike, QueryFailedError } from "typeorm";
 import * as bcrypt from "bcryptjs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { randomInt } from "node:crypto";
 
-export type UserRecord = {
-  id: string;
-  fullName: string;
-  email: string;
-  country: string;
-  passwordHash: string;
-  connectedPlatforms: string[];
-  createdAt: string;
-  resetCode?: string;
-  resetCodeExpiresAt?: string;
-};
+import { User } from "../../entities";
+
+export type { User as UserRecord };
+
+// Postgres unique-violation SQLSTATE code
+const PG_UNIQUE_VIOLATION = "23505";
+
+function isUniqueViolation(err: unknown): boolean {
+  return err instanceof QueryFailedError && (err as QueryFailedError & { code?: string }).code === PG_UNIQUE_VIOLATION;
+}
 
 @Injectable()
-export class UsersService implements OnModuleInit {
-  private readonly storagePath = join(process.cwd(), "data", "users.json");
-  private users: UserRecord[] = [];
-  private nextId = 1;
-  private writeQueue: Promise<void> = Promise.resolve();
+export class UsersService {
+  constructor(
+    @InjectRepository(User)
+    private readonly usersRepo: Repository<User>,
+  ) {}
 
-  async onModuleInit() {
-    this.users = await this.readUsers();
-    this.nextId = this.getNextId(this.users);
+  async findByEmail(email: string): Promise<User | null> {
+    return this.usersRepo.findOne({
+      where: { email: ILike(email) },
+    });
   }
 
-  async findByEmail(email: string): Promise<UserRecord | undefined> {
-    return this.users.find((u) => u.email.toLowerCase() === email.toLowerCase());
-  }
-
-  async findById(id: string): Promise<UserRecord | undefined> {
-    return this.users.find((u) => u.id === id);
+  async findById(id: string): Promise<User | null> {
+    return this.usersRepo.findOne({
+      where: { id },
+    });
   }
 
   async createUser(data: {
@@ -40,7 +39,7 @@ export class UsersService implements OnModuleInit {
     email: string;
     country: string;
     password: string;
-  }): Promise<UserRecord> {
+  }): Promise<User> {
     const existing = await this.findByEmail(data.email);
     if (existing) {
       throw new ConflictException("An account with this email already exists");
@@ -48,24 +47,28 @@ export class UsersService implements OnModuleInit {
 
     const passwordHash = await bcrypt.hash(data.password, 10);
 
-    const user: UserRecord = {
-      id: `user_${this.nextId}`,
+    const user = this.usersRepo.create({
       fullName: data.fullName,
       email: data.email.toLowerCase(),
       country: data.country,
       passwordHash,
       connectedPlatforms: [],
-      createdAt: new Date().toISOString(),
-    };
+    });
 
-    this.nextId += 1;
-    this.users = [...this.users, user];
-    await this.persist();
-
-    return user;
+    try {
+      return await this.usersRepo.save(user);
+    } catch (err) {
+      // Guards against race: two concurrent signups with the same email can
+      // both pass the findByEmail check, and the DB's unique constraint catches
+      // the second one. Convert it back into a clean 409 instead of a 500.
+      if (isUniqueViolation(err)) {
+        throw new ConflictException("An account with this email already exists");
+      }
+      throw err;
+    }
   }
 
-  async validatePassword(user: UserRecord, password: string): Promise<boolean> {
+  async validatePassword(user: User, password: string): Promise<boolean> {
     return bcrypt.compare(password, user.passwordHash);
   }
 
@@ -73,12 +76,13 @@ export class UsersService implements OnModuleInit {
     const user = await this.findByEmail(email);
     if (!user) return null;
 
-    const code = String(Math.floor(1000 + Math.random() * 9000));
+    // 6-digit code using CSPRNG. The previous implementation used Math.random()
+    // (insecure) and only 4 digits (brute-forceable in ~10k attempts).
+    const code = String(randomInt(100000, 1000000));
     user.resetCode = code;
-    user.resetCodeExpiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    user.resetCodeExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
-    this.users = this.users.map((u) => (u.id === user.id ? user : u));
-    await this.persist();
+    await this.usersRepo.save(user);
 
     return code;
   }
@@ -100,19 +104,19 @@ export class UsersService implements OnModuleInit {
     user.resetCode = undefined;
     user.resetCodeExpiresAt = undefined;
 
-    this.users = this.users.map((u) => (u.id === user.id ? user : u));
-    await this.persist();
+    await this.usersRepo.save(user);
 
     return true;
   }
 
   async updateProfile(
     userId: string,
-    data: { fullName?: string; email?: string },
-  ): Promise<UserRecord | null> {
+    data: { fullName?: string; email?: string; country?: string },
+  ): Promise<User | null> {
     const user = await this.findById(userId);
     if (!user) return null;
 
+    // Only look up duplicate email if the email is actually changing.
     if (data.email && data.email.toLowerCase() !== user.email) {
       const existing = await this.findByEmail(data.email);
       if (existing && existing.id !== userId) {
@@ -122,11 +126,16 @@ export class UsersService implements OnModuleInit {
 
     if (data.fullName !== undefined) user.fullName = data.fullName;
     if (data.email !== undefined) user.email = data.email.toLowerCase();
+    if (data.country !== undefined) user.country = data.country;
 
-    this.users = this.users.map((u) => (u.id === user.id ? user : u));
-    await this.persist();
-
-    return user;
+    try {
+      return await this.usersRepo.save(user);
+    } catch (err) {
+      if (isUniqueViolation(err)) {
+        throw new ConflictException("An account with this email already exists");
+      }
+      throw err;
+    }
   }
 
   async changePassword(userId: string, newPassword: string): Promise<boolean> {
@@ -134,48 +143,20 @@ export class UsersService implements OnModuleInit {
     if (!user) return false;
 
     user.passwordHash = await bcrypt.hash(newPassword, 10);
-    this.users = this.users.map((u) => (u.id === user.id ? user : u));
-    await this.persist();
+    await this.usersRepo.save(user);
 
     return true;
   }
 
-  async connectPlatform(userId: string, platform: string): Promise<UserRecord | null> {
+  async connectPlatform(userId: string, platform: string): Promise<User | null> {
     const user = await this.findById(userId);
     if (!user) return null;
 
     if (!user.connectedPlatforms.includes(platform)) {
       user.connectedPlatforms = [...user.connectedPlatforms, platform];
-      this.users = this.users.map((u) => (u.id === user.id ? user : u));
-      await this.persist();
+      await this.usersRepo.save(user);
     }
 
     return user;
-  }
-
-  private async readUsers(): Promise<UserRecord[]> {
-    try {
-      const raw = await readFile(this.storagePath, "utf8");
-      return JSON.parse(raw) as UserRecord[];
-    } catch {
-      await this.persist();
-      return [];
-    }
-  }
-
-  private getNextId(users: UserRecord[]) {
-    const max = users.reduce((m, u) => {
-      const n = Number(u.id.replace("user_", ""));
-      return Number.isFinite(n) ? Math.max(m, n) : m;
-    }, 0);
-    return max + 1;
-  }
-
-  private async persist() {
-    this.writeQueue = this.writeQueue.then(async () => {
-      await mkdir(dirname(this.storagePath), { recursive: true });
-      await writeFile(this.storagePath, JSON.stringify(this.users, null, 2), "utf8");
-    });
-    await this.writeQueue;
   }
 }

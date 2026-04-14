@@ -1,4 +1,11 @@
-import { IsOptional, IsString } from "class-validator";
+import { IsEnum, IsOptional, IsString, IsUrl } from "class-validator";
+
+enum Status {
+  DRAFT = "draft",
+  SAVED = "saved",
+  SHARED = "shared",
+  PUBLISHED = "published",
+}
 
 export class UpdateRepitDto {
   @IsOptional()
@@ -10,7 +17,7 @@ export class UpdateRepitDto {
   artist?: string;
 
   @IsOptional()
-  @IsString()
+  @IsEnum(Status)
   status?: string;
 
   @IsOptional()

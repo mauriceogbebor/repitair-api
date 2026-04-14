@@ -1,15 +1,21 @@
-import { Injectable, UnauthorizedException } from "@nestjs/common";
+import { Injectable, UnauthorizedException, Logger } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 
 import { UsersService } from "../users/users.service";
+import { MailService } from "../../common/services/mail.service";
+import { TokenBlacklistService } from "../../common/services/token-blacklist.service";
 import { LoginDto } from "./dto/login.dto";
 import { SignupDto } from "./dto/signup.dto";
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly usersService: UsersService,
     private readonly jwtService: JwtService,
+    private readonly mailService: MailService,
+    private readonly tokenBlacklist: TokenBlacklistService,
   ) {}
 
   async signup(dto: SignupDto) {
@@ -61,14 +67,19 @@ export class AuthService {
 
   async forgotPassword(email: string) {
     const code = await this.usersService.setResetCode(email);
-    // In production, send the code via email.
-    // For dev/MVP we return it in the response.
+    const user = await this.usersService.findByEmail(email);
+    if (code && user) {
+      try {
+        await this.mailService.sendPasswordResetCode(email, code, user.fullName);
+      } catch (err) {
+        this.logger.error(`Failed to send reset email to ${email}: ${(err as Error).message}`);
+        // Don't leak email failure to the caller — preserve enumeration resistance.
+      }
+    }
+    // Always return the same response whether or not the email exists,
+    // to prevent account enumeration.
     return {
-      message: code
-        ? "Verification code sent to your email"
-        : "If that email exists, a code has been sent",
-      // DEV ONLY — remove in production
-      ...(code ? { devCode: code } : {}),
+      message: "If that email exists, a verification code has been sent",
     };
   }
 
@@ -86,6 +97,19 @@ export class AuthService {
       throw new UnauthorizedException("Could not reset password");
     }
     return { message: "Password has been reset successfully" };
+  }
+
+  async logout(token: string) {
+    // Decode (not verify — already verified by the guard) to pull the exp claim
+    // so we only keep the token blacklisted until its natural expiry.
+    try {
+      const decoded = this.jwtService.decode(token) as { exp?: number } | null;
+      this.tokenBlacklist.add(token, decoded?.exp);
+    } catch {
+      // If decode fails for any reason, blacklist with default expiry.
+      this.tokenBlacklist.add(token);
+    }
+    return { message: "Logged out successfully" };
   }
 
   private signToken(userId: string, email: string): string {

@@ -1,5 +1,7 @@
-import { Body, Controller, Post } from "@nestjs/common";
+import { Body, Controller, Post, UseGuards } from "@nestjs/common";
 
+import { CurrentUser, CurrentUserPayload } from "../../common/decorators/current-user.decorator";
+import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { AuthService } from "./auth.service";
 import { ForgotPasswordDto } from "./dto/forgot-password.dto";
 import { LoginDto } from "./dto/login.dto";
@@ -34,5 +36,17 @@ export class AuthController {
   @Post("reset-password")
   resetPassword(@Body() body: ResetPasswordDto) {
     return this.authService.resetPassword(body.email, body.newPassword);
+  }
+
+  /**
+   * Logout — requires a valid token, blacklists it server-side.
+   * Token comes from the Authorization header (validated by JwtAuthGuard),
+   * not from the request body, so clients can't accidentally log out a
+   * different user by passing the wrong token.
+   */
+  @Post("logout")
+  @UseGuards(JwtAuthGuard)
+  logout(@CurrentUser() user: CurrentUserPayload) {
+    return this.authService.logout(user.token);
   }
 }

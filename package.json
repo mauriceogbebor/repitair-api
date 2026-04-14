@@ -5,8 +5,15 @@
   "scripts": {
     "start": "node dist/main.js",
     "start:dev": "nest start --watch",
+    "start:prod": "npm run migration:run:prod && node dist/main.js",
     "build": "nest build",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "typeorm": "typeorm-ts-node-commonjs",
+    "migration:generate": "npm run typeorm -- migration:generate -d src/data-source.ts",
+    "migration:create": "npm run typeorm -- migration:create",
+    "migration:run": "npm run typeorm -- migration:run -d src/data-source.ts",
+    "migration:revert": "npm run typeorm -- migration:revert -d src/data-source.ts",
+    "migration:run:prod": "node node_modules/typeorm/cli.js migration:run -d dist/data-source.js"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.7",
@@ -14,11 +21,19 @@
     "@nestjs/core": "^11.0.7",
     "@nestjs/jwt": "^11.0.2",
     "@nestjs/platform-express": "^11.0.7",
+    "@nestjs/typeorm": "^11.0.0",
+    "@types/multer": "^2.1.0",
+    "@types/nodemailer": "^7.0.11",
+    "@types/uuid": "^10.0.0",
     "bcryptjs": "^3.0.3",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",
+    "nodemailer": "^8.0.4",
+    "pg": "^8.20.0",
     "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.1"
+    "rxjs": "^7.8.1",
+    "typeorm": "^0.3.28",
+    "uuid": "^13.0.0"
   },
   "devDependencies": {
     "@nestjs/cli": "^11.0.5",

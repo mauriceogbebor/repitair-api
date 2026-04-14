@@ -1,5 +1,6 @@
-import { Body, Controller, Get, Post } from "@nestjs/common";
+import { Body, Controller, Get, Post, UseGuards } from "@nestjs/common";
 
+import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { ParseLinkDto } from "./dto/parse-link.dto";
 
 type SongEntry = {
@@ -49,6 +50,7 @@ function guessFromLink(link: string): { platform: "spotify" | "apple-music"; tit
 }
 
 @Controller("music")
+@UseGuards(JwtAuthGuard)
 export class MusicController {
   @Post("parse-link")
   parseLink(@Body() body: ParseLinkDto) {
