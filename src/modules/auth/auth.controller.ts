@@ -1,4 +1,4 @@
-import { Body, Controller, Post, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Post, Query, Redirect, UseGuards } from "@nestjs/common";
 
 import { CurrentUser, CurrentUserPayload } from "../../common/decorators/current-user.decorator";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
@@ -48,5 +48,29 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   logout(@CurrentUser() user: CurrentUserPayload) {
     return this.authService.logout(user.token);
+  }
+
+  /**
+   * Initiate Spotify OAuth flow.
+   * Returns the Spotify authorization URL that the mobile app should open in a browser.
+   * Requires the user to be logged in (JwtAuthGuard).
+   */
+  @Get("spotify/redirect")
+  @UseGuards(JwtAuthGuard)
+  spotifyRedirect(@CurrentUser() user: CurrentUserPayload) {
+    const url = this.authService.buildSpotifyAuthUrl(user.sub);
+    return { url };
+  }
+
+  /**
+   * Spotify OAuth callback.
+   * Public endpoint — Spotify redirects the browser here with the authorization code.
+   * After exchanging the code for tokens, redirects to a deep link for the mobile app.
+   */
+  @Get("spotify/callback")
+  @Redirect()
+  async spotifyCallback(@Query("code") code: string, @Query("state") state: string) {
+    await this.authService.handleSpotifyCallback(code, state);
+    return { url: "repitair://spotify-connected" };
   }
 }

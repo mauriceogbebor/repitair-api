@@ -10,7 +10,7 @@ export class JwtAuthGuard implements CanActivate {
     private readonly tokenBlacklist: TokenBlacklistService,
   ) {}
 
-  canActivate(context: ExecutionContext): boolean {
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest();
     const authHeader = request.headers.authorization;
 
@@ -20,7 +20,7 @@ export class JwtAuthGuard implements CanActivate {
 
     const token = authHeader.slice(7);
 
-    if (this.tokenBlacklist.isBlacklisted(token)) {
+    if (await this.tokenBlacklist.isBlacklisted(token)) {
       throw new UnauthorizedException("Token has been revoked");
     }
 

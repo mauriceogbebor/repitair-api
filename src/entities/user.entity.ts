@@ -38,4 +38,7 @@ export class User {
 
   @OneToMany(() => PushToken, (token) => token.user)
   pushTokens!: PushToken[];
+
+  @Column({ nullable: true, select: false })
+  spotifyRefreshToken?: string;
 }

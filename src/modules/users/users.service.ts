@@ -159,4 +159,18 @@ export class UsersService {
 
     return user;
   }
+
+  async connectSpotify(userId: string, refreshToken: string): Promise<void> {
+    const user = await this.findById(userId);
+    if (!user) {
+      throw new Error(`User with ID ${userId} not found`);
+    }
+
+    user.spotifyRefreshToken = refreshToken;
+    if (!user.connectedPlatforms.includes("spotify")) {
+      user.connectedPlatforms = [...user.connectedPlatforms, "spotify"];
+    }
+
+    await this.usersRepo.save(user);
+  }
 }

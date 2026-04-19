@@ -5,6 +5,7 @@ import { TypeOrmModule } from "@nestjs/typeorm";
 import { AuthModule } from "./modules/auth/auth.module";
 import { ContactModule } from "./modules/contact/contact.module";
 import { HealthModule } from "./modules/health/health.module";
+import { ImagesModule } from "./modules/images/images.module";
 import { MusicModule } from "./modules/music/music.module";
 import { NotificationsModule } from "./modules/notifications/notifications.module";
 import { RepitsModule } from "./modules/repits/repits.module";
@@ -19,7 +20,7 @@ import { ContactRateLimitMiddleware } from "./common/middleware/contact-rate-lim
 import { MailModule } from "./common/services/mail.module";
 import { TokenBlacklistModule } from "./common/services/token-blacklist.module";
 import { JwtAuthModule } from "./common/modules/jwt-auth.module";
-import { User, Repit, PushToken } from "./entities";
+import { User, Repit, PushToken, Template } from "./entities";
 
 @Module({
   imports: [
@@ -37,7 +38,7 @@ import { User, Repit, PushToken } from "./entities";
         return {
           type: "postgres" as const,
           url: config.get<string>("DATABASE_URL") || "postgresql://repitair:repitair@localhost:5432/repitair",
-          entities: [User, Repit, PushToken],
+          entities: [User, Repit, PushToken, Template],
           migrations: isProduction ? ["dist/migrations/*.js"] : ["src/migrations/*.ts"],
           synchronize: !isProduction,
           migrationsRun: false,
@@ -52,6 +53,7 @@ import { User, Repit, PushToken } from "./entities";
     AuthModule,
     UsersModule,
     UploadsModule,
+    ImagesModule,
     MusicModule,
     TemplatesModule,
     RepitsModule,
