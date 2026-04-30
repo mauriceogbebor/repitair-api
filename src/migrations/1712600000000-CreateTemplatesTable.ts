@@ -16,18 +16,20 @@ export class CreateTemplatesTable1712600000000 implements MigrationInterface {
     `);
 
     // Seed the 10 MVP templates (matching mobile app)
+    // NOTE: Later migrations (RenameTemplates, FixTemplateStyles) also patch
+    // these rows, so existing databases stay correct either way.
     await queryRunner.query(`
       INSERT INTO "templates" ("id", "name", "style", "category", "premium", "animated", "sortOrder") VALUES
         ('sunrise', 'Sunrise', 'Sunrise', 'Aesthetic', false, false, 1),
-        ('cyber', 'Cyber', 'Ocean', 'Bold', false, false, 2),
+        ('cyber', 'Cyber', 'Cyber', 'Bold', false, false, 2),
         ('mono', 'Mono', 'Mono', 'Minimal', false, false, 3),
-        ('neon-pulse', 'Neon Pulse', 'Ocean', 'Bold', false, false, 4),
+        ('neon-pulse', 'Neon Pulse', 'Neon Pulse', 'Bold', false, false, 4),
         ('vinyl', 'Vinyl', 'Vinyl', 'Retro', false, false, 5),
-        ('midnight', 'Midnight', 'Mono', 'Minimal', false, false, 6),
-        ('polaroid', 'Polaroid', 'Polaroid', 'Aesthetic', false, false, 7),
-        ('magazine', 'Magazine', 'Magazine', 'Bold', false, false, 8),
-        ('dreamy', 'Dreamy', 'Story', 'Soft', false, false, 9),
-        ('pulse-video', 'Pulse', 'Blush', 'Animated', false, true, 10)
+        ('midnight', 'Midnight', 'Midnight', 'Minimal', false, false, 6),
+        ('blush', 'Blush', 'Blush', 'Soft', false, false, 7),
+        ('anime', 'Anime', 'Anime', 'Bold', false, false, 8),
+        ('ocean', 'Ocean', 'Ocean', 'Aesthetic', false, false, 9),
+        ('pulse-video', 'Pulse', 'Pulse', 'Animated', false, true, 10)
       ON CONFLICT ("id") DO NOTHING
     `);
   }

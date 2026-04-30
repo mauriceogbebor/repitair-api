@@ -51,6 +51,16 @@ export class AuthController {
   }
 
   /**
+   * Refresh — exchange a still-valid access token for a new one.
+   * The old token is blacklisted to prevent reuse.
+   */
+  @Post("refresh")
+  @UseGuards(JwtAuthGuard)
+  refresh(@CurrentUser() user: CurrentUserPayload) {
+    return this.authService.refresh(user.token, user.sub, user.email);
+  }
+
+  /**
    * Initiate Spotify OAuth flow.
    * Returns the Spotify authorization URL that the mobile app should open in a browser.
    * Requires the user to be logged in (JwtAuthGuard).

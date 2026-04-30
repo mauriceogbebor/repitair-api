@@ -114,6 +114,24 @@ export class AuthService {
     return { message: "Logged out successfully" };
   }
 
+  /**
+   * Refresh — issue a new access token if the current one is still valid.
+   * The old token is blacklisted to prevent reuse.
+   */
+  async refresh(currentToken: string, userId: string, email: string) {
+    // Blacklist the old token so it can't be reused
+    try {
+      const decoded = this.jwtService.decode(currentToken) as { exp?: number } | null;
+      await this.tokenBlacklist.add(currentToken, decoded?.exp);
+    } catch {
+      // If decode fails, blacklist with default expiry
+      await this.tokenBlacklist.add(currentToken);
+    }
+
+    const token = this.signToken(userId, email);
+    return { token };
+  }
+
   private signToken(userId: string, email: string): string {
     return this.jwtService.sign({ sub: userId, email });
   }
