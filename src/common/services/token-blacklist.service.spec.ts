@@ -1,3 +1,4 @@
+import { ConfigService } from "@nestjs/config";
 import { TokenBlacklistService } from "./token-blacklist.service";
 
 describe("TokenBlacklistService", () => {
@@ -5,7 +6,8 @@ describe("TokenBlacklistService", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    service = new TokenBlacklistService();
+    const configService = { get: jest.fn().mockReturnValue(undefined) } as unknown as ConfigService;
+    service = new TokenBlacklistService(configService);
   });
 
   afterEach(() => {

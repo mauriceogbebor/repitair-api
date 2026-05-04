@@ -45,7 +45,10 @@
     "@nestjs/schematics": "^11.0.4",
     "@nestjs/testing": "^11.0.7",
     "@types/bcryptjs": "^2.4.6",
+    "@types/jest": "^30.0.0",
     "@types/node": "^22.13.11",
+    "jest": "^30.3.0",
+    "ts-jest": "^29.4.9",
     "ts-node": "^10.9.2",
     "typescript": "^5.8.2"
   }
