@@ -6,13 +6,35 @@ import { AppModule } from "./app.module";
 import { GlobalExceptionFilter } from "./common/filters/global-exception.filter";
 
 async function bootstrap() {
+  const defaultCorsOrigins = [
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "https://repitair.com",
+    "https://www.repitair.com",
+  ];
+
   const corsOrigins = process.env.CORS_ORIGINS
-    ? process.env.CORS_ORIGINS.split(",").map((origin) => origin.trim())
-    : ["http://localhost:3000", "http://localhost:3001"];
+    ? process.env.CORS_ORIGINS.split(",")
+      .map((origin) => origin.trim())
+      .filter(Boolean)
+    : defaultCorsOrigins;
 
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     cors: {
-      origin: corsOrigins,
+      origin: (origin, callback) => {
+        // Allow non-browser clients like mobile apps, curl, and server-side calls.
+        if (!origin) {
+          callback(null, true);
+          return;
+        }
+
+        if (corsOrigins.includes(origin)) {
+          callback(null, true);
+          return;
+        }
+
+        callback(new Error(`Origin ${origin} is not allowed by CORS`), false);
+      },
       credentials: true,
     },
   });
