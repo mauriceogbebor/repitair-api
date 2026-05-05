@@ -16,6 +16,7 @@ function escapeHtml(text: string): string {
 @Injectable()
 export class ContactService {
   private readonly logger = new Logger(ContactService.name);
+  private readonly deliveryTimeoutMs = 5000;
 
   constructor(
     private readonly mailService: MailService,
@@ -46,12 +47,17 @@ export class ContactService {
     `;
 
     try {
-      await this.mailService.sendRaw({
-        to: supportAddress,
-        replyTo: dto.email,
-        subject,
-        html,
-      });
+      await Promise.race([
+        this.mailService.sendRaw({
+          to: supportAddress,
+          replyTo: dto.email,
+          subject,
+          html,
+        }),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("Contact email delivery timed out")), this.deliveryTimeoutMs);
+        }),
+      ]);
       this.logger.log(`Contact submission forwarded to ${supportAddress} from ${dto.email}`);
     } catch (err) {
       // Don't leak the failure to the user — they filled out a form, the message
