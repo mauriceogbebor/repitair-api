@@ -75,11 +75,8 @@ export class UploadsService {
     }
 
     if (this.uploadProvider === "s3") {
-      // Lazy-init S3 so the build doesn't require @aws-sdk/client-s3
-      this.initS3().catch((err) => {
-        Logger.error(`Failed to initialise S3: ${err.message}`, "UploadsService");
-        throw err;
-      });
+      // Initialize S3 synchronously so upload requests cannot race the client setup.
+      this.initS3();
     } else {
       // Ensure local upload directory exists
       if (!fs.existsSync(this.localUploadDir)) {
@@ -92,7 +89,7 @@ export class UploadsService {
    * Dynamically import @aws-sdk/client-s3 so the package is only required
    * when UPLOAD_PROVIDER is explicitly set to 's3'.
    */
-  private async initS3(): Promise<void> {
+  private initS3(): void {
     const awsRegion = this.configService.get<string>("AWS_REGION");
     const awsAccessKeyId = this.configService.get<string>("AWS_ACCESS_KEY_ID");
     const awsSecretAccessKey = this.configService.get<string>("AWS_SECRET_ACCESS_KEY");

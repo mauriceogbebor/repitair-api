@@ -1,4 +1,11 @@
-import { Injectable, UnauthorizedException, Logger, BadRequestException } from "@nestjs/common";
+import {
+  Injectable,
+  UnauthorizedException,
+  Logger,
+  BadRequestException,
+  NotFoundException,
+  ServiceUnavailableException,
+} from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { ConfigService } from "@nestjs/config";
 import { createPublicKey } from "crypto";
@@ -279,7 +286,9 @@ export class AuthService {
     const redirectUri = this.configService.get<string>("SPOTIFY_REDIRECT_URI");
 
     if (!clientId || !redirectUri) {
-      throw new Error("Spotify OAuth credentials not configured");
+      throw new ServiceUnavailableException(
+        "Spotify OAuth is not available. SPOTIFY_CLIENT_ID and SPOTIFY_REDIRECT_URI must be configured.",
+      );
     }
 
     // Encode user ID in the state parameter (base64) so we can identify them on callback
@@ -307,7 +316,9 @@ export class AuthService {
     const redirectUri = this.configService.get<string>("SPOTIFY_REDIRECT_URI");
 
     if (!clientId || !clientSecret || !redirectUri) {
-      throw new Error("Spotify OAuth credentials not configured");
+      throw new ServiceUnavailableException(
+        "Spotify OAuth is not available. SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, and SPOTIFY_REDIRECT_URI must be configured.",
+      );
     }
 
     // Decode state to get user ID
@@ -348,6 +359,9 @@ export class AuthService {
     try {
       await this.usersService.connectSpotify(userId, tokenData.refresh_token);
     } catch (err) {
+      if (err instanceof NotFoundException) {
+        throw new BadRequestException("Invalid state parameter");
+      }
       this.logger.error(`Failed to save Spotify refresh token for user ${userId}: ${(err as Error).message}`);
       throw new BadRequestException("Failed to connect Spotify account");
     }

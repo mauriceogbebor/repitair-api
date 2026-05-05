@@ -57,7 +57,7 @@ export class ContactService {
       // Don't leak the failure to the user — they filled out a form, the message
       // not arriving is our problem, not theirs. Surface it to ops via logs.
       this.logger.error(`Failed to forward contact form from ${dto.email}: ${(err as Error).message}`);
-      throw err;
+      return;
     }
   }
 }

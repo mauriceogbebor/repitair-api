@@ -1,4 +1,4 @@
-import { ConflictException, Injectable } from "@nestjs/common";
+import { ConflictException, Injectable, NotFoundException } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository, ILike, QueryFailedError } from "typeorm";
 import * as bcrypt from "bcryptjs";
@@ -164,7 +164,7 @@ export class UsersService {
   async connectSpotify(userId: string, refreshToken: string): Promise<void> {
     const user = await this.findById(userId);
     if (!user) {
-      throw new Error(`User with ID ${userId} not found`);
+      throw new NotFoundException(`User with ID ${userId} not found`);
     }
 
     user.spotifyRefreshToken = refreshToken;
