@@ -1,4 +1,5 @@
 import { Test, TestingModule } from "@nestjs/testing";
+import { ConfigService } from "@nestjs/config";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { NotificationsService } from "./notifications.service";
@@ -34,6 +35,10 @@ describe("NotificationsService", () => {
         {
           provide: getRepositoryToken(PushToken),
           useValue: mockRepository,
+        },
+        {
+          provide: ConfigService,
+          useValue: { get: jest.fn().mockReturnValue(undefined) },
         },
       ],
     }).compile();

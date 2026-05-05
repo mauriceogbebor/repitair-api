@@ -11,7 +11,17 @@ export class MusicController {
 
   @Post("parse-link")
   async parseLink(@Body() body: ParseLinkDto) {
-    return this.musicService.parseLink(body.link);
+    // First check if it's an album/playlist — return type info so frontend knows to show picker
+    const linkType = this.musicService.detectLinkType(body.link);
+    if (linkType !== 'track') {
+      const result = await this.musicService.listAlbumTracks(body.link);
+      if (result) {
+        return { type: result.type, name: result.name, tracks: result.tracks };
+      }
+    }
+    // Single track
+    const track = await this.musicService.parseLink(body.link);
+    return { type: 'track', ...track };
   }
 
   @Get("recent")

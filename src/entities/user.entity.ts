@@ -28,6 +28,9 @@ export class User {
   createdAt!: Date;
 
   @Column({ nullable: true })
+  avatarUrl?: string;
+
+  @Column({ nullable: true })
   resetCode?: string;
 
   @Column({ type: "timestamp", nullable: true })

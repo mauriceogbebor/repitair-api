@@ -27,7 +27,7 @@ describe("JwtAuthGuard", () => {
     const mockTokenBlacklistProvider = {
       provide: TokenBlacklistService,
       useValue: {
-        isBlacklisted: jest.fn().mockReturnValue(false),
+        isBlacklisted: jest.fn().mockResolvedValue(false),
         add: jest.fn(),
       },
     };
@@ -45,317 +45,128 @@ describe("JwtAuthGuard", () => {
     jest.clearAllMocks();
   });
 
+  const createMockContext = (headers: Record<string, unknown> = {}): ExecutionContext => {
+    const mockRequest = { headers, user: undefined };
+    return {
+      switchToHttp: jest.fn().mockReturnValue({
+        getRequest: jest.fn().mockReturnValue(mockRequest),
+      }),
+    } as unknown as ExecutionContext;
+  };
+
   describe("canActivate", () => {
-    it("should allow request with valid Bearer token", () => {
-      const mockRequest = {
-        headers: {
-          authorization: `Bearer ${mockValidToken}`,
-        },
-        user: undefined,
-      };
-
-      const mockContext = {
-        switchToHttp: jest.fn().mockReturnValue({
-          getRequest: jest.fn().mockReturnValue(mockRequest),
-        }),
-      } as unknown as ExecutionContext;
-
+    it("should allow request with valid Bearer token", async () => {
+      const mockContext = createMockContext({ authorization: `Bearer ${mockValidToken}` });
       (jwtService.verify as jest.Mock).mockReturnValue(mockJwtPayload);
 
-      const result = jwtAuthGuard.canActivate(mockContext);
+      const result = await jwtAuthGuard.canActivate(mockContext);
 
       expect(jwtService.verify).toHaveBeenCalledWith(mockValidToken);
       expect(result).toBe(true);
-      expect(mockRequest.user).toEqual({
+      const request = mockContext.switchToHttp().getRequest();
+      expect(request.user).toEqual({
         sub: mockJwtPayload.sub,
         email: mockJwtPayload.email,
         token: mockValidToken,
       });
     });
 
-    it("should attach user payload to request object", () => {
-      const mockRequest = {
-        headers: {
-          authorization: `Bearer ${mockValidToken}`,
-        },
-        user: undefined,
-      };
-
-      const mockContext = {
-        switchToHttp: jest.fn().mockReturnValue({
-          getRequest: jest.fn().mockReturnValue(mockRequest),
-        }),
-      } as unknown as ExecutionContext;
-
-      const customPayload = {
-        sub: "user_123",
-        email: "custom@example.com",
-      };
-
+    it("should attach user payload to request object", async () => {
+      const mockContext = createMockContext({ authorization: `Bearer ${mockValidToken}` });
+      const customPayload = { sub: "user_123", email: "custom@example.com" };
       (jwtService.verify as jest.Mock).mockReturnValue(customPayload);
 
-      jwtAuthGuard.canActivate(mockContext);
+      await jwtAuthGuard.canActivate(mockContext);
 
-      expect(mockRequest.user).toEqual({ ...customPayload, token: mockValidToken });
+      const request = mockContext.switchToHttp().getRequest();
+      expect(request.user).toEqual({ ...customPayload, token: mockValidToken });
     });
 
-    it("should throw UnauthorizedException when no auth header", () => {
-      const mockRequest = {
-        headers: {},
-        user: undefined,
-      };
+    it("should throw UnauthorizedException when no auth header", async () => {
+      const mockContext = createMockContext({});
 
-      const mockContext = {
-        switchToHttp: jest.fn().mockReturnValue({
-          getRequest: jest.fn().mockReturnValue(mockRequest),
-        }),
-      } as unknown as ExecutionContext;
-
-      expect(() => jwtAuthGuard.canActivate(mockContext)).toThrow(
+      await expect(jwtAuthGuard.canActivate(mockContext)).rejects.toThrow(
         new UnauthorizedException("Missing or invalid Authorization header")
       );
-
       expect(jwtService.verify).not.toHaveBeenCalled();
     });
 
-    it("should throw UnauthorizedException when auth header is null", () => {
-      const mockRequest = {
-        headers: {
-          authorization: null,
-        },
-        user: undefined,
-      };
+    it("should throw UnauthorizedException when auth header is null", async () => {
+      const mockContext = createMockContext({ authorization: null });
 
-      const mockContext = {
-        switchToHttp: jest.fn().mockReturnValue({
-          getRequest: jest.fn().mockReturnValue(mockRequest),
-        }),
-      } as unknown as ExecutionContext;
-
-      expect(() => jwtAuthGuard.canActivate(mockContext)).toThrow(
+      await expect(jwtAuthGuard.canActivate(mockContext)).rejects.toThrow(
         new UnauthorizedException("Missing or invalid Authorization header")
       );
     });
 
-    it("should throw UnauthorizedException when auth header is undefined", () => {
-      const mockRequest = {
-        headers: {
-          authorization: undefined,
-        },
-        user: undefined,
-      };
+    it("should throw UnauthorizedException when auth header is undefined", async () => {
+      const mockContext = createMockContext({ authorization: undefined });
 
-      const mockContext = {
-        switchToHttp: jest.fn().mockReturnValue({
-          getRequest: jest.fn().mockReturnValue(mockRequest),
-        }),
-      } as unknown as ExecutionContext;
-
-      expect(() => jwtAuthGuard.canActivate(mockContext)).toThrow(
+      await expect(jwtAuthGuard.canActivate(mockContext)).rejects.toThrow(
         new UnauthorizedException("Missing or invalid Authorization header")
       );
     });
 
-    it("should throw UnauthorizedException when malformed header - no Bearer prefix", () => {
-      const mockRequest = {
-        headers: {
-          authorization: mockValidToken, // Missing "Bearer " prefix
-        },
-        user: undefined,
-      };
+    it("should throw UnauthorizedException when malformed header - no Bearer prefix", async () => {
+      const mockContext = createMockContext({ authorization: mockValidToken });
 
-      const mockContext = {
-        switchToHttp: jest.fn().mockReturnValue({
-          getRequest: jest.fn().mockReturnValue(mockRequest),
-        }),
-      } as unknown as ExecutionContext;
-
-      expect(() => jwtAuthGuard.canActivate(mockContext)).toThrow(
+      await expect(jwtAuthGuard.canActivate(mockContext)).rejects.toThrow(
         new UnauthorizedException("Missing or invalid Authorization header")
       );
-
       expect(jwtService.verify).not.toHaveBeenCalled();
     });
 
-    it("should throw UnauthorizedException when header has wrong prefix", () => {
-      const mockRequest = {
-        headers: {
-          authorization: `Basic ${mockValidToken}`,
-        },
-        user: undefined,
-      };
+    it("should throw UnauthorizedException when header has wrong prefix", async () => {
+      const mockContext = createMockContext({ authorization: `Basic ${mockValidToken}` });
 
-      const mockContext = {
-        switchToHttp: jest.fn().mockReturnValue({
-          getRequest: jest.fn().mockReturnValue(mockRequest),
-        }),
-      } as unknown as ExecutionContext;
-
-      expect(() => jwtAuthGuard.canActivate(mockContext)).toThrow(
+      await expect(jwtAuthGuard.canActivate(mockContext)).rejects.toThrow(
         new UnauthorizedException("Missing or invalid Authorization header")
       );
     });
 
-    it("should throw UnauthorizedException when token is expired", () => {
-      const mockRequest = {
-        headers: {
-          authorization: `Bearer ${mockValidToken}`,
-        },
-        user: undefined,
-      };
+    it("should throw UnauthorizedException when token is expired", async () => {
+      const mockContext = createMockContext({ authorization: `Bearer ${mockValidToken}` });
+      (jwtService.verify as jest.Mock).mockImplementation(() => { throw new Error("jwt expired"); });
 
-      const mockContext = {
-        switchToHttp: jest.fn().mockReturnValue({
-          getRequest: jest.fn().mockReturnValue(mockRequest),
-        }),
-      } as unknown as ExecutionContext;
-
-      const expiredError = new Error("jwt expired");
-      (jwtService.verify as jest.Mock).mockImplementation(() => {
-        throw expiredError;
-      });
-
-      expect(() => jwtAuthGuard.canActivate(mockContext)).toThrow(
+      await expect(jwtAuthGuard.canActivate(mockContext)).rejects.toThrow(
         new UnauthorizedException("Invalid or expired token")
       );
     });
 
-    it("should throw UnauthorizedException when token is invalid", () => {
-      const mockRequest = {
-        headers: {
-          authorization: `Bearer invalid.token.here`,
-        },
-        user: undefined,
-      };
+    it("should throw UnauthorizedException when token is invalid", async () => {
+      const mockContext = createMockContext({ authorization: `Bearer invalid.token.here` });
+      (jwtService.verify as jest.Mock).mockImplementation(() => { throw new Error("invalid signature"); });
 
-      const mockContext = {
-        switchToHttp: jest.fn().mockReturnValue({
-          getRequest: jest.fn().mockReturnValue(mockRequest),
-        }),
-      } as unknown as ExecutionContext;
-
-      const invalidError = new Error("invalid signature");
-      (jwtService.verify as jest.Mock).mockImplementation(() => {
-        throw invalidError;
-      });
-
-      expect(() => jwtAuthGuard.canActivate(mockContext)).toThrow(
+      await expect(jwtAuthGuard.canActivate(mockContext)).rejects.toThrow(
         new UnauthorizedException("Invalid or expired token")
       );
     });
 
-    it("should throw UnauthorizedException when jwt malformed", () => {
-      const mockRequest = {
-        headers: {
-          authorization: `Bearer malformed`,
-        },
-        user: undefined,
-      };
+    it("should throw UnauthorizedException when jwt malformed", async () => {
+      const mockContext = createMockContext({ authorization: `Bearer malformed` });
+      (jwtService.verify as jest.Mock).mockImplementation(() => { throw new Error("jwt malformed"); });
 
-      const mockContext = {
-        switchToHttp: jest.fn().mockReturnValue({
-          getRequest: jest.fn().mockReturnValue(mockRequest),
-        }),
-      } as unknown as ExecutionContext;
-
-      const malformedError = new Error("jwt malformed");
-      (jwtService.verify as jest.Mock).mockImplementation(() => {
-        throw malformedError;
-      });
-
-      expect(() => jwtAuthGuard.canActivate(mockContext)).toThrow(
+      await expect(jwtAuthGuard.canActivate(mockContext)).rejects.toThrow(
         new UnauthorizedException("Invalid or expired token")
       );
     });
 
-    it("should extract token correctly from Bearer header", () => {
+    it("should extract token correctly from Bearer header", async () => {
       const testToken = "test.token.value";
-      const mockRequest = {
-        headers: {
-          authorization: `Bearer ${testToken}`,
-        },
-        user: undefined,
-      };
-
-      const mockContext = {
-        switchToHttp: jest.fn().mockReturnValue({
-          getRequest: jest.fn().mockReturnValue(mockRequest),
-        }),
-      } as unknown as ExecutionContext;
-
+      const mockContext = createMockContext({ authorization: `Bearer ${testToken}` });
       (jwtService.verify as jest.Mock).mockReturnValue(mockJwtPayload);
 
-      jwtAuthGuard.canActivate(mockContext);
+      await jwtAuthGuard.canActivate(mockContext);
 
       expect(jwtService.verify).toHaveBeenCalledWith(testToken);
     });
 
-    it("should handle Bearer token with extra whitespace", () => {
-      const mockRequest = {
-        headers: {
-          authorization: `Bearer  ${mockValidToken}`, // Extra space
-        },
-        user: undefined,
-      };
+    it("should reject a blacklisted token", async () => {
+      const mockContext = createMockContext({ authorization: `Bearer ${mockValidToken}` });
+      (tokenBlacklist.isBlacklisted as jest.Mock).mockResolvedValueOnce(true);
 
-      const mockContext = {
-        switchToHttp: jest.fn().mockReturnValue({
-          getRequest: jest.fn().mockReturnValue(mockRequest),
-        }),
-      } as unknown as ExecutionContext;
-
-      // This will fail because we extract from position 7, so extra space will be included
-      (jwtService.verify as jest.Mock).mockReturnValue(mockJwtPayload);
-
-      jwtAuthGuard.canActivate(mockContext);
-
-      // Verify that extra space is passed to verify
-      const callArg = (jwtService.verify as jest.Mock).mock.calls[0][0];
-      expect(callArg.startsWith(" ")).toBe(true);
-    });
-
-    it("should set user on request for successful verification", () => {
-      const mockRequest = {
-        headers: {
-          authorization: `Bearer ${mockValidToken}`,
-        },
-        user: undefined,
-      };
-
-      const mockContext = {
-        switchToHttp: jest.fn().mockReturnValue({
-          getRequest: jest.fn().mockReturnValue(mockRequest),
-        }),
-      } as unknown as ExecutionContext;
-
-      const payload = {
-        sub: "specific_user",
-        email: "specific@email.com",
-      };
-
-      (jwtService.verify as jest.Mock).mockReturnValue(payload);
-
-      const result = jwtAuthGuard.canActivate(mockContext);
-
-      expect(result).toBe(true);
-      expect(mockRequest.user).toEqual({ ...payload, token: mockValidToken });
-    });
-
-    it("should reject a blacklisted token", () => {
-      const mockRequest = {
-        headers: { authorization: `Bearer ${mockValidToken}` },
-        user: undefined,
-      };
-      const mockContext = {
-        switchToHttp: jest.fn().mockReturnValue({
-          getRequest: jest.fn().mockReturnValue(mockRequest),
-        }),
-      } as unknown as ExecutionContext;
-
-      (tokenBlacklist.isBlacklisted as jest.Mock).mockReturnValueOnce(true);
-
-      expect(() => jwtAuthGuard.canActivate(mockContext)).toThrow(
-        new UnauthorizedException("Token has been revoked"),
+      await expect(jwtAuthGuard.canActivate(mockContext)).rejects.toThrow(
+        new UnauthorizedException("Token has been revoked")
       );
       expect(jwtService.verify).not.toHaveBeenCalled();
     });

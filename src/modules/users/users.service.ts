@@ -111,7 +111,7 @@ export class UsersService {
 
   async updateProfile(
     userId: string,
-    data: { fullName?: string; email?: string; country?: string },
+    data: { fullName?: string; email?: string; country?: string; avatarUrl?: string },
   ): Promise<User | null> {
     const user = await this.findById(userId);
     if (!user) return null;
@@ -127,6 +127,7 @@ export class UsersService {
     if (data.fullName !== undefined) user.fullName = data.fullName;
     if (data.email !== undefined) user.email = data.email.toLowerCase();
     if (data.country !== undefined) user.country = data.country;
+    if (data.avatarUrl !== undefined) user.avatarUrl = data.avatarUrl;
 
     try {
       return await this.usersRepo.save(user);

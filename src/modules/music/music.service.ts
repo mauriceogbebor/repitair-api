@@ -2,12 +2,16 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createSign } from 'crypto';
 
+type RedisClient = any; // Lazy-loaded
+
 export interface ParsedTrack {
   platform: 'spotify' | 'apple-music';
   title: string;
   artist: string;
   albumArt?: string;
   sourceLink: string;
+  /** Track duration in milliseconds */
+  durationMs?: number;
 }
 
 interface SpotifyTrack {
@@ -16,6 +20,7 @@ interface SpotifyTrack {
   album?: {
     images: Array<{ url: string }>;
   };
+  duration_ms?: number;
 }
 
 interface AppleMusicSong {
@@ -25,16 +30,70 @@ interface AppleMusicSong {
     artwork?: {
       url: string;
     };
+    durationInMillis?: number;
   };
 }
+
+/** Cache TTL for song metadata — 24 hours */
+const CACHE_TTL_SECONDS = 24 * 60 * 60;
+const CACHE_PREFIX = 'music:track:';
 
 @Injectable()
 export class MusicService {
   private readonly logger = new Logger(MusicService.name);
   private spotifyAccessToken: string | null = null;
   private spotifyTokenExpiry: number = 0;
+  private redis: RedisClient | null = null;
+  /** In-memory fallback cache when Redis is unavailable */
+  private readonly memCache = new Map<string, { data: ParsedTrack; expiresAt: number }>();
 
-  constructor(private configService: ConfigService) {}
+  constructor(private configService: ConfigService) {
+    this.initializeRedis();
+  }
+
+  private initializeRedis(): void {
+    const redisUrl = this.configService.get<string>('REDIS_URL');
+    if (!redisUrl) return;
+    try {
+      const Redis = require('ioredis');
+      this.redis = new Redis(redisUrl);
+      this.redis.on('error', (err: Error) => {
+        this.logger.error(`Music cache Redis error: ${err.message}`);
+        this.redis = null;
+      });
+    } catch {
+      // ioredis not installed — use in-memory cache
+    }
+  }
+
+  private async getCached(key: string): Promise<ParsedTrack | null> {
+    const fullKey = CACHE_PREFIX + key;
+    if (this.redis) {
+      try {
+        const raw = await this.redis.get(fullKey);
+        if (raw) return JSON.parse(raw) as ParsedTrack;
+      } catch {
+        // fall through to memCache
+      }
+    }
+    const entry = this.memCache.get(fullKey);
+    if (entry && Date.now() < entry.expiresAt) return entry.data;
+    if (entry) this.memCache.delete(fullKey);
+    return null;
+  }
+
+  private async setCache(key: string, data: ParsedTrack): Promise<void> {
+    const fullKey = CACHE_PREFIX + key;
+    if (this.redis) {
+      try {
+        await this.redis.setex(fullKey, CACHE_TTL_SECONDS, JSON.stringify(data));
+        return;
+      } catch {
+        // fall through to memCache
+      }
+    }
+    this.memCache.set(fullKey, { data, expiresAt: Date.now() + CACHE_TTL_SECONDS * 1000 });
+  }
 
   /**
    * Get a valid Spotify access token, using cached token if available
@@ -157,12 +216,187 @@ export class MusicService {
   }
 
   /**
+   * Extract Spotify album ID from URL
+   */
+  private extractSpotifyAlbumId(url: string): string | null {
+    const match = url.match(/spotify\.com\/album\/([a-zA-Z0-9]+)/);
+    return match ? match[1] : null;
+  }
+
+  /**
+   * Extract Spotify playlist ID from URL
+   */
+  private extractSpotifyPlaylistId(url: string): string | null {
+    const match = url.match(/spotify\.com\/playlist\/([a-zA-Z0-9]+)/);
+    return match ? match[1] : null;
+  }
+
+  /**
    * Extract Apple Music track ID from URL
    */
   private extractAppleMusicTrackId(url: string): string | null {
     // Format: https://music.apple.com/us/album/song-name/ALBUM_ID?i=TRACK_ID
     const match = url.match(/[?&]i=([0-9]+)/);
     return match ? match[1] : null;
+  }
+
+  /**
+   * Extract Apple Music album ID from URL (no ?i= track param)
+   */
+  private extractAppleMusicAlbumId(url: string): string | null {
+    // Format: https://music.apple.com/us/album/album-name/ALBUM_ID (without ?i=)
+    if (url.includes('?i=')) return null; // has track ID — it's a single track
+    const match = url.match(/music\.apple\.com\/[a-z]{2}\/album\/[^/]+\/(\d+)/);
+    return match ? match[1] : null;
+  }
+
+  /**
+   * List tracks from a Spotify album
+   */
+  async listAlbumTracks(link: string): Promise<{ type: 'album' | 'playlist'; name: string; tracks: ParsedTrack[] } | null> {
+    const isSpotify = link.includes('spotify.com');
+    const isAppleMusic = link.includes('music.apple.com');
+
+    if (isSpotify) {
+      const albumId = this.extractSpotifyAlbumId(link);
+      const playlistId = this.extractSpotifyPlaylistId(link);
+
+      if (albumId) return this.listSpotifyAlbum(albumId);
+      if (playlistId) return this.listSpotifyPlaylist(playlistId);
+    }
+
+    if (isAppleMusic) {
+      const albumId = this.extractAppleMusicAlbumId(link);
+      if (albumId) return this.listAppleMusicAlbum(albumId);
+    }
+
+    return null;
+  }
+
+  private async listSpotifyAlbum(albumId: string): Promise<{ type: 'album'; name: string; tracks: ParsedTrack[] } | null> {
+    const token = await this.getSpotifyAccessToken();
+    if (!token) return null;
+
+    try {
+      const response = await fetch(`https://api.spotify.com/v1/albums/${albumId}`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      if (!response.ok) return null;
+
+      const data = await response.json() as {
+        name: string;
+        images: Array<{ url: string }>;
+        tracks: { items: Array<{ id: string; name: string; artists: Array<{ name: string }>; duration_ms: number }> };
+      };
+
+      const albumArt = data.images?.[0]?.url;
+      const tracks: ParsedTrack[] = data.tracks.items.map(t => ({
+        platform: 'spotify' as const,
+        title: t.name,
+        artist: t.artists.map(a => a.name).join(', '),
+        albumArt,
+        sourceLink: `https://open.spotify.com/track/${t.id}`,
+        durationMs: t.duration_ms,
+      }));
+
+      return { type: 'album', name: data.name, tracks };
+    } catch (error) {
+      this.logger.error('Spotify album listing error', error);
+      return null;
+    }
+  }
+
+  private async listSpotifyPlaylist(playlistId: string): Promise<{ type: 'playlist'; name: string; tracks: ParsedTrack[] } | null> {
+    const token = await this.getSpotifyAccessToken();
+    if (!token) return null;
+
+    try {
+      const response = await fetch(`https://api.spotify.com/v1/playlists/${playlistId}?fields=name,tracks.items(track(id,name,artists(name),album(images),duration_ms))`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      if (!response.ok) return null;
+
+      const data = await response.json() as {
+        name: string;
+        tracks: { items: Array<{ track: SpotifyTrack & { id: string; duration_ms: number } }> };
+      };
+
+      const tracks: ParsedTrack[] = data.tracks.items
+        .filter(item => item.track)
+        .map(item => ({
+          platform: 'spotify' as const,
+          title: item.track.name,
+          artist: item.track.artists.map(a => a.name).join(', '),
+          albumArt: item.track.album?.images?.[0]?.url,
+          sourceLink: `https://open.spotify.com/track/${item.track.id}`,
+          durationMs: item.track.duration_ms,
+        }));
+
+      return { type: 'playlist', name: data.name, tracks };
+    } catch (error) {
+      this.logger.error('Spotify playlist listing error', error);
+      return null;
+    }
+  }
+
+  private async listAppleMusicAlbum(albumId: string): Promise<{ type: 'album'; name: string; tracks: ParsedTrack[] } | null> {
+    const token = this.generateAppleMusicJwt();
+    if (!token) return null;
+
+    try {
+      const response = await fetch(
+        `https://api.music.apple.com/v1/catalog/us/albums/${albumId}`,
+        { headers: { 'Authorization': `Bearer ${token}` } },
+      );
+      if (!response.ok) return null;
+
+      const data = await response.json() as {
+        data?: Array<{
+          attributes?: { name: string; artwork?: { url: string } };
+          relationships?: {
+            tracks?: {
+              data?: Array<{
+                id: string;
+                attributes?: { name: string; artistName: string; durationInMillis?: number };
+              }>;
+            };
+          };
+        }>;
+      };
+
+      const album = data.data?.[0];
+      if (!album?.attributes) return null;
+
+      const albumArt = album.attributes.artwork?.url;
+      const trackList = album.relationships?.tracks?.data ?? [];
+      const tracks: ParsedTrack[] = trackList
+        .filter(t => t.attributes)
+        .map(t => ({
+          platform: 'apple-music' as const,
+          title: t.attributes!.name,
+          artist: t.attributes!.artistName,
+          albumArt,
+          sourceLink: `https://music.apple.com/us/song/${t.id}`,
+          durationMs: t.attributes!.durationInMillis,
+        }));
+
+      return { type: 'album', name: album.attributes.name, tracks };
+    } catch (error) {
+      this.logger.error('Apple Music album listing error', error);
+      return null;
+    }
+  }
+
+  /**
+   * Detect whether a link is for an album, playlist, or single track
+   */
+  detectLinkType(link: string): 'track' | 'album' | 'playlist' {
+    if (link.includes('spotify.com/album/')) return 'album';
+    if (link.includes('spotify.com/playlist/')) return 'playlist';
+    if (link.includes('music.apple.com') && !link.includes('?i=')) {
+      if (link.includes('/album/')) return 'album';
+    }
+    return 'track';
   }
 
   /**
@@ -193,6 +427,7 @@ export class MusicService {
         artist: track.artists.map(a => a.name).join(', '),
         albumArt: track.album?.images?.[0]?.url,
         sourceLink: `https://open.spotify.com/track/${trackId}`,
+        durationMs: track.duration_ms,
       };
     } catch (error) {
       this.logger.error('Spotify track lookup error', error);
@@ -238,6 +473,7 @@ export class MusicService {
         artist: song.attributes.artistName,
         albumArt: song.attributes.artwork?.url,
         sourceLink: `https://music.apple.com/us/song/${trackId}`,
+        durationMs: song.attributes.durationInMillis,
       };
     } catch (error) {
       this.logger.error('Apple Music track lookup error', error);
@@ -246,7 +482,8 @@ export class MusicService {
   }
 
   /**
-   * Parse a music link and return track information
+   * Parse a music link and return track information.
+   * Results are cached for 24 hours in Redis (or in-memory fallback).
    */
   async parseLink(link: string): Promise<ParsedTrack> {
     const isSpotify = link.includes('spotify.com');
@@ -258,26 +495,32 @@ export class MusicService {
       platform = 'apple-music';
     }
 
+    // Check cache first
+    const cacheKey = link.replace(/[^a-zA-Z0-9]/g, '_');
+    const cached = await this.getCached(cacheKey);
+    if (cached) return cached;
+
     // Try to look up the track
+    let result: ParsedTrack | null = null;
+
     if (isSpotify) {
       const trackId = this.extractSpotifyTrackId(link);
       if (trackId) {
-        const track = await this.lookupSpotifyTrack(trackId);
-        if (track) {
-          return track;
-        }
+        result = await this.lookupSpotifyTrack(trackId);
       }
     } else if (isAppleMusic) {
       const trackId = this.extractAppleMusicTrackId(link);
       if (trackId) {
-        const track = await this.lookupAppleMusicTrack(trackId);
-        if (track) {
-          return track;
-        }
+        result = await this.lookupAppleMusicTrack(trackId);
       }
     }
 
-    // Fallback: return minimal data when API lookup fails
+    if (result) {
+      await this.setCache(cacheKey, result);
+      return result;
+    }
+
+    // Fallback: return minimal data when API lookup fails (don't cache failures)
     return {
       platform,
       title: 'Unknown',

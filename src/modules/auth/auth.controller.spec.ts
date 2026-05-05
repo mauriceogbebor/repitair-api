@@ -1,6 +1,8 @@
 import { Test, TestingModule } from "@nestjs/testing";
+import { JwtService } from "@nestjs/jwt";
 import { AuthController } from "./auth.controller";
 import { AuthService } from "./auth.service";
+import { TokenBlacklistService } from "../../common/services/token-blacklist.service";
 
 describe("AuthController", () => {
   let authController: AuthController;
@@ -25,6 +27,7 @@ describe("AuthController", () => {
       verifyCode: jest.fn(),
       resetPassword: jest.fn(),
       logout: jest.fn(),
+      refresh: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -33,6 +36,14 @@ describe("AuthController", () => {
         {
           provide: AuthService,
           useValue: mockAuthService,
+        },
+        {
+          provide: JwtService,
+          useValue: { verify: jest.fn() },
+        },
+        {
+          provide: TokenBlacklistService,
+          useValue: { isBlacklisted: jest.fn().mockResolvedValue(false), add: jest.fn() },
         },
       ],
     }).compile();

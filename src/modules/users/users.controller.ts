@@ -22,6 +22,10 @@ class UpdateProfileDto {
   @IsOptional()
   @IsString()
   country?: string;
+
+  @IsOptional()
+  @IsString()
+  avatarUrl?: string;
 }
 
 class ChangePasswordDto {
@@ -51,6 +55,7 @@ export class UsersController {
       email: foundUser.email,
       country: foundUser.country,
       connectedPlatforms: foundUser.connectedPlatforms,
+      avatarUrl: foundUser.avatarUrl ?? null,
     };
   }
 
@@ -67,6 +72,7 @@ export class UsersController {
       email: foundUser.email,
       country: foundUser.country,
       connectedPlatforms: foundUser.connectedPlatforms,
+      avatarUrl: foundUser.avatarUrl ?? null,
     };
   }
 

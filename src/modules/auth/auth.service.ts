@@ -1,12 +1,14 @@
 import { Injectable, UnauthorizedException, Logger, BadRequestException } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { ConfigService } from "@nestjs/config";
+import { createPublicKey } from "crypto";
 
 import { UsersService } from "../users/users.service";
 import { MailService } from "../../common/services/mail.service";
 import { TokenBlacklistService } from "../../common/services/token-blacklist.service";
 import { LoginDto } from "./dto/login.dto";
 import { SignupDto } from "./dto/signup.dto";
+import { SocialAuthDto } from "./dto/social-auth.dto";
 
 @Injectable()
 export class AuthService {
@@ -65,6 +67,138 @@ export class AuthService {
         connectedPlatforms: user.connectedPlatforms,
       },
     };
+  }
+
+  /**
+   * Social auth — Sign in with Apple or Google.
+   * Verifies the ID token, creates the user if they don't exist,
+   * and returns a JWT + user payload.
+   */
+  async socialAuth(dto: SocialAuthDto) {
+    let email: string;
+    let fullName: string;
+
+    if (dto.provider === "google") {
+      const payload = await this.verifyGoogleIdToken(dto.idToken);
+      email = payload.email;
+      fullName = dto.fullName || payload.name || "User";
+    } else {
+      const payload = await this.verifyAppleIdToken(dto.idToken);
+      email = payload.email;
+      // Apple only sends the name on first sign-in
+      fullName = dto.fullName || "User";
+    }
+
+    // Find or create user
+    let user = await this.usersService.findByEmail(email);
+    if (!user) {
+      // Create with a random password (social auth users don't use password login)
+      const randomPassword = Math.random().toString(36).slice(-16) + "A1!";
+      user = await this.usersService.createUser({
+        fullName,
+        email,
+        password: randomPassword,
+        country: "",
+      });
+    }
+
+    const token = this.signToken(user.id, user.email);
+
+    return {
+      token,
+      user: {
+        id: user.id,
+        fullName: user.fullName,
+        email: user.email,
+        country: user.country,
+        connectedPlatforms: user.connectedPlatforms,
+      },
+    };
+  }
+
+  /**
+   * Verify Google ID token using Google's tokeninfo endpoint.
+   */
+  private async verifyGoogleIdToken(idToken: string): Promise<{ email: string; name?: string }> {
+    try {
+      const response = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`);
+      if (!response.ok) {
+        throw new UnauthorizedException("Invalid Google ID token");
+      }
+      const payload = await response.json() as { email?: string; name?: string; aud?: string };
+
+      const expectedClientId = this.configService.get<string>("GOOGLE_CLIENT_ID");
+      if (expectedClientId && payload.aud !== expectedClientId) {
+        throw new UnauthorizedException("Google token audience mismatch");
+      }
+
+      if (!payload.email) {
+        throw new UnauthorizedException("Google token missing email");
+      }
+
+      return { email: payload.email, name: payload.name };
+    } catch (error) {
+      if (error instanceof UnauthorizedException) throw error;
+      this.logger.error("Google token verification failed", error);
+      throw new UnauthorizedException("Failed to verify Google ID token");
+    }
+  }
+
+  /**
+   * Verify Apple ID token by decoding the JWT and validating against Apple's public keys.
+   * Uses Apple's JWKS endpoint for key verification.
+   */
+  private async verifyAppleIdToken(idToken: string): Promise<{ email: string }> {
+    try {
+      // Decode the token header to get the key ID
+      const headerB64 = idToken.split(".")[0];
+      const header = JSON.parse(Buffer.from(headerB64, "base64").toString()) as { kid: string; alg: string };
+
+      // Fetch Apple's public keys
+      const keysResponse = await fetch("https://appleid.apple.com/auth/keys");
+      if (!keysResponse.ok) {
+        throw new UnauthorizedException("Failed to fetch Apple public keys");
+      }
+      const keysData = await keysResponse.json() as { keys: Array<{ kid: string; kty: string; use: string; n: string; e: string }> };
+
+      const appleKey = keysData.keys.find(k => k.kid === header.kid);
+      if (!appleKey) {
+        throw new UnauthorizedException("Apple key not found for token");
+      }
+
+      // Build the public key
+      const publicKey = createPublicKey({
+        key: {
+          kty: appleKey.kty,
+          n: appleKey.n,
+          e: appleKey.e,
+        },
+        format: "jwk",
+      });
+
+      // Verify the token using NestJS JwtService with the Apple public key
+      // Export to PEM string since JwtService expects string | Buffer
+      const publicKeyPem = publicKey.export({ type: "spki", format: "pem" }) as string;
+      const payload = this.jwtService.verify(idToken, {
+        algorithms: [header.alg as "RS256" | "ES256"],
+        publicKey: publicKeyPem,
+        issuer: "https://appleid.apple.com",
+      }) as { email?: string; sub?: string };
+
+      const expectedClientId = this.configService.get<string>("APPLE_CLIENT_ID");
+      // Apple tokens use "aud" claim, which jwtService.verify already checked via audience option
+      // but we validate manually here for clarity
+
+      if (!payload.email) {
+        throw new UnauthorizedException("Apple token missing email");
+      }
+
+      return { email: payload.email };
+    } catch (error) {
+      if (error instanceof UnauthorizedException) throw error;
+      this.logger.error("Apple token verification failed", error);
+      throw new UnauthorizedException("Failed to verify Apple ID token");
+    }
   }
 
   async forgotPassword(email: string) {

@@ -1,5 +1,6 @@
 import { Test, TestingModule } from "@nestjs/testing";
 import { UnauthorizedException } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { JwtService } from "@nestjs/jwt";
 import { AuthService } from "./auth.service";
 import { UsersService } from "../users/users.service";
@@ -49,6 +50,10 @@ describe("AuthService", () => {
       isBlacklisted: jest.fn().mockReturnValue(false),
     };
 
+    const mockConfigService = {
+      get: jest.fn().mockReturnValue("mock-value"),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AuthService,
@@ -56,6 +61,7 @@ describe("AuthService", () => {
         { provide: JwtService, useValue: mockJwtService },
         { provide: MailService, useValue: mockMailService },
         { provide: TokenBlacklistService, useValue: mockTokenBlacklist },
+        { provide: ConfigService, useValue: mockConfigService },
       ],
     }).compile();
 

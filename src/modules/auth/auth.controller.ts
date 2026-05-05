@@ -7,6 +7,7 @@ import { ForgotPasswordDto } from "./dto/forgot-password.dto";
 import { LoginDto } from "./dto/login.dto";
 import { ResetPasswordDto } from "./dto/reset-password.dto";
 import { SignupDto } from "./dto/signup.dto";
+import { SocialAuthDto } from "./dto/social-auth.dto";
 import { VerifyCodeDto } from "./dto/verify-code.dto";
 
 @Controller("auth")
@@ -21,6 +22,11 @@ export class AuthController {
   @Post("login")
   login(@Body() body: LoginDto) {
     return this.authService.login(body);
+  }
+
+  @Post("social")
+  socialAuth(@Body() body: SocialAuthDto) {
+    return this.authService.socialAuth(body);
   }
 
   @Post("forgot-password")
