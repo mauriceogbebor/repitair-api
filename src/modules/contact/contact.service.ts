@@ -24,7 +24,7 @@ export class ContactService {
   ) {}
 
   async submit(dto: ContactDto): Promise<void> {
-    const supportAddress = this.config.get<string>("SUPPORT_EMAIL") || "support@repitair.com";
+    const supportAddress = this.config.get<string>("SUPPORT_EMAIL") || "support@repitair.app";
 
     const safeName = escapeHtml(dto.name);
     const safeEmail = escapeHtml(dto.email);

@@ -1,8 +1,8 @@
-import { ConflictException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository, ILike, QueryFailedError } from "typeorm";
 import * as bcrypt from "bcryptjs";
-import { randomInt } from "node:crypto";
+import { randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 
 import { User } from "../../entities";
 
@@ -81,28 +81,74 @@ export class UsersService {
     const code = String(randomInt(100000, 1000000));
     user.resetCode = code;
     user.resetCodeExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    user.resetCodeAttempts = 0; // reset attempt counter on new code
 
     await this.usersRepo.save(user);
 
     return code;
   }
 
-  async verifyResetCode(email: string, code: string): Promise<boolean> {
+  /**
+   * Verify a reset code. On success, issues an opaque reset token (valid 10 min)
+   * that must be presented to `resetPassword` — this prevents the password from
+   * being changed without completing the code-verification step.
+   */
+  async verifyResetCode(email: string, code: string): Promise<string | null> {
     const user = await this.findByEmail(email);
-    if (!user || !user.resetCode || !user.resetCodeExpiresAt) return false;
+    if (!user || !user.resetCode || !user.resetCodeExpiresAt) return null;
 
-    if (new Date(user.resetCodeExpiresAt) < new Date()) return false;
+    if (new Date(user.resetCodeExpiresAt) < new Date()) return null;
 
-    return user.resetCode === code;
+    // Lockout after 5 failed attempts — invalidate the code entirely
+    if (user.resetCodeAttempts >= 5) {
+      user.resetCode = undefined;
+      user.resetCodeExpiresAt = undefined;
+      user.resetCodeAttempts = 0;
+      await this.usersRepo.save(user);
+      return null;
+    }
+
+    if (user.resetCode !== code) {
+      user.resetCodeAttempts += 1;
+      await this.usersRepo.save(user);
+      return null;
+    }
+
+    // Issue a one-time reset token
+    const resetToken = randomBytes(32).toString("hex");
+    user.resetToken = resetToken;
+    user.resetTokenExpiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 min
+    // Consume the code so it can't be reused
+    user.resetCode = undefined;
+    user.resetCodeExpiresAt = undefined;
+
+    await this.usersRepo.save(user);
+
+    return resetToken;
   }
 
-  async resetPassword(email: string, newPassword: string): Promise<boolean> {
+  /**
+   * Reset a user's password. Requires a valid reset token obtained from
+   * `verifyResetCode` — callers can no longer skip the verification step.
+   */
+  async resetPassword(email: string, resetToken: string, newPassword: string): Promise<boolean> {
     const user = await this.findByEmail(email);
-    if (!user) return false;
+    if (!user || !user.resetToken || !user.resetTokenExpiresAt) return false;
+
+    if (new Date(user.resetTokenExpiresAt) < new Date()) return false;
+
+    // Constant-time comparison to prevent timing attacks
+    const expected = Buffer.from(user.resetToken, "utf8");
+    const received = Buffer.from(resetToken, "utf8");
+    if (expected.length !== received.length || !timingSafeEqual(expected, received)) {
+      return false;
+    }
 
     user.passwordHash = await bcrypt.hash(newPassword, 10);
     user.resetCode = undefined;
     user.resetCodeExpiresAt = undefined;
+    user.resetToken = undefined;
+    user.resetTokenExpiresAt = undefined;
 
     await this.usersRepo.save(user);
 
@@ -153,12 +199,9 @@ export class UsersService {
     const user = await this.findById(userId);
     if (!user) return null;
 
-    if (!user.connectedPlatforms.includes(platform)) {
-      user.connectedPlatforms = [...user.connectedPlatforms, platform];
-      await this.usersRepo.save(user);
-    }
-
-    return user;
+    throw new BadRequestException(
+      `${platform} cannot be connected manually. Use the provider's supported connection flow instead.`,
+    );
   }
 
   async connectSpotify(userId: string, refreshToken: string): Promise<void> {

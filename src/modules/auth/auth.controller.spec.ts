@@ -23,11 +23,14 @@ describe("AuthController", () => {
     const mockAuthService = {
       signup: jest.fn(),
       login: jest.fn(),
+      socialAuth: jest.fn(),
       forgotPassword: jest.fn(),
       verifyCode: jest.fn(),
       resetPassword: jest.fn(),
       logout: jest.fn(),
       refresh: jest.fn(),
+      buildSpotifyAuthUrl: jest.fn(),
+      handleSpotifyCallback: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -275,9 +278,10 @@ describe("AuthController", () => {
   });
 
   describe("POST /auth/reset-password", () => {
-    it("should call service.resetPassword with email and newPassword", async () => {
+    it("should call service.resetPassword with email, resetToken, and newPassword", async () => {
       const resetPasswordBody = {
         email: "john@example.com",
+        resetToken: "abc123token",
         newPassword: "newpassword123",
       };
 
@@ -289,6 +293,7 @@ describe("AuthController", () => {
 
       expect(authService.resetPassword).toHaveBeenCalledWith(
         resetPasswordBody.email,
+        resetPasswordBody.resetToken,
         resetPasswordBody.newPassword
       );
       expect(authService.resetPassword).toHaveBeenCalledTimes(1);
@@ -298,6 +303,7 @@ describe("AuthController", () => {
     it("should pass through service response", async () => {
       const resetPasswordBody = {
         email: "user@example.com",
+        resetToken: "abc123token",
         newPassword: "newpass456",
       };
 
@@ -313,6 +319,7 @@ describe("AuthController", () => {
     it("should handle reset errors", async () => {
       const resetPasswordBody = {
         email: "john@example.com",
+        resetToken: "abc123token",
         newPassword: "newpassword123",
       };
 
@@ -361,6 +368,41 @@ describe("AuthController", () => {
       await expect(authController.logout(mockUser)).rejects.toThrow(
         "Logout failed"
       );
+    });
+  });
+
+  describe("GET /auth/spotify/callback", () => {
+    it("should redirect back into the app on success", async () => {
+      (authService.handleSpotifyCallback as jest.Mock).mockResolvedValue({
+        success: true,
+        message: "Spotify account connected successfully",
+      });
+
+      const result = await authController.spotifyCallback("code", "state", undefined);
+
+      expect(authService.handleSpotifyCallback).toHaveBeenCalledWith("code", "state");
+      expect(result).toEqual({ url: "repitair://spotify-connected?status=success" });
+    });
+
+    it("should redirect back into the app when the user cancels Spotify auth", async () => {
+      const result = await authController.spotifyCallback(undefined, undefined, "access_denied");
+
+      expect(authService.handleSpotifyCallback).not.toHaveBeenCalled();
+      expect(result).toEqual({
+        url: "repitair://spotify-connected?status=error&message=Spotify+connection+was+cancelled.",
+      });
+    });
+
+    it("should redirect back into the app when Spotify callback handling fails", async () => {
+      (authService.handleSpotifyCallback as jest.Mock).mockRejectedValue(
+        new Error("Failed to exchange authorization code for tokens"),
+      );
+
+      const result = await authController.spotifyCallback("code", "state", undefined);
+
+      expect(result).toEqual({
+        url: "repitair://spotify-connected?status=error&message=Could+not+connect+Spotify.+Please+try+again.",
+      });
     });
   });
 });

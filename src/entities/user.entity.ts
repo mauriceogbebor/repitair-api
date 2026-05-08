@@ -36,6 +36,17 @@ export class User {
   @Column({ type: "timestamp", nullable: true })
   resetCodeExpiresAt?: Date;
 
+  /** Opaque token issued after successful code verification; required to reset the password. */
+  @Column({ nullable: true })
+  resetToken?: string;
+
+  @Column({ type: "timestamp", nullable: true })
+  resetTokenExpiresAt?: Date;
+
+  /** Number of failed reset-code verification attempts. Invalidates the code after 5. */
+  @Column({ type: "int", default: 0 })
+  resetCodeAttempts!: number;
+
   @OneToMany(() => Repit, (repit) => repit.user)
   repits!: Repit[];
 

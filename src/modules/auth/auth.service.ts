@@ -8,7 +8,7 @@ import {
 } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { ConfigService } from "@nestjs/config";
-import { createPublicKey } from "crypto";
+import { createHmac, createPublicKey, randomBytes } from "crypto";
 
 import { UsersService } from "../users/users.service";
 import { MailService } from "../../common/services/mail.service";
@@ -99,8 +99,8 @@ export class AuthService {
     // Find or create user
     let user = await this.usersService.findByEmail(email);
     if (!user) {
-      // Create with a random password (social auth users don't use password login)
-      const randomPassword = Math.random().toString(36).slice(-16) + "A1!";
+      // Create with a cryptographically random password (social auth users don't use password login)
+      const randomPassword = randomBytes(32).toString("base64url");
       user = await this.usersService.createUser({
         fullName,
         email,
@@ -127,6 +127,13 @@ export class AuthService {
    * Verify Google ID token using Google's tokeninfo endpoint.
    */
   private async verifyGoogleIdToken(idToken: string): Promise<{ email: string; name?: string }> {
+    const expectedClientId = this.configService.get<string>("GOOGLE_CLIENT_ID");
+    if (!expectedClientId) {
+      throw new ServiceUnavailableException(
+        "Google Sign In is not available. GOOGLE_CLIENT_ID must be configured.",
+      );
+    }
+
     try {
       const response = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`);
       if (!response.ok) {
@@ -134,8 +141,7 @@ export class AuthService {
       }
       const payload = await response.json() as { email?: string; name?: string; aud?: string };
 
-      const expectedClientId = this.configService.get<string>("GOOGLE_CLIENT_ID");
-      if (expectedClientId && payload.aud !== expectedClientId) {
+      if (payload.aud !== expectedClientId) {
         throw new UnauthorizedException("Google token audience mismatch");
       }
 
@@ -145,7 +151,7 @@ export class AuthService {
 
       return { email: payload.email, name: payload.name };
     } catch (error) {
-      if (error instanceof UnauthorizedException) throw error;
+      if (error instanceof UnauthorizedException || error instanceof ServiceUnavailableException) throw error;
       this.logger.error("Google token verification failed", error);
       throw new UnauthorizedException("Failed to verify Google ID token");
     }
@@ -156,6 +162,13 @@ export class AuthService {
    * Uses Apple's JWKS endpoint for key verification.
    */
   private async verifyAppleIdToken(idToken: string): Promise<{ email: string }> {
+    const expectedClientId = this.configService.get<string>("APPLE_CLIENT_ID");
+    if (!expectedClientId) {
+      throw new ServiceUnavailableException(
+        "Apple Sign In is not available. APPLE_CLIENT_ID must be configured.",
+      );
+    }
+
     try {
       // Decode the token header to get the key ID
       const headerB64 = idToken.split(".")[0];
@@ -190,11 +203,8 @@ export class AuthService {
         algorithms: [header.alg as "RS256" | "ES256"],
         publicKey: publicKeyPem,
         issuer: "https://appleid.apple.com",
+        audience: expectedClientId,
       }) as { email?: string; sub?: string };
-
-      const expectedClientId = this.configService.get<string>("APPLE_CLIENT_ID");
-      // Apple tokens use "aud" claim, which jwtService.verify already checked via audience option
-      // but we validate manually here for clarity
 
       if (!payload.email) {
         throw new UnauthorizedException("Apple token missing email");
@@ -202,7 +212,7 @@ export class AuthService {
 
       return { email: payload.email };
     } catch (error) {
-      if (error instanceof UnauthorizedException) throw error;
+      if (error instanceof UnauthorizedException || error instanceof ServiceUnavailableException) throw error;
       this.logger.error("Apple token verification failed", error);
       throw new UnauthorizedException("Failed to verify Apple ID token");
     }
@@ -227,15 +237,16 @@ export class AuthService {
   }
 
   async verifyCode(email: string, code: string) {
-    const valid = await this.usersService.verifyResetCode(email, code);
-    if (!valid) {
+    const resetToken = await this.usersService.verifyResetCode(email, code);
+    if (!resetToken) {
       throw new UnauthorizedException("Invalid or expired code");
     }
-    return { verified: true };
+    // Return the reset token — the client must include it when calling reset-password
+    return { verified: true, resetToken };
   }
 
-  async resetPassword(email: string, newPassword: string) {
-    const success = await this.usersService.resetPassword(email, newPassword);
+  async resetPassword(email: string, resetToken: string, newPassword: string) {
+    const success = await this.usersService.resetPassword(email, resetToken, newPassword);
     if (!success) {
       throw new UnauthorizedException("Could not reset password");
     }
@@ -278,8 +289,37 @@ export class AuthService {
   }
 
   /**
+   * Build an HMAC-signed state parameter: "base64(userId).hmac"
+   * so the callback can verify it wasn't forged.
+   */
+  private signOAuthState(userId: string): string {
+    const secret = this.configService.get<string>("JWT_SECRET") ?? "fallback-dev-secret";
+    const payload = Buffer.from(userId).toString("base64url");
+    const sig = createHmac("sha256", secret).update(payload).digest("base64url");
+    return `${payload}.${sig}`;
+  }
+
+  /**
+   * Verify and decode an HMAC-signed state parameter.
+   * Returns the userId or throws on tampered/invalid state.
+   */
+  private verifyOAuthState(state: string): string {
+    const secret = this.configService.get<string>("JWT_SECRET") ?? "fallback-dev-secret";
+    const dotIndex = state.lastIndexOf(".");
+    if (dotIndex === -1) throw new BadRequestException("Invalid state parameter");
+
+    const payload = state.slice(0, dotIndex);
+    const sig = state.slice(dotIndex + 1);
+
+    const expectedSig = createHmac("sha256", secret).update(payload).digest("base64url");
+    if (sig !== expectedSig) throw new BadRequestException("Invalid state parameter");
+
+    return Buffer.from(payload, "base64url").toString("utf8");
+  }
+
+  /**
    * Build the Spotify authorization URL for the user to visit.
-   * Encodes the user's ID in the state parameter for retrieval on callback.
+   * Encodes the user's ID in a signed state parameter for retrieval on callback.
    */
   buildSpotifyAuthUrl(userId: string): string {
     const clientId = this.configService.get<string>("SPOTIFY_CLIENT_ID");
@@ -291,8 +331,7 @@ export class AuthService {
       );
     }
 
-    // Encode user ID in the state parameter (base64) so we can identify them on callback
-    const state = Buffer.from(userId).toString("base64");
+    const state = this.signOAuthState(userId);
     const scopes = ["user-read-recently-played", "user-read-currently-playing", "user-top-read"];
 
     const params = new URLSearchParams({
@@ -308,7 +347,7 @@ export class AuthService {
 
   /**
    * Exchange Spotify authorization code for tokens and save refresh token to user.
-   * Expects state to contain the user ID encoded in base64.
+   * Validates the HMAC-signed state to extract the user ID.
    */
   async handleSpotifyCallback(code: string, state: string): Promise<{ success: boolean; message: string }> {
     const clientId = this.configService.get<string>("SPOTIFY_CLIENT_ID");
@@ -321,13 +360,8 @@ export class AuthService {
       );
     }
 
-    // Decode state to get user ID
-    let userId: string;
-    try {
-      userId = Buffer.from(state, "base64").toString("utf8");
-    } catch (err) {
-      throw new BadRequestException("Invalid state parameter");
-    }
+    // Verify HMAC-signed state and extract user ID
+    const userId = this.verifyOAuthState(state);
 
     // Exchange code for tokens
     const tokenResponse = await fetch("https://accounts.spotify.com/api/token", {

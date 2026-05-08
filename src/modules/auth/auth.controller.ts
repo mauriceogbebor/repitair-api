@@ -14,6 +14,17 @@ import { VerifyCodeDto } from "./dto/verify-code.dto";
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
+  private buildSpotifyAppRedirect(
+    status: "success" | "error",
+    message?: string,
+  ) {
+    const params = new URLSearchParams({ status });
+    if (message) {
+      params.set("message", message);
+    }
+    return { url: `repitair://spotify-connected?${params.toString()}` };
+  }
+
   @Post("signup")
   signup(@Body() body: SignupDto) {
     return this.authService.signup(body);
@@ -41,7 +52,7 @@ export class AuthController {
 
   @Post("reset-password")
   resetPassword(@Body() body: ResetPasswordDto) {
-    return this.authService.resetPassword(body.email, body.newPassword);
+    return this.authService.resetPassword(body.email, body.resetToken, body.newPassword);
   }
 
   /**
@@ -85,8 +96,37 @@ export class AuthController {
    */
   @Get("spotify/callback")
   @Redirect()
-  async spotifyCallback(@Query("code") code: string, @Query("state") state: string) {
-    await this.authService.handleSpotifyCallback(code, state);
-    return { url: "repitair://spotify-connected" };
+  async spotifyCallback(
+    @Query("code") code?: string,
+    @Query("state") state?: string,
+    @Query("error") error?: string,
+  ) {
+    if (error) {
+      const message =
+        error === "access_denied"
+          ? "Spotify connection was cancelled."
+          : "Could not connect Spotify. Please try again.";
+      return this.buildSpotifyAppRedirect("error", message);
+    }
+
+    if (!code || !state) {
+      return this.buildSpotifyAppRedirect(
+        "error",
+        "Could not connect Spotify. Please try again.",
+      );
+    }
+
+    try {
+      await this.authService.handleSpotifyCallback(code, state);
+      return this.buildSpotifyAppRedirect("success");
+    } catch (err) {
+      const message =
+        err instanceof Error && err.message.includes("not available")
+          ? "Spotify connection is not available right now."
+          : err instanceof Error && err.message.includes("Invalid state")
+            ? "This Spotify connection link is invalid or expired."
+            : "Could not connect Spotify. Please try again.";
+      return this.buildSpotifyAppRedirect("error", message);
+    }
   }
 }

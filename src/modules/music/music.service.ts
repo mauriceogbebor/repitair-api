@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createSign } from 'crypto';
 
@@ -489,6 +489,12 @@ export class MusicService {
     const isSpotify = link.includes('spotify.com');
     const isAppleMusic = link.includes('music.apple.com');
 
+    if (!isSpotify && !isAppleMusic) {
+      throw new BadRequestException(
+        'Please paste a valid Spotify or Apple Music link.',
+      );
+    }
+
     // Determine platform
     let platform: 'spotify' | 'apple-music' = 'spotify';
     if (isAppleMusic) {
@@ -520,13 +526,9 @@ export class MusicService {
       return result;
     }
 
-    // Fallback: return minimal data when API lookup fails (don't cache failures)
-    return {
-      platform,
-      title: 'Unknown',
-      artist: 'Unknown',
-      sourceLink: link,
-    };
+    throw new BadRequestException(
+      "We couldn't fetch song details from that link. Please try another Spotify or Apple Music link.",
+    );
   }
 
   /**
