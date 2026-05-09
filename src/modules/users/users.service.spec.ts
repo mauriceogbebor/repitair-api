@@ -1,5 +1,5 @@
 import { Test, TestingModule } from "@nestjs/testing";
-import { BadRequestException, ConflictException } from "@nestjs/common";
+import { BadRequestException, ConflictException, NotFoundException } from "@nestjs/common";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { Repository, QueryFailedError } from "typeorm";
 import * as bcrypt from "bcryptjs";
@@ -366,12 +366,12 @@ describe("UsersService", () => {
       expect(repository.save).not.toHaveBeenCalled();
     });
 
-    it("should return null when user not found", async () => {
+    it("should throw NotFoundException when user not found", async () => {
       mockRepository.findOne.mockResolvedValue(null);
 
-      const result = await service.connectPlatform("nonexistent", "spotify");
-
-      expect(result).toBeNull();
+      await expect(service.connectPlatform("nonexistent", "spotify")).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 });

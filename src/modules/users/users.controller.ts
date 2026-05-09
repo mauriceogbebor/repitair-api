@@ -94,14 +94,8 @@ export class UsersController {
 
   @Post("connect-platform")
   async connectPlatform(@CurrentUser() user: CurrentUserPayload, @Body() body: ConnectPlatformDto) {
-    const foundUser = await this.usersService.connectPlatform(user.sub, body.platform);
-    if (!foundUser) {
-      throw new UnauthorizedException("User not found");
-    }
-
-    return {
-      id: foundUser.id,
-      connectedPlatforms: foundUser.connectedPlatforms,
-    };
+    // connectPlatform always throws — manual platform connection is not supported.
+    // Platforms are connected via their own OAuth flows (e.g., Spotify OAuth).
+    await this.usersService.connectPlatform(user.sub, body.platform);
   }
 }

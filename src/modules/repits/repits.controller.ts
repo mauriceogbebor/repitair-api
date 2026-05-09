@@ -32,6 +32,17 @@ export class RepitsController {
     return this.repitsService.listRepits(user.sub, { limit, offset });
   }
 
+  @Get(":id")
+  async getRepit(@CurrentUser() user: CurrentUserPayload, @Param("id") id: string) {
+    const repit = await this.repitsService.getRepit(user.sub, id);
+
+    if (!repit) {
+      throw new NotFoundException("Repit not found");
+    }
+
+    return repit;
+  }
+
   @Post()
   createRepit(@CurrentUser() user: CurrentUserPayload, @Body() body: CreateRepitDto) {
     return this.repitsService.createRepit(user.sub, body);

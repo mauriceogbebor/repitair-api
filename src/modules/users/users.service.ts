@@ -195,9 +195,11 @@ export class UsersService {
     return true;
   }
 
-  async connectPlatform(userId: string, platform: string): Promise<User | null> {
+  async connectPlatform(userId: string, platform: string): Promise<never> {
     const user = await this.findById(userId);
-    if (!user) return null;
+    if (!user) {
+      throw new NotFoundException(`User with ID ${userId} not found`);
+    }
 
     throw new BadRequestException(
       `${platform} cannot be connected manually. Use the provider's supported connection flow instead.`,

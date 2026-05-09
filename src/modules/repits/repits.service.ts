@@ -23,6 +23,10 @@ export class RepitsService {
     private readonly uploadsService: UploadsService,
   ) {}
 
+  async getRepit(userId: string, id: string): Promise<Repit | null> {
+    return this.repitsRepo.findOne({ where: { id, userId } });
+  }
+
   listRepits(userId: string, options: ListRepitsOptions = {}) {
     const take = Math.min(options.limit ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
     const skip = Math.max(options.offset ?? 0, 0);
