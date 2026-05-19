@@ -19,17 +19,17 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         : (exceptionResponse as any).message ?? message;
     }
 
-    // Log error (replace with Sentry in production)
+    // Log error details server-side (never expose to client)
     if (status >= 500) {
       console.error(`[${request.method} ${request.url}]`, exception);
-      // Sentry.captureException(exception);
+      // Never send internal error details to the client
+      message = "Internal server error";
     }
 
     response.status(status).json({
       statusCode: status,
       message,
       timestamp: new Date().toISOString(),
-      path: request.url,
     });
   }
 }

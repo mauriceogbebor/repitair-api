@@ -21,6 +21,6 @@ export class UpdateRepitDto {
   status?: string;
 
   @IsOptional()
-  @IsString()
+  @IsUrl({}, { message: "backgroundPhotoUrl must be a valid URL" })
   backgroundPhotoUrl?: string;
 }

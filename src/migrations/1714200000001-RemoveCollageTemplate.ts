@@ -1,6 +1,6 @@
 import { MigrationInterface, QueryRunner } from "typeorm";
 
-export class RemoveCollageTemplate1714200000000 implements MigrationInterface {
+export class RemoveCollageTemplate1714200000001 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`DELETE FROM "templates" WHERE "id" = 'collage'`);
   }

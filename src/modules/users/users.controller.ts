@@ -1,14 +1,9 @@
 import { BadRequestException, Body, Controller, Get, Patch, Post, UnauthorizedException, UseGuards } from "@nestjs/common";
-import { IsOptional, IsString, MinLength } from "class-validator";
+import { IsEmail, IsOptional, IsString, MinLength } from "class-validator";
 
 import { CurrentUser, CurrentUserPayload } from "../../common/decorators/current-user.decorator";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { UsersService } from "./users.service";
-
-class ConnectPlatformDto {
-  @IsString()
-  platform!: string;
-}
 
 class UpdateProfileDto {
   @IsOptional()
@@ -16,7 +11,7 @@ class UpdateProfileDto {
   fullName?: string;
 
   @IsOptional()
-  @IsString()
+  @IsEmail()
   email?: string;
 
   @IsOptional()
@@ -92,10 +87,4 @@ export class UsersController {
     return { message: "Password updated successfully" };
   }
 
-  @Post("connect-platform")
-  async connectPlatform(@CurrentUser() user: CurrentUserPayload, @Body() body: ConnectPlatformDto) {
-    // connectPlatform always throws — manual platform connection is not supported.
-    // Platforms are connected via their own OAuth flows (e.g., Spotify OAuth).
-    await this.usersService.connectPlatform(user.sub, body.platform);
-  }
 }

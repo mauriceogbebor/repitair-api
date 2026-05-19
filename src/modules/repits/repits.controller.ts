@@ -6,6 +6,7 @@ import {
   NotFoundException,
   Param,
   ParseIntPipe,
+  ParseUUIDPipe,
   Patch,
   Post,
   Query,
@@ -33,7 +34,7 @@ export class RepitsController {
   }
 
   @Get(":id")
-  async getRepit(@CurrentUser() user: CurrentUserPayload, @Param("id") id: string) {
+  async getRepit(@CurrentUser() user: CurrentUserPayload, @Param("id", ParseUUIDPipe) id: string) {
     const repit = await this.repitsService.getRepit(user.sub, id);
 
     if (!repit) {
@@ -51,7 +52,7 @@ export class RepitsController {
   @Patch(":id")
   async updateRepit(
     @CurrentUser() user: CurrentUserPayload,
-    @Param("id") id: string,
+    @Param("id", ParseUUIDPipe) id: string,
     @Body() body: UpdateRepitDto,
   ) {
     const repit = await this.repitsService.updateRepit(user.sub, id, body);
@@ -64,7 +65,7 @@ export class RepitsController {
   }
 
   @Delete(":id")
-  async deleteRepit(@CurrentUser() user: CurrentUserPayload, @Param("id") id: string) {
+  async deleteRepit(@CurrentUser() user: CurrentUserPayload, @Param("id", ParseUUIDPipe) id: string) {
     const deleted = await this.repitsService.deleteRepit(user.sub, id);
 
     if (!deleted) {

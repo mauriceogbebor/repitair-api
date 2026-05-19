@@ -10,7 +10,7 @@ export class CreateRepitDto {
   templateId!: string;
 
   @IsOptional()
-  @IsString()
+  @IsUrl({}, { message: "songLink must be a valid URL" })
   songLink?: string;
 
   @IsOptional()
@@ -26,6 +26,6 @@ export class CreateRepitDto {
   platform?: string;
 
   @IsOptional()
-  @IsString()
+  @IsUrl({}, { message: "backgroundPhotoUrl must be a valid URL" })
   backgroundPhotoUrl?: string;
 }

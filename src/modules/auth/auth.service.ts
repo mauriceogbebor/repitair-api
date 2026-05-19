@@ -8,7 +8,7 @@ import {
 } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { ConfigService } from "@nestjs/config";
-import { createHmac, createPublicKey, randomBytes } from "crypto";
+import { createHmac, createPublicKey, randomBytes, timingSafeEqual } from "crypto";
 
 import { UsersService } from "../users/users.service";
 import { MailService } from "../../common/services/mail.service";
@@ -127,10 +127,15 @@ export class AuthService {
    * Verify Google ID token using Google's tokeninfo endpoint.
    */
   private async verifyGoogleIdToken(idToken: string): Promise<{ email: string; name?: string }> {
-    const expectedClientId = this.configService.get<string>("GOOGLE_CLIENT_ID");
-    if (!expectedClientId) {
+    const expectedClientIds = [
+      this.configService.get<string>("GOOGLE_CLIENT_ID"),
+      this.configService.get<string>("GOOGLE_IOS_CLIENT_ID"),
+      this.configService.get<string>("GOOGLE_ANDROID_CLIENT_ID"),
+    ].filter((value): value is string => Boolean(value));
+
+    if (!expectedClientIds.length) {
       throw new ServiceUnavailableException(
-        "Google Sign In is not available. GOOGLE_CLIENT_ID must be configured.",
+        "Google Sign In is not available. Configure GOOGLE_CLIENT_ID or platform specific Google client IDs.",
       );
     }
 
@@ -141,7 +146,7 @@ export class AuthService {
       }
       const payload = await response.json() as { email?: string; name?: string; aud?: string };
 
-      if (payload.aud !== expectedClientId) {
+      if (!payload.aud || !expectedClientIds.includes(payload.aud)) {
         throw new UnauthorizedException("Google token audience mismatch");
       }
 
@@ -312,7 +317,11 @@ export class AuthService {
     const sig = state.slice(dotIndex + 1);
 
     const expectedSig = createHmac("sha256", secret).update(payload).digest("base64url");
-    if (sig !== expectedSig) throw new BadRequestException("Invalid state parameter");
+    const sigBuf = Buffer.from(sig);
+    const expectedBuf = Buffer.from(expectedSig);
+    if (sigBuf.length !== expectedBuf.length || !timingSafeEqual(sigBuf, expectedBuf)) {
+      throw new BadRequestException("Invalid state parameter");
+    }
 
     return Buffer.from(payload, "base64url").toString("utf8");
   }

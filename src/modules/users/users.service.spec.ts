@@ -1,5 +1,5 @@
 import { Test, TestingModule } from "@nestjs/testing";
-import { BadRequestException, ConflictException, NotFoundException } from "@nestjs/common";
+import { ConflictException, NotFoundException } from "@nestjs/common";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { Repository, QueryFailedError } from "typeorm";
 import * as bcrypt from "bcryptjs";
@@ -354,24 +354,4 @@ describe("UsersService", () => {
     });
   });
 
-  describe("connectPlatform", () => {
-    it("should reject manual Spotify connections", async () => {
-      mockRepository.findOne.mockResolvedValue(mockUser);
-
-      await expect(service.connectPlatform("user_1", "spotify")).rejects.toThrow(
-        new BadRequestException(
-          "spotify cannot be connected manually. Use the provider's supported connection flow instead.",
-        ),
-      );
-      expect(repository.save).not.toHaveBeenCalled();
-    });
-
-    it("should throw NotFoundException when user not found", async () => {
-      mockRepository.findOne.mockResolvedValue(null);
-
-      await expect(service.connectPlatform("nonexistent", "spotify")).rejects.toThrow(
-        NotFoundException,
-      );
-    });
-  });
 });

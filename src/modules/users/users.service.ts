@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
+import { ConflictException, Injectable, NotFoundException } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository, ILike, QueryFailedError } from "typeorm";
 import * as bcrypt from "bcryptjs";
@@ -193,17 +193,6 @@ export class UsersService {
     await this.usersRepo.save(user);
 
     return true;
-  }
-
-  async connectPlatform(userId: string, platform: string): Promise<never> {
-    const user = await this.findById(userId);
-    if (!user) {
-      throw new NotFoundException(`User with ID ${userId} not found`);
-    }
-
-    throw new BadRequestException(
-      `${platform} cannot be connected manually. Use the provider's supported connection flow instead.`,
-    );
   }
 
   async connectSpotify(userId: string, refreshToken: string): Promise<void> {

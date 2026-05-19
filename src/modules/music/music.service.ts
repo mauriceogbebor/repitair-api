@@ -533,6 +533,10 @@ export class MusicService {
 
   /**
    * Get recent songs (placeholder for future implementation with real user history)
+   *
+   * TODO: This method returns hardcoded placeholder data. Replace with actual
+   * user listening history from Spotify/Apple Music APIs once OAuth scopes are
+   * available. See: https://developer.spotify.com/documentation/web-api/reference/get-recently-played
    */
   getRecentSongs() {
     // Hardcoded fallback catalog

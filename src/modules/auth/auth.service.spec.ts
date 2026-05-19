@@ -365,6 +365,8 @@ describe("AuthService", () => {
     it("should fail closed when GOOGLE_CLIENT_ID is missing", async () => {
       mockConfigService.get.mockImplementation((key: string) => {
         if (key === "GOOGLE_CLIENT_ID") return undefined;
+        if (key === "GOOGLE_IOS_CLIENT_ID") return undefined;
+        if (key === "GOOGLE_ANDROID_CLIENT_ID") return undefined;
         return "mock-value";
       });
 
@@ -375,7 +377,7 @@ describe("AuthService", () => {
       try {
         await expect((authService as any).verifyGoogleIdToken("google-token")).rejects.toThrow(
           new ServiceUnavailableException(
-            "Google Sign In is not available. GOOGLE_CLIENT_ID must be configured.",
+            "Google Sign In is not available. Configure GOOGLE_CLIENT_ID or platform specific Google client IDs.",
           ),
         );
         expect(fetchMock).not.toHaveBeenCalled();
