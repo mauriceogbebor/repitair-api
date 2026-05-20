@@ -327,6 +327,88 @@ export class AuthService {
   }
 
   /**
+   * Build the Apple Music authorization URL.
+   * Serves a backend-hosted page that uses MusicKit JS to request user authorization.
+   * The signed state parameter encodes the user ID for the callback.
+   */
+  buildAppleMusicAuthUrl(userId: string): string {
+    const teamId = this.configService.get<string>("APPLE_MUSIC_TEAM_ID");
+    const keyId = this.configService.get<string>("APPLE_MUSIC_KEY_ID");
+    const privateKeyStr = this.configService.get<string>("APPLE_MUSIC_PRIVATE_KEY");
+
+    if (!teamId || !keyId || !privateKeyStr) {
+      throw new ServiceUnavailableException(
+        "Apple Music is not available. APPLE_MUSIC_TEAM_ID, APPLE_MUSIC_KEY_ID, and APPLE_MUSIC_PRIVATE_KEY must be configured.",
+      );
+    }
+
+    const state = this.signOAuthState(userId);
+
+    // Determine the base URL for the authorization page
+    const baseUrl = this.configService.get<string>("API_BASE_URL") || "http://localhost:3000";
+
+    const params = new URLSearchParams({ state });
+    return `${baseUrl}/auth/apple-music/authorize?${params.toString()}`;
+  }
+
+  /**
+   * Generate a MusicKit developer token (JWT signed with ES256).
+   * This token is used client-side by MusicKit JS to authenticate with Apple.
+   */
+  generateMusicKitDeveloperToken(): string | null {
+    const teamId = this.configService.get<string>("APPLE_MUSIC_TEAM_ID");
+    const keyId = this.configService.get<string>("APPLE_MUSIC_KEY_ID");
+    const privateKeyStr = this.configService.get<string>("APPLE_MUSIC_PRIVATE_KEY");
+
+    if (!teamId || !keyId || !privateKeyStr) {
+      return null;
+    }
+
+    try {
+      const privateKey = privateKeyStr.replace(/\\n/g, "\n");
+      const now = Math.floor(Date.now() / 1000);
+      const exp = now + 6 * 30 * 24 * 60 * 60; // 6 months
+
+      const header = { alg: "ES256", kid: keyId, typ: "JWT" };
+      const payload = { iss: teamId, iat: now, exp };
+
+      const headerEnc = Buffer.from(JSON.stringify(header)).toString("base64url");
+      const payloadEnc = Buffer.from(JSON.stringify(payload)).toString("base64url");
+      const message = `${headerEnc}.${payloadEnc}`;
+
+      const { createSign } = require("crypto");
+      const sig = createSign("sha256").update(message).sign({ key: privateKey, format: "pem" }, "base64");
+      const sigEnc = Buffer.from(sig, "base64").toString("base64url");
+
+      return `${message}.${sigEnc}`;
+    } catch (err) {
+      this.logger.error("Failed to generate MusicKit developer token", err);
+      return null;
+    }
+  }
+
+  /**
+   * Handle Apple Music authorization callback.
+   * Marks the user as connected to Apple Music.
+   */
+  async handleAppleMusicCallback(state: string): Promise<{ success: boolean; message: string }> {
+    // Verify HMAC-signed state and extract user ID
+    const userId = this.verifyOAuthState(state);
+
+    try {
+      await this.usersService.connectAppleMusic(userId);
+    } catch (err) {
+      if (err instanceof NotFoundException) {
+        throw new BadRequestException("Invalid state parameter");
+      }
+      this.logger.error(`Failed to connect Apple Music for user ${userId}: ${(err as Error).message}`);
+      throw new BadRequestException("Failed to connect Apple Music account");
+    }
+
+    return { success: true, message: "Apple Music account connected successfully" };
+  }
+
+  /**
    * Build the Spotify authorization URL for the user to visit.
    * Encodes the user's ID in a signed state parameter for retrieval on callback.
    */

@@ -208,4 +208,17 @@ export class UsersService {
 
     await this.usersRepo.save(user);
   }
+
+  async connectAppleMusic(userId: string): Promise<void> {
+    const user = await this.findById(userId);
+    if (!user) {
+      throw new NotFoundException(`User with ID ${userId} not found`);
+    }
+
+    if (!user.connectedPlatforms.includes("apple-music")) {
+      user.connectedPlatforms = [...user.connectedPlatforms, "apple-music"];
+    }
+
+    await this.usersRepo.save(user);
+  }
 }

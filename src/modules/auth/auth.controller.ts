@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Post, Query, Redirect, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Header, Post, Query, Redirect, Res, UseGuards } from "@nestjs/common";
+import { Response } from "express";
 
 import { CurrentUser, CurrentUserPayload } from "../../common/decorators/current-user.decorator";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
@@ -127,6 +128,184 @@ export class AuthController {
             ? "This Spotify connection link is invalid or expired."
             : "Could not connect Spotify. Please try again.";
       return this.buildSpotifyAppRedirect("error", message);
+    }
+  }
+
+  // ─── Apple Music ──────────────────────────────────────────
+
+  private buildAppleMusicAppRedirect(
+    status: "success" | "error",
+    message?: string,
+  ) {
+    const params = new URLSearchParams({ status });
+    if (message) {
+      params.set("message", message);
+    }
+    return `repitair://apple-music-connected?${params.toString()}`;
+  }
+
+  /**
+   * Initiate Apple Music connection flow.
+   * Returns the URL for the MusicKit JS authorization page.
+   */
+  @Get("apple-music/redirect")
+  @UseGuards(JwtAuthGuard)
+  appleMusicRedirect(@CurrentUser() user: CurrentUserPayload) {
+    const url = this.authService.buildAppleMusicAuthUrl(user.sub);
+    return { url };
+  }
+
+  /**
+   * Serves an HTML page with MusicKit JS that asks the user to authorize
+   * Apple Music access. On success, posts back to the callback endpoint.
+   */
+  @Get("apple-music/authorize")
+  appleMusicAuthorize(
+    @Query("state") state: string,
+    @Res() res: Response,
+  ) {
+    const developerToken = this.authService.generateMusicKitDeveloperToken();
+
+    if (!developerToken || !state) {
+      const redirectUrl = this.buildAppleMusicAppRedirect(
+        "error",
+        "Apple Music is not available right now.",
+      );
+      return res.redirect(redirectUrl);
+    }
+
+    // Serve inline HTML page with MusicKit JS
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Connect Apple Music</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0A1A0F;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 24px;
+    }
+    .card {
+      background: #142118;
+      border-radius: 20px;
+      padding: 40px 32px;
+      text-align: center;
+      max-width: 380px;
+      width: 100%;
+    }
+    .icon { font-size: 48px; margin-bottom: 16px; }
+    h1 { font-size: 22px; font-weight: 700; margin-bottom: 8px; }
+    p { color: #8F9590; font-size: 15px; line-height: 1.5; margin-bottom: 28px; }
+    .btn {
+      background: #FC3C44;
+      color: #fff;
+      border: none;
+      border-radius: 999px;
+      padding: 14px 32px;
+      font-size: 17px;
+      font-weight: 600;
+      cursor: pointer;
+      width: 100%;
+      transition: opacity 0.2s;
+    }
+    .btn:hover { opacity: 0.9; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .status { margin-top: 16px; font-size: 14px; color: #8F9590; }
+    .error { color: #FF6B6B; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">\u{1F3B5}</div>
+    <h1>Connect Apple Music</h1>
+    <p>Tap the button below to authorize Repitair to access your Apple Music account.</p>
+    <button class="btn" id="authBtn" onclick="authorize()">Authorize Apple Music</button>
+    <div class="status" id="status"></div>
+  </div>
+
+  <script src="https://js-cdn.music.apple.com/musickit/v3/musickit.js" data-web-components crossorigin></script>
+  <script>
+    const STATE = ${JSON.stringify(state)};
+    const DEV_TOKEN = ${JSON.stringify(developerToken)};
+    const CALLBACK_URL = window.location.origin + '/auth/apple-music/callback';
+
+    async function authorize() {
+      const btn = document.getElementById('authBtn');
+      const status = document.getElementById('status');
+      btn.disabled = true;
+      btn.textContent = 'Authorizing...';
+      status.textContent = '';
+
+      try {
+        await MusicKit.configure({
+          developerToken: DEV_TOKEN,
+          app: { name: 'Repitair', build: '1.0.0' },
+        });
+
+        const music = MusicKit.getInstance();
+        const userToken = await music.authorize();
+
+        if (!userToken) {
+          throw new Error('Authorization was cancelled.');
+        }
+
+        // Redirect to callback with the state
+        window.location.href = CALLBACK_URL + '?state=' + encodeURIComponent(STATE) + '&userToken=' + encodeURIComponent(userToken);
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = 'Try Again';
+        status.className = 'status error';
+        status.textContent = err.message || 'Authorization failed. Please try again.';
+      }
+    }
+  </script>
+</body>
+</html>`;
+
+    res.type("text/html").send(html);
+  }
+
+  /**
+   * Apple Music OAuth callback.
+   * Called after the user authorizes on the MusicKit JS page.
+   * Marks the user as connected and redirects to the mobile app.
+   */
+  @Get("apple-music/callback")
+  async appleMusicCallback(
+    @Query("state") state?: string,
+    @Query("userToken") userToken?: string,
+    @Query("error") error?: string,
+    @Res() res?: Response,
+  ) {
+    if (error || !state) {
+      const redirectUrl = this.buildAppleMusicAppRedirect(
+        "error",
+        "Could not connect Apple Music. Please try again.",
+      );
+      return res!.redirect(redirectUrl);
+    }
+
+    try {
+      await this.authService.handleAppleMusicCallback(state);
+      const redirectUrl = this.buildAppleMusicAppRedirect("success");
+      return res!.redirect(redirectUrl);
+    } catch (err) {
+      const message =
+        err instanceof Error && err.message.includes("not available")
+          ? "Apple Music connection is not available right now."
+          : err instanceof Error && err.message.includes("Invalid state")
+            ? "This Apple Music connection link is invalid or expired."
+            : "Could not connect Apple Music. Please try again.";
+      const redirectUrl = this.buildAppleMusicAppRedirect("error", message);
+      return res!.redirect(redirectUrl);
     }
   }
 }
