@@ -1,5 +1,10 @@
-import { Injectable, NestMiddleware, HttpException, HttpStatus } from "@nestjs/common";
-import { Request, Response, NextFunction } from "express";
+import {
+  Injectable,
+  NestMiddleware,
+  HttpException,
+  HttpStatus,
+} from '@nestjs/common';
+import { Request, Response, NextFunction } from 'express';
 
 type RateLimitEntry = { count: number; resetAt: number };
 
@@ -11,7 +16,7 @@ type RateLimitEntry = { count: number; resetAt: number };
 @Injectable()
 export class ContactRateLimitMiddleware implements NestMiddleware {
   private readonly store = new Map<string, RateLimitEntry>();
-  private readonly windowMs = 60 * 60 * 1000; // 1 hour
+  private readonly windowMs = 60 * 60 * 1000; // 1 hours
   private readonly maxRequests = 3;
 
   constructor() {
@@ -32,7 +37,7 @@ export class ContactRateLimitMiddleware implements NestMiddleware {
 
     if (entry.count > this.maxRequests) {
       throw new HttpException(
-        "Too many contact submissions — try again later.",
+        'Too many contact submissions — try again later.',
         HttpStatus.TOO_MANY_REQUESTS,
       );
     }
@@ -42,7 +47,7 @@ export class ContactRateLimitMiddleware implements NestMiddleware {
 
   private getKey(req: Request): string {
     if (Array.isArray(req.ips) && req.ips.length > 0) return req.ips[0];
-    return req.ip ?? req.socket.remoteAddress ?? "unknown";
+    return req.ip ?? req.socket.remoteAddress ?? 'unknown';
   }
 
   private cleanup() {
