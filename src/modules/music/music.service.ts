@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { createSign } from 'crypto';
+import * as jwt from 'jsonwebtoken';
 
 type RedisClient = any; // Lazy-loaded
 
@@ -157,53 +157,23 @@ export class MusicService {
       // Convert \n string literals to actual newlines
       const privateKey = privateKeyStr.replace(/\\n/g, '\n');
 
-      const now = Math.floor(Date.now() / 1000);
-      const exp = now + 6 * 30 * 24 * 60 * 60; // 6 months
+      // Use jsonwebtoken which correctly produces IEEE P1363 signatures
+      // (raw r||s) instead of DER-encoded signatures that Apple rejects.
+      const token = jwt.sign({}, privateKey, {
+        algorithm: 'ES256',
+        expiresIn: '180d',
+        issuer: teamId,
+        header: {
+          alg: 'ES256',
+          kid: keyId,
+        },
+      });
 
-      const header = {
-        alg: 'ES256',
-        kid: keyId,
-        typ: 'JWT',
-      };
-
-      const payload = {
-        iss: teamId,
-        iat: now,
-        exp: exp,
-      };
-
-      const headerEncoded = this.base64UrlEncode(JSON.stringify(header));
-      const payloadEncoded = this.base64UrlEncode(JSON.stringify(payload));
-      const message = `${headerEncoded}.${payloadEncoded}`;
-
-      // Sign with ES256 (ECDSA with SHA-256)
-      const signature = createSign('sha256')
-        .update(message)
-        .sign({
-          key: privateKey,
-          format: 'pem',
-        }, 'base64');
-
-      const signatureEncoded = this.base64UrlEncode(
-        Buffer.from(signature, 'base64').toString('binary')
-      );
-
-      return `${message}.${signatureEncoded}`;
+      return token;
     } catch (error) {
       this.logger.error('Failed to generate Apple Music JWT', error);
       return null;
     }
-  }
-
-  /**
-   * Base64 URL encode (used for JWT)
-   */
-  private base64UrlEncode(str: string): string {
-    return Buffer.from(str)
-      .toString('base64')
-      .replace(/\+/g, '-')
-      .replace(/\//g, '_')
-      .replace(/=/g, '');
   }
 
   /**
