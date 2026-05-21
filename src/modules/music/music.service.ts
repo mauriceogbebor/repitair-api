@@ -232,10 +232,20 @@ export class MusicService {
   }
 
   /**
+   * Extract Apple Music storefront (country code) from URL.
+   * Falls back to "us" if not found.
+   */
+  private extractAppleMusicStorefront(url: string): string {
+    // Format: https://music.apple.com/{storefront}/album/...
+    const match = url.match(/music\.apple\.com\/([a-z]{2})\//);
+    return match ? match[1] : 'us';
+  }
+
+  /**
    * Extract Apple Music track ID from URL
    */
   private extractAppleMusicTrackId(url: string): string | null {
-    // Format: https://music.apple.com/us/album/song-name/ALBUM_ID?i=TRACK_ID
+    // Format: https://music.apple.com/ng/album/song-name/ALBUM_ID?i=TRACK_ID
     const match = url.match(/[?&]i=([0-9]+)/);
     return match ? match[1] : null;
   }
@@ -244,7 +254,7 @@ export class MusicService {
    * Extract Apple Music album ID from URL (no ?i= track param)
    */
   private extractAppleMusicAlbumId(url: string): string | null {
-    // Format: https://music.apple.com/us/album/album-name/ALBUM_ID (without ?i=)
+    // Format: https://music.apple.com/ng/album/album-name/ALBUM_ID (without ?i=)
     if (url.includes('?i=')) return null; // has track ID — it's a single track
     const match = url.match(/music\.apple\.com\/[a-z]{2}\/album\/[^/]+\/(\d+)/);
     return match ? match[1] : null;
@@ -267,7 +277,8 @@ export class MusicService {
 
     if (isAppleMusic) {
       const albumId = this.extractAppleMusicAlbumId(link);
-      if (albumId) return this.listAppleMusicAlbum(albumId);
+      const storefront = this.extractAppleMusicStorefront(link);
+      if (albumId) return this.listAppleMusicAlbum(albumId, storefront);
     }
 
     return null;
@@ -339,13 +350,13 @@ export class MusicService {
     }
   }
 
-  private async listAppleMusicAlbum(albumId: string): Promise<{ type: 'album'; name: string; tracks: ParsedTrack[] } | null> {
+  private async listAppleMusicAlbum(albumId: string, storefront = 'us'): Promise<{ type: 'album'; name: string; tracks: ParsedTrack[] } | null> {
     const token = this.generateAppleMusicJwt();
     if (!token) return null;
 
     try {
       const response = await fetch(
-        `https://api.music.apple.com/v1/catalog/us/albums/${albumId}`,
+        `https://api.music.apple.com/v1/catalog/${storefront}/albums/${albumId}`,
         { headers: { 'Authorization': `Bearer ${token}` } },
       );
       if (!response.ok) return null;
@@ -376,7 +387,7 @@ export class MusicService {
           title: t.attributes!.name,
           artist: t.attributes!.artistName,
           albumArt,
-          sourceLink: `https://music.apple.com/us/song/${t.id}`,
+          sourceLink: `https://music.apple.com/${storefront}/song/${t.id}`,
           durationMs: t.attributes!.durationInMillis,
         }));
 
@@ -438,7 +449,7 @@ export class MusicService {
   /**
    * Look up an Apple Music track by ID
    */
-  private async lookupAppleMusicTrack(trackId: string): Promise<ParsedTrack | null> {
+  private async lookupAppleMusicTrack(trackId: string, storefront = 'us'): Promise<ParsedTrack | null> {
     const token = this.generateAppleMusicJwt();
     if (!token) {
       return null;
@@ -446,7 +457,7 @@ export class MusicService {
 
     try {
       const response = await fetch(
-        `https://api.music.apple.com/v1/catalog/us/songs/${trackId}`,
+        `https://api.music.apple.com/v1/catalog/${storefront}/songs/${trackId}`,
         {
           headers: {
             'Authorization': `Bearer ${token}`,
@@ -472,7 +483,7 @@ export class MusicService {
         title: song.attributes.name,
         artist: song.attributes.artistName,
         albumArt: song.attributes.artwork?.url,
-        sourceLink: `https://music.apple.com/us/song/${trackId}`,
+        sourceLink: `https://music.apple.com/${storefront}/song/${trackId}`,
         durationMs: song.attributes.durationInMillis,
       };
     } catch (error) {
@@ -516,8 +527,9 @@ export class MusicService {
       }
     } else if (isAppleMusic) {
       const trackId = this.extractAppleMusicTrackId(link);
+      const storefront = this.extractAppleMusicStorefront(link);
       if (trackId) {
-        result = await this.lookupAppleMusicTrack(trackId);
+        result = await this.lookupAppleMusicTrack(trackId, storefront);
       }
     }
 
