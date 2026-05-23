@@ -79,6 +79,24 @@ export class AuthController {
   }
 
   /**
+   * Send a verification code to the current user's email.
+   */
+  @Post("send-verify-email")
+  @UseGuards(JwtAuthGuard)
+  sendVerifyEmail(@CurrentUser() user: CurrentUserPayload) {
+    return this.authService.sendEmailVerification(user.sub, user.email);
+  }
+
+  /**
+   * Verify the email verification code.
+   */
+  @Post("verify-email")
+  @UseGuards(JwtAuthGuard)
+  verifyEmail(@CurrentUser() user: CurrentUserPayload, @Body() body: { code: string }) {
+    return this.authService.verifyEmail(user.sub, body.code);
+  }
+
+  /**
    * Initiate Spotify OAuth flow.
    * Returns the Spotify authorization URL that the mobile app should open in a browser.
    * Requires the user to be logged in (JwtAuthGuard).
@@ -285,7 +303,7 @@ export class AuthController {
     @Query("error") error?: string,
     @Res() res?: Response,
   ) {
-    if (error || !state) {
+    if (error || !state || !userToken) {
       const redirectUrl = this.buildAppleMusicAppRedirect(
         "error",
         "Could not connect Apple Music. Please try again.",
@@ -294,7 +312,7 @@ export class AuthController {
     }
 
     try {
-      await this.authService.handleAppleMusicCallback(state);
+      await this.authService.handleAppleMusicCallback(state, userToken);
       const redirectUrl = this.buildAppleMusicAppRedirect("success");
       return res!.redirect(redirectUrl);
     } catch (err) {

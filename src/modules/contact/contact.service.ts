@@ -1,6 +1,9 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { InjectRepository } from "@nestjs/typeorm";
+import { Repository } from "typeorm";
 
+import { ContactSubmission } from "../../entities";
 import { MailService } from "../../common/services/mail.service";
 import { ContactDto } from "./dto/contact.dto";
 
@@ -19,11 +22,23 @@ export class ContactService {
   private readonly deliveryTimeoutMs = 5000;
 
   constructor(
+    @InjectRepository(ContactSubmission)
+    private readonly submissionsRepo: Repository<ContactSubmission>,
     private readonly mailService: MailService,
     private readonly config: ConfigService,
   ) {}
 
-  async submit(dto: ContactDto): Promise<void> {
+  async submit(dto: ContactDto): Promise<ContactSubmission> {
+    // Persist to database first so submissions are never lost
+    const submission = this.submissionsRepo.create({
+      name: dto.name,
+      email: dto.email,
+      subject: dto.subject,
+      message: dto.message,
+      emailSent: false,
+    });
+    const saved = await this.submissionsRepo.save(submission);
+
     const supportAddress = this.config.get<string>("SUPPORT_EMAIL") || "support@repitair.app";
 
     const safeName = escapeHtml(dto.name);
@@ -59,11 +74,15 @@ export class ContactService {
         }),
       ]);
       this.logger.log(`Contact submission forwarded to ${supportAddress} from ${dto.email}`);
+      // Mark as sent
+      saved.emailSent = true;
+      await this.submissionsRepo.save(saved);
     } catch (err) {
       // Don't leak the failure to the user — they filled out a form, the message
       // not arriving is our problem, not theirs. Surface it to ops via logs.
       this.logger.error(`Failed to forward contact form from ${dto.email}: ${(err as Error).message}`);
-      return;
     }
+
+    return saved;
   }
 }

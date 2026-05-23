@@ -3,11 +3,11 @@ import { TypeOrmModule } from "@nestjs/typeorm";
 
 import { RepitsController } from "./repits.controller";
 import { RepitsService } from "./repits.service";
-import { Repit } from "../../entities";
+import { Repit, Template } from "../../entities";
 import { UploadsModule } from "../uploads/uploads.module";
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Repit]), UploadsModule],
+  imports: [TypeOrmModule.forFeature([Repit, Template]), UploadsModule],
   controllers: [RepitsController],
   providers: [RepitsService],
 })

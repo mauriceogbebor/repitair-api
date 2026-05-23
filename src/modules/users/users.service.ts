@@ -5,6 +5,7 @@ import * as bcrypt from "bcryptjs";
 import { randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 
 import { User } from "../../entities";
+import { UploadsService } from "../uploads/uploads.service";
 
 export type { User as UserRecord };
 
@@ -20,6 +21,7 @@ export class UsersService {
   constructor(
     @InjectRepository(User)
     private readonly usersRepo: Repository<User>,
+    private readonly uploadsService: UploadsService,
   ) {}
 
   async findByEmail(email: string): Promise<User | null> {
@@ -173,7 +175,10 @@ export class UsersService {
     if (data.fullName !== undefined) user.fullName = data.fullName;
     if (data.email !== undefined) user.email = data.email.toLowerCase();
     if (data.country !== undefined) user.country = data.country;
-    if (data.avatarUrl !== undefined) user.avatarUrl = data.avatarUrl;
+    if (data.avatarUrl !== undefined) {
+      // Treat empty string as "remove avatar"
+      user.avatarUrl = data.avatarUrl.trim() || undefined;
+    }
 
     try {
       return await this.usersRepo.save(user);
@@ -209,16 +214,108 @@ export class UsersService {
     await this.usersRepo.save(user);
   }
 
-  async connectAppleMusic(userId: string): Promise<void> {
+  async connectAppleMusic(userId: string, userToken: string): Promise<void> {
     const user = await this.findById(userId);
     if (!user) {
       throw new NotFoundException(`User with ID ${userId} not found`);
     }
 
+    user.appleMusicUserToken = userToken;
     if (!user.connectedPlatforms.includes("apple-music")) {
       user.connectedPlatforms = [...user.connectedPlatforms, "apple-music"];
     }
 
     await this.usersRepo.save(user);
+  }
+
+  /**
+   * Generate and save an email verification code for a user.
+   */
+  async setEmailVerifyCode(userId: string): Promise<string | null> {
+    const user = await this.findById(userId);
+    if (!user) return null;
+
+    const code = String(randomInt(100000, 1000000));
+    user.emailVerifyCode = code;
+    user.emailVerifyCodeExpiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 min
+    await this.usersRepo.save(user);
+    return code;
+  }
+
+  /**
+   * Verify the email verification code and mark the user as verified.
+   */
+  async verifyEmail(userId: string, code: string): Promise<boolean> {
+    const user = await this.findById(userId);
+    if (!user || !user.emailVerifyCode || !user.emailVerifyCodeExpiresAt) return false;
+
+    if (new Date(user.emailVerifyCodeExpiresAt) < new Date()) return false;
+    if (user.emailVerifyCode !== code) return false;
+
+    user.emailVerified = true;
+    user.emailVerifyCode = undefined;
+    user.emailVerifyCodeExpiresAt = undefined;
+    await this.usersRepo.save(user);
+    return true;
+  }
+
+  /**
+   * Disconnect a music platform from the user's account.
+   * Removes the stored tokens and updates the connectedPlatforms array.
+   */
+  async disconnectPlatform(userId: string, platform: string): Promise<User> {
+    const user = await this.findById(userId);
+    if (!user) {
+      throw new NotFoundException(`User with ID ${userId} not found`);
+    }
+
+    if (platform === "spotify") {
+      user.spotifyRefreshToken = undefined;
+    } else if (platform === "apple-music") {
+      user.appleMusicUserToken = undefined;
+    }
+
+    user.connectedPlatforms = user.connectedPlatforms.filter((p) => p !== platform);
+    return this.usersRepo.save(user);
+  }
+
+  /**
+   * Permanently delete a user account and all associated data.
+   * Cascading deletes handle repits and push tokens via DB constraints.
+   * Uploaded files (avatar, repit photos) are cleaned up best-effort.
+   */
+  async deleteUser(userId: string): Promise<boolean> {
+    const user = await this.usersRepo.findOne({
+      where: { id: userId },
+      relations: ["repits"],
+    });
+    if (!user) return false;
+
+    // Best-effort cleanup of uploaded files
+    if (user.avatarUrl) {
+      this.tryDeleteUpload(user.avatarUrl);
+    }
+    for (const repit of user.repits ?? []) {
+      if (repit.backgroundPhotoUrl) {
+        this.tryDeleteUpload(repit.backgroundPhotoUrl);
+      }
+    }
+
+    // CASCADE on the FK handles repits and push tokens
+    const result = await this.usersRepo.delete({ id: userId });
+    return (result.affected ?? 0) > 0;
+  }
+
+  /**
+   * Best-effort deletion of an uploaded file given its public URL.
+   */
+  private tryDeleteUpload(url: string): void {
+    try {
+      const key = url.split("/").pop();
+      if (!key) return;
+      void this.uploadsService.deleteFile(key).catch(() => {});
+    } catch {
+      // URL parse error — ignore.
+    }
   }
 }

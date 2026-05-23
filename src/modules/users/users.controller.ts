@@ -1,5 +1,5 @@
-import { BadRequestException, Body, Controller, Get, Patch, Post, UnauthorizedException, UseGuards } from "@nestjs/common";
-import { IsEmail, IsOptional, IsString, MinLength } from "class-validator";
+import { BadRequestException, Body, Controller, Delete, Get, Patch, Post, UnauthorizedException, UseGuards } from "@nestjs/common";
+import { IsEmail, IsEnum, IsOptional, IsString, MinLength } from "class-validator";
 
 import { CurrentUser, CurrentUserPayload } from "../../common/decorators/current-user.decorator";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
@@ -30,6 +30,21 @@ class ChangePasswordDto {
   @IsString()
   @MinLength(8)
   newPassword!: string;
+}
+
+enum ConnectablePlatform {
+  SPOTIFY = "spotify",
+  APPLE_MUSIC = "apple-music",
+}
+
+class ConnectPlatformDto {
+  @IsEnum(ConnectablePlatform)
+  platform!: string;
+}
+
+class DisconnectPlatformDto {
+  @IsEnum(ConnectablePlatform)
+  platform!: string;
 }
 
 @Controller("me")
@@ -87,4 +102,39 @@ export class UsersController {
     return { message: "Password updated successfully" };
   }
 
+  @Post("connect-platform")
+  async connectPlatform(@CurrentUser() user: CurrentUserPayload, @Body() body: ConnectPlatformDto) {
+    const foundUser = await this.usersService.findById(user.sub);
+    if (!foundUser) {
+      throw new UnauthorizedException("User not found");
+    }
+
+    // This endpoint marks the platform as connected client-side.
+    // The actual OAuth token exchange happens via the auth/spotify/* or auth/apple-music/* routes.
+    // This is a convenience endpoint for the mobile app to confirm the connection.
+    return {
+      id: foundUser.id,
+      connectedPlatforms: foundUser.connectedPlatforms,
+    };
+  }
+
+  @Post("disconnect-platform")
+  async disconnectPlatform(@CurrentUser() user: CurrentUserPayload, @Body() body: DisconnectPlatformDto) {
+    const updatedUser = await this.usersService.disconnectPlatform(user.sub, body.platform);
+
+    return {
+      id: updatedUser.id,
+      connectedPlatforms: updatedUser.connectedPlatforms,
+    };
+  }
+
+  @Delete()
+  async deleteAccount(@CurrentUser() user: CurrentUserPayload) {
+    const deleted = await this.usersService.deleteUser(user.sub);
+    if (!deleted) {
+      throw new UnauthorizedException("User not found");
+    }
+
+    return { ok: true, message: "Account deleted successfully" };
+  }
 }

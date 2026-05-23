@@ -1,8 +1,8 @@
-import { Injectable } from "@nestjs/common";
+import { BadRequestException, Injectable } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 
-import { Repit } from "../../entities";
+import { Repit, Template } from "../../entities";
 import { UploadsService } from "../uploads/uploads.service";
 import { CreateRepitDto } from "./dto/create-repit.dto";
 import { UpdateRepitDto } from "./dto/update-repit.dto";
@@ -20,6 +20,8 @@ export class RepitsService {
   constructor(
     @InjectRepository(Repit)
     private readonly repitsRepo: Repository<Repit>,
+    @InjectRepository(Template)
+    private readonly templatesRepo: Repository<Template>,
     private readonly uploadsService: UploadsService,
   ) {}
 
@@ -27,18 +29,25 @@ export class RepitsService {
     return this.repitsRepo.findOne({ where: { id, userId } });
   }
 
-  listRepits(userId: string, options: ListRepitsOptions = {}) {
+  async listRepits(userId: string, options: ListRepitsOptions = {}) {
     const take = Math.min(options.limit ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
     const skip = Math.max(options.offset ?? 0, 0);
-    return this.repitsRepo.find({
+    const [data, total] = await this.repitsRepo.findAndCount({
       where: { userId },
       order: { createdAt: "DESC" },
       take,
       skip,
     });
+    return { data, total, limit: take, offset: skip };
   }
 
   async createRepit(userId: string, body: CreateRepitDto) {
+    // Validate templateId exists
+    const template = await this.templatesRepo.findOne({ where: { id: body.templateId } });
+    if (!template) {
+      throw new BadRequestException(`Template "${body.templateId}" does not exist`);
+    }
+
     const repit = this.repitsRepo.create({
       userId,
       title: body.songTitle ?? "Untitled Repitair",
@@ -46,6 +55,8 @@ export class RepitsService {
       platform: body.platform ?? "spotify",
       templateId: body.templateId,
       songLink: body.songLink ?? "",
+      albumArt: body.albumArt,
+      durationMs: body.durationMs,
       status: "draft",
       backgroundPhotoUrl: body.backgroundPhotoUrl,
     });

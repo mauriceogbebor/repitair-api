@@ -1,5 +1,6 @@
-import { Body, Controller, Get, Post, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Post, Query, UseGuards } from "@nestjs/common";
 
+import { CurrentUser, CurrentUserPayload } from "../../common/decorators/current-user.decorator";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { ParseLinkDto } from "./dto/parse-link.dto";
 import { MusicService } from "./music.service";
@@ -24,8 +25,13 @@ export class MusicController {
     return { type: 'track', ...track };
   }
 
+  @Get("search")
+  async search(@Query("q") query: string, @CurrentUser() user: CurrentUserPayload) {
+    return this.musicService.search(query);
+  }
+
   @Get("recent")
-  getRecentSongs() {
-    return this.musicService.getRecentSongs();
+  getRecentSongs(@CurrentUser() user: CurrentUserPayload) {
+    return this.musicService.getRecentSongs(user.sub);
   }
 }

@@ -2,7 +2,7 @@ import { Test, TestingModule } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { RepitsService } from "./repits.service";
-import { Repit } from "../../entities";
+import { Repit, Template } from "../../entities";
 import { UploadsService } from "../uploads/uploads.service";
 
 describe("RepitsService", () => {
@@ -26,10 +26,15 @@ describe("RepitsService", () => {
   const mockRepository = {
     find: jest.fn(),
     findOne: jest.fn(),
+    findAndCount: jest.fn(),
     create: jest.fn(),
     save: jest.fn(),
     merge: jest.fn(),
     delete: jest.fn(),
+  };
+
+  const mockTemplatesRepo = {
+    findOne: jest.fn(),
   };
 
   const mockUploadsService = {
@@ -46,6 +51,10 @@ describe("RepitsService", () => {
           useValue: mockRepository,
         },
         {
+          provide: getRepositoryToken(Template),
+          useValue: mockTemplatesRepo,
+        },
+        {
           provide: UploadsService,
           useValue: mockUploadsService,
         },
@@ -59,27 +68,31 @@ describe("RepitsService", () => {
   });
 
   describe("listRepits", () => {
-    it("should return repits for given userId", async () => {
-      mockRepository.find.mockResolvedValue([mockRepit]);
+    it("should return paginated repits for given userId", async () => {
+      mockRepository.findAndCount.mockResolvedValue([[mockRepit], 1]);
 
       const result = await service.listRepits("user_1");
 
-      expect(repository.find).toHaveBeenCalledWith({
+      expect(repository.findAndCount).toHaveBeenCalledWith({
         where: { userId: "user_1" },
         order: { createdAt: "DESC" },
         take: 50,
         skip: 0,
       });
-      expect(result).toHaveLength(1);
-      expect(result[0]).toEqual(mockRepit);
+      expect(result.data).toHaveLength(1);
+      expect(result.data[0]).toEqual(mockRepit);
+      expect(result.total).toBe(1);
+      expect(result.limit).toBe(50);
+      expect(result.offset).toBe(0);
     });
 
-    it("should return empty array for userId with no repits", async () => {
-      mockRepository.find.mockResolvedValue([]);
+    it("should return empty data for userId with no repits", async () => {
+      mockRepository.findAndCount.mockResolvedValue([[], 0]);
 
       const result = await service.listRepits("user_2");
 
-      expect(result).toEqual([]);
+      expect(result.data).toEqual([]);
+      expect(result.total).toBe(0);
     });
   });
 
@@ -102,21 +115,27 @@ describe("RepitsService", () => {
         backgroundPhotoUrl: createDto.backgroundPhotoUrl,
       };
 
+      mockTemplatesRepo.findOne.mockResolvedValue({ id: "template_1" });
       mockRepository.create.mockReturnValue(newRepit);
       mockRepository.save.mockResolvedValue(newRepit);
 
       const result = await service.createRepit("user_1", createDto);
 
-      expect(repository.create).toHaveBeenCalledWith({
-        userId: "user_1",
-        title: createDto.songTitle,
-        artist: createDto.artistName,
-        platform: "spotify",
-        templateId: createDto.templateId,
-        songLink: createDto.songLink,
-        status: "draft",
-        backgroundPhotoUrl: createDto.backgroundPhotoUrl,
+      expect(mockTemplatesRepo.findOne).toHaveBeenCalledWith({
+        where: { id: "template_1" },
       });
+      expect(repository.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: "user_1",
+          title: createDto.songTitle,
+          artist: createDto.artistName,
+          platform: "spotify",
+          templateId: createDto.templateId,
+          songLink: createDto.songLink,
+          status: "draft",
+          backgroundPhotoUrl: createDto.backgroundPhotoUrl,
+        }),
+      );
       expect(repository.save).toHaveBeenCalled();
       expect(result).toEqual(newRepit);
     });
@@ -130,6 +149,7 @@ describe("RepitsService", () => {
 
       const newRepit = { ...mockRepit, title: "Untitled Repitair" };
 
+      mockTemplatesRepo.findOne.mockResolvedValue({ id: "template_2" });
       mockRepository.create.mockReturnValue(newRepit);
       mockRepository.save.mockResolvedValue(newRepit);
 

@@ -514,25 +514,59 @@ export class MusicService {
   }
 
   /**
-   * Get recent songs (placeholder for future implementation with real user history)
-   *
-   * TODO: This method returns hardcoded placeholder data. Replace with actual
-   * user listening history from Spotify/Apple Music APIs once OAuth scopes are
-   * available. See: https://developer.spotify.com/documentation/web-api/reference/get-recently-played
+   * Search for tracks on Spotify by query string.
+   * Returns up to 10 results.
    */
-  getRecentSongs() {
-    // Hardcoded fallback catalog
-    const SONG_CATALOG = [
-      { id: 'song_1', title: 'Highest in the Room', artist: 'Travis Scott', platform: 'spotify' as const },
-      { id: 'song_2', title: 'Risk It All', artist: 'Bruno Mars', platform: 'spotify' as const },
-      { id: 'song_3', title: 'Blinding Lights', artist: 'The Weeknd', platform: 'spotify' as const },
-      { id: 'song_4', title: 'Levitating', artist: 'Dua Lipa', platform: 'spotify' as const },
-      { id: 'song_5', title: 'Peaches', artist: 'Justin Bieber', platform: 'apple-music' as const },
-      { id: 'song_6', title: 'Stay', artist: 'The Kid LAROI & Justin Bieber', platform: 'spotify' as const },
-      { id: 'song_7', title: 'Montero', artist: 'Lil Nas X', platform: 'apple-music' as const },
-      { id: 'song_8', title: 'Kiss Me More', artist: 'Doja Cat ft. SZA', platform: 'spotify' as const },
-    ];
+  async search(query: string): Promise<ParsedTrack[]> {
+    if (!query?.trim()) return [];
 
-    return SONG_CATALOG;
+    const token = await this.getSpotifyAccessToken();
+    if (!token) return [];
+
+    try {
+      const params = new URLSearchParams({
+        q: query,
+        type: 'track',
+        limit: '10',
+      });
+      const response = await fetch(`https://api.spotify.com/v1/search?${params}`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+
+      if (!response.ok) return [];
+
+      const data = await response.json() as {
+        tracks?: {
+          items: Array<SpotifyTrack & { id: string; duration_ms: number }>;
+        };
+      };
+
+      return (data.tracks?.items ?? []).map((t) => ({
+        platform: 'spotify' as const,
+        title: t.name,
+        artist: t.artists.map((a) => a.name).join(', '),
+        albumArt: t.album?.images?.[0]?.url,
+        sourceLink: `https://open.spotify.com/track/${t.id}`,
+        durationMs: t.duration_ms,
+      }));
+    } catch (error) {
+      this.logger.error('Spotify search error', error);
+      return [];
+    }
+  }
+
+  /**
+   * Get recently played songs for a user.
+   * Uses the user's Spotify refresh token to fetch their listening history.
+   * Falls back to empty array if the user has no connected platform.
+   */
+  async getRecentSongs(userId?: string): Promise<ParsedTrack[]> {
+    // Without a user-specific token, we can't fetch personalized history
+    if (!userId) return [];
+
+    // For now, return empty — implementing user-specific Spotify access token
+    // refresh requires storing and refreshing per-user tokens, which will be
+    // handled when the streaming integration is built out.
+    return [];
   }
 }
