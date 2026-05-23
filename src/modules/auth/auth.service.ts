@@ -286,7 +286,61 @@ export class AuthService {
     }
 
     const token = this.signToken(userId, email);
-    return { token };
+
+    // Include user data so the client can update its local state
+    const user = await this.usersService.findById(userId);
+    return {
+      token,
+      user: user
+        ? {
+            id: user.id,
+            fullName: user.fullName,
+            email: user.email,
+            country: user.country,
+            connectedPlatforms: user.connectedPlatforms,
+            avatarUrl: user.avatarUrl ?? null,
+          }
+        : undefined,
+    };
+  }
+
+  /**
+   * Send an email verification code to the user.
+   */
+  async sendEmailVerification(userId: string, email: string) {
+    const code = await this.usersService.setEmailVerifyCode(userId);
+    if (code) {
+      const user = await this.usersService.findById(userId);
+      try {
+        await this.mailService.sendRaw({
+          to: email,
+          subject: "Verify your Repitair email",
+          html: `
+            <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 400px; margin: 0 auto; padding: 24px;">
+              <h2 style="color: #111;">Verify your email</h2>
+              <p>Hi ${user?.fullName ?? "there"}, use this code to verify your email address:</p>
+              <div style="background: #f0f0f0; border-radius: 8px; padding: 16px; text-align: center; font-size: 32px; font-weight: 700; letter-spacing: 4px;">${code}</div>
+              <p style="color: #888; font-size: 13px; margin-top: 16px;">This code expires in 30 minutes.</p>
+            </div>
+          `,
+        });
+      } catch (err) {
+        this.logger.error(`Failed to send verification email to ${email}: ${(err as Error).message}`);
+      }
+    }
+
+    return { message: "If that email exists, a verification code has been sent" };
+  }
+
+  /**
+   * Verify the email verification code.
+   */
+  async verifyEmail(userId: string, code: string) {
+    const success = await this.usersService.verifyEmail(userId, code);
+    if (!success) {
+      throw new BadRequestException("Invalid or expired verification code");
+    }
+    return { verified: true };
   }
 
   private signToken(userId: string, email: string): string {
@@ -344,9 +398,7 @@ export class AuthService {
 
     const state = this.signOAuthState(userId);
 
-    // Determine the base URL for the authorization page
     const baseUrl = this.configService.get<string>("API_BASE_URL") || "http://localhost:3000";
-
     const params = new URLSearchParams({ state });
     return `${baseUrl}/auth/apple-music/authorize?${params.toString()}`;
   }
@@ -391,12 +443,18 @@ export class AuthService {
    * Handle Apple Music authorization callback.
    * Marks the user as connected to Apple Music.
    */
-  async handleAppleMusicCallback(state: string): Promise<{ success: boolean; message: string }> {
-    // Verify HMAC-signed state and extract user ID
+  async handleAppleMusicCallback(
+    state: string,
+    userToken: string,
+  ): Promise<{ success: boolean; message: string }> {
     const userId = this.verifyOAuthState(state);
 
+    if (!userToken?.trim()) {
+      throw new BadRequestException("Apple Music user token is missing");
+    }
+
     try {
-      await this.usersService.connectAppleMusic(userId);
+      await this.usersService.connectAppleMusic(userId, userToken);
     } catch (err) {
       if (err instanceof NotFoundException) {
         throw new BadRequestException("Invalid state parameter");

@@ -4,6 +4,7 @@ import { getRepositoryToken } from "@nestjs/typeorm";
 import { Repository, QueryFailedError } from "typeorm";
 import * as bcrypt from "bcryptjs";
 import { UsersService } from "./users.service";
+import { UploadsService } from "../uploads/uploads.service";
 import { User } from "../../entities";
 
 describe("UsersService", () => {
@@ -23,6 +24,13 @@ describe("UsersService", () => {
     resetCodeAttempts: 0,
     repits: [],
     pushTokens: [],
+    emailVerified: false,
+    emailVerifyCode: undefined,
+    emailVerifyCodeExpiresAt: undefined,
+  };
+
+  const mockUploadsService = {
+    deleteFile: jest.fn().mockResolvedValue(undefined),
   };
 
   const mockRepository = {
@@ -52,6 +60,10 @@ describe("UsersService", () => {
         {
           provide: getRepositoryToken(User),
           useValue: mockRepository,
+        },
+        {
+          provide: UploadsService,
+          useValue: mockUploadsService,
         },
       ],
     }).compile();

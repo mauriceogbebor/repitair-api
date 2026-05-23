@@ -53,6 +53,19 @@ export class User {
   @OneToMany(() => PushToken, (token) => token.user)
   pushTokens!: PushToken[];
 
+  /** Whether the user has verified their email address */
+  @Column({ default: false })
+  emailVerified!: boolean;
+
+  @Column({ nullable: true })
+  emailVerifyCode?: string;
+
+  @Column({ type: "timestamp", nullable: true })
+  emailVerifyCodeExpiresAt?: Date;
+
   @Column({ nullable: true, select: false })
   spotifyRefreshToken?: string;
+
+  @Column({ nullable: true, select: false })
+  appleMusicUserToken?: string;
 }

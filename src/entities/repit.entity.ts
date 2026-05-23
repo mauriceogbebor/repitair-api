@@ -1,4 +1,4 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, ManyToOne, JoinColumn } from "typeorm";
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, ManyToOne, JoinColumn } from "typeorm";
 import { User } from "./user.entity";
 
 @Entity("repits")
@@ -32,8 +32,17 @@ export class Repit {
   songLink!: string;
 
   @Column({ nullable: true })
+  albumArt?: string;
+
+  @Column({ type: "int", nullable: true })
+  durationMs?: number;
+
+  @Column({ nullable: true })
   backgroundPhotoUrl?: string;
 
   @CreateDateColumn()
   createdAt!: Date;
+
+  @UpdateDateColumn()
+  updatedAt!: Date;
 }

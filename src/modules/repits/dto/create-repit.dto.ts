@@ -26,6 +26,13 @@ export class CreateRepitDto {
   platform?: string;
 
   @IsOptional()
+  @IsUrl({}, { message: "albumArt must be a valid URL" })
+  albumArt?: string;
+
+  @IsOptional()
+  durationMs?: number;
+
+  @IsOptional()
   @IsUrl({}, { message: "backgroundPhotoUrl must be a valid URL" })
   backgroundPhotoUrl?: string;
 }

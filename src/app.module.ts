@@ -17,10 +17,11 @@ import { RateLimitMiddleware } from "./common/middleware/rate-limit.middleware";
 import { AuthRateLimitMiddleware } from "./common/middleware/auth-rate-limit.middleware";
 import { VerifyCodeRateLimitMiddleware } from "./common/middleware/verify-code-rate-limit.middleware";
 import { ContactRateLimitMiddleware } from "./common/middleware/contact-rate-limit.middleware";
+import { UploadRateLimitMiddleware } from "./common/middleware/upload-rate-limit.middleware";
 import { MailModule } from "./common/services/mail.module";
 import { TokenBlacklistModule } from "./common/services/token-blacklist.module";
 import { JwtAuthModule } from "./common/modules/jwt-auth.module";
-import { User, Repit, PushToken, Template } from "./entities";
+import { User, Repit, PushToken, Template, ContactSubmission } from "./entities";
 
 @Module({
   imports: [
@@ -38,7 +39,7 @@ import { User, Repit, PushToken, Template } from "./entities";
         return {
           type: "postgres" as const,
           url: config.get<string>("DATABASE_URL") || "postgresql://repitair:repitair@localhost:5432/repitair",
-          entities: [User, Repit, PushToken, Template],
+          entities: [User, Repit, PushToken, Template, ContactSubmission],
           migrations: isProduction ? ["dist/migrations/*.js"] : ["src/migrations/*.ts"],
           synchronize: !isProduction,
           migrationsRun: false,
@@ -87,5 +88,13 @@ export class AppModule implements NestModule {
     consumer
       .apply(ContactRateLimitMiddleware)
       .forRoutes({ path: "contact", method: RequestMethod.POST });
+
+    // Stricter limit on file uploads and image processing (expensive operations).
+    consumer
+      .apply(UploadRateLimitMiddleware)
+      .forRoutes(
+        { path: "uploads/*", method: RequestMethod.POST },
+        { path: "images/*", method: RequestMethod.POST },
+      );
   }
 }

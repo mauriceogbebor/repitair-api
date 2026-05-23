@@ -16,7 +16,11 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       const exceptionResponse = exception.getResponse();
       message = typeof exceptionResponse === "string"
         ? exceptionResponse
-        : (exceptionResponse as any).message ?? message;
+        : typeof exceptionResponse === "object" &&
+            exceptionResponse !== null &&
+            "message" in exceptionResponse
+          ? (exceptionResponse as { message: string }).message
+          : message;
     }
 
     // Log error details server-side (never expose to client)
