@@ -1,31 +1,41 @@
-import { Catch, ExceptionFilter, ArgumentsHost, HttpException, HttpStatus } from "@nestjs/common";
+import { Catch, ExceptionFilter, ArgumentsHost, HttpException, HttpStatus, Logger } from "@nestjs/common";
 import { Request, Response } from "express";
 
 @Catch()
 export class GlobalExceptionFilter implements ExceptionFilter {
+  private readonly logger = new Logger(GlobalExceptionFilter.name);
+
   catch(exception: unknown, host: ArgumentsHost) {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
     const request = ctx.getRequest<Request>();
 
     let status = HttpStatus.INTERNAL_SERVER_ERROR;
-    let message = "Internal server error";
+    let message: string | string[] = "Internal server error";
 
     if (exception instanceof HttpException) {
       status = exception.getStatus();
       const exceptionResponse = exception.getResponse();
-      message = typeof exceptionResponse === "string"
-        ? exceptionResponse
-        : typeof exceptionResponse === "object" &&
-            exceptionResponse !== null &&
-            "message" in exceptionResponse
-          ? (exceptionResponse as { message: string }).message
-          : message;
+      if (typeof exceptionResponse === "string") {
+        message = exceptionResponse;
+      } else if (
+        typeof exceptionResponse === "object" &&
+        exceptionResponse !== null &&
+        "message" in exceptionResponse
+      ) {
+        const raw = (exceptionResponse as { message: string | string[] }).message;
+        // ValidationPipe returns an array of error strings — join them for
+        // a single human-readable message.
+        message = Array.isArray(raw) ? raw.join(", ") : raw;
+      }
     }
 
     // Log error details server-side (never expose to client)
     if (status >= 500) {
-      console.error(`[${request.method} ${request.url}]`, exception);
+      this.logger.error(
+        `[${request.method} ${request.url}] ${exception instanceof Error ? exception.message : String(exception)}`,
+        exception instanceof Error ? exception.stack : undefined,
+      );
       // Never send internal error details to the client
       message = "Internal server error";
     }
