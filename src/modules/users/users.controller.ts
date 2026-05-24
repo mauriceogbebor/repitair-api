@@ -109,13 +109,11 @@ export class UsersController {
       throw new UnauthorizedException("User not found");
     }
 
-    // This endpoint marks the platform as connected client-side.
-    // The actual OAuth token exchange happens via the auth/spotify/* or auth/apple-music/* routes.
-    // This is a convenience endpoint for the mobile app to confirm the connection.
-    return {
-      id: foundUser.id,
-      connectedPlatforms: foundUser.connectedPlatforms,
-    };
+    throw new BadRequestException(
+      body.platform === ConnectablePlatform.SPOTIFY
+        ? "Use the Spotify OAuth flow to connect Spotify."
+        : "Use the Apple Music authorization flow to connect Apple Music.",
+    );
   }
 
   @Post("disconnect-platform")
