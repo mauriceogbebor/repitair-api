@@ -1,6 +1,10 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { InjectRepository } from '@nestjs/typeorm';
 import * as jwt from 'jsonwebtoken';
+import { Repository } from 'typeorm';
+
+import { User } from '../../entities';
 
 type RedisClient = any; // Lazy-loaded
 
@@ -47,7 +51,11 @@ export class MusicService {
   /** In-memory fallback cache when Redis is unavailable */
   private readonly memCache = new Map<string, { data: ParsedTrack; expiresAt: number }>();
 
-  constructor(private configService: ConfigService) {
+  constructor(
+    private configService: ConfigService,
+    @InjectRepository(User)
+    private readonly usersRepo: Repository<User>,
+  ) {
     this.initializeRedis();
   }
 
@@ -136,6 +144,55 @@ export class MusicService {
       return this.spotifyAccessToken;
     } catch (error) {
       this.logger.error('Failed to get Spotify access token', error);
+      return null;
+    }
+  }
+
+  private async getUserSpotifyAccessToken(userId: string): Promise<string | null> {
+    const clientId = this.configService.get<string>('SPOTIFY_CLIENT_ID');
+    const clientSecret = this.configService.get<string>('SPOTIFY_CLIENT_SECRET');
+
+    if (!clientId || !clientSecret) {
+      this.logger.warn('Spotify credentials not configured');
+      return null;
+    }
+
+    const user = await this.usersRepo
+      .createQueryBuilder('user')
+      .addSelect('user.spotifyRefreshToken')
+      .where('user.id = :userId', { userId })
+      .getOne();
+
+    const refreshToken = user?.spotifyRefreshToken;
+    if (!refreshToken) {
+      return null;
+    }
+
+    try {
+      const auth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+      const body = new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+      });
+
+      const response = await fetch('https://accounts.spotify.com/api/token', {
+        method: 'POST',
+        headers: {
+          Authorization: `Basic ${auth}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: body.toString(),
+      });
+
+      if (!response.ok) {
+        this.logger.warn(`Spotify refresh token exchange failed for user ${userId}: ${response.status}`);
+        return null;
+      }
+
+      const data = await response.json() as { access_token?: string };
+      return data.access_token ?? null;
+    } catch (error) {
+      this.logger.error(`Failed to refresh Spotify access token for user ${userId}`, error);
       return null;
     }
   }
@@ -564,9 +621,39 @@ export class MusicService {
     // Without a user-specific token, we can't fetch personalized history
     if (!userId) return [];
 
-    // For now, return empty — implementing user-specific Spotify access token
-    // refresh requires storing and refreshing per-user tokens, which will be
-    // handled when the streaming integration is built out.
-    return [];
+    const token = await this.getUserSpotifyAccessToken(userId);
+    if (!token) return [];
+
+    try {
+      const response = await fetch(
+        'https://api.spotify.com/v1/me/player/recently-played?limit=10',
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      );
+
+      if (!response.ok) {
+        this.logger.warn(`Spotify recent songs request failed for user ${userId}: ${response.status}`);
+        return [];
+      }
+
+      const data = await response.json() as {
+        items?: Array<{
+          track: SpotifyTrack & { id: string; duration_ms?: number };
+        }>;
+      };
+
+      return (data.items ?? []).map(({ track }) => ({
+        platform: 'spotify' as const,
+        title: track.name,
+        artist: track.artists.map((a) => a.name).join(', '),
+        albumArt: track.album?.images?.[0]?.url,
+        sourceLink: `https://open.spotify.com/track/${track.id}`,
+        durationMs: track.duration_ms,
+      }));
+    } catch (error) {
+      this.logger.error(`Spotify recent songs fetch failed for user ${userId}`, error);
+      return [];
+    }
   }
 }

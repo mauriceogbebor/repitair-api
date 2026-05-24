@@ -32,11 +32,13 @@ export class NotificationsService {
     pushToken: string,
     platform: "ios" | "android"
   ): Promise<PushToken> {
-    // Remove any existing token for this user and platform
-    await this.tokensRepo.delete({
-      userId,
-      platform,
-    });
+    // Ensure a physical device token belongs to only one account at a time.
+    // This prevents shared devices from receiving another user's notifications.
+    await this.tokensRepo.delete({ pushToken });
+
+    // Also remove any prior token for this user+platform so they keep one active
+    // registration per platform even if Expo rotates the token.
+    await this.tokensRepo.delete({ userId, platform });
 
     const now = new Date();
     const token = this.tokensRepo.create({
@@ -54,6 +56,15 @@ export class NotificationsService {
     const result = await this.tokensRepo.delete({
       userId,
       platform,
+    });
+
+    return !!(result.affected && result.affected > 0);
+  }
+
+  async unregisterToken(userId: string, pushToken: string): Promise<boolean> {
+    const result = await this.tokensRepo.delete({
+      userId,
+      pushToken,
     });
 
     return !!(result.affected && result.affected > 0);

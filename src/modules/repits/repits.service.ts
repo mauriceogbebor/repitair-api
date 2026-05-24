@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
+import { QueryFailedError, Repository } from "typeorm";
 
 import { Repit, Template } from "../../entities";
 import { UploadsService } from "../uploads/uploads.service";
@@ -9,6 +9,16 @@ import { UpdateRepitDto } from "./dto/update-repit.dto";
 
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 100;
+const LEGACY_MISSING_REPIT_COLUMNS = ["albumArt", "durationMs", "updatedAt"];
+
+function isLegacyRepitSchemaError(err: unknown): boolean {
+  if (!(err instanceof QueryFailedError)) {
+    return false;
+  }
+
+  const message = String((err as QueryFailedError & { message?: string }).message ?? "");
+  return LEGACY_MISSING_REPIT_COLUMNS.some((column) => message.includes(column));
+}
 
 export type ListRepitsOptions = {
   limit?: number;
@@ -26,19 +36,33 @@ export class RepitsService {
   ) {}
 
   async getRepit(userId: string, id: string): Promise<Repit | null> {
-    return this.repitsRepo.findOne({ where: { id, userId } });
+    try {
+      return await this.repitsRepo.findOne({ where: { id, userId } });
+    } catch (err) {
+      if (isLegacyRepitSchemaError(err)) {
+        return this.getRepitLegacy(userId, id);
+      }
+      throw err;
+    }
   }
 
   async listRepits(userId: string, options: ListRepitsOptions = {}) {
     const take = Math.min(options.limit ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
     const skip = Math.max(options.offset ?? 0, 0);
-    const [data, total] = await this.repitsRepo.findAndCount({
-      where: { userId },
-      order: { createdAt: "DESC" },
-      take,
-      skip,
-    });
-    return { data, total, limit: take, offset: skip };
+    try {
+      const [data, total] = await this.repitsRepo.findAndCount({
+        where: { userId },
+        order: { createdAt: "DESC" },
+        take,
+        skip,
+      });
+      return { data, total, limit: take, offset: skip };
+    } catch (err) {
+      if (isLegacyRepitSchemaError(err)) {
+        return this.listRepitsLegacy(userId, take, skip);
+      }
+      throw err;
+    }
   }
 
   async createRepit(userId: string, body: CreateRepitDto) {
@@ -61,14 +85,29 @@ export class RepitsService {
       backgroundPhotoUrl: body.backgroundPhotoUrl,
     });
 
-    return this.repitsRepo.save(repit);
+    try {
+      return await this.repitsRepo.save(repit);
+    } catch (err) {
+      if (isLegacyRepitSchemaError(err)) {
+        return this.createRepitLegacy(userId, body);
+      }
+      throw err;
+    }
   }
 
   async updateRepit(userId: string, id: string, body: UpdateRepitDto) {
-    // Scope the find by userId so we don't leak existence of other users' repits.
-    const existing = await this.repitsRepo.findOne({
-      where: { id, userId },
-    });
+    let existing: Repit | null;
+    try {
+      // Scope the find by userId so we don't leak existence of other users' repits.
+      existing = await this.repitsRepo.findOne({
+        where: { id, userId },
+      });
+    } catch (err) {
+      if (isLegacyRepitSchemaError(err)) {
+        return this.updateRepitLegacy(userId, id, body);
+      }
+      throw err;
+    }
 
     if (!existing) {
       return null;
@@ -86,7 +125,15 @@ export class RepitsService {
       title: body.title ?? existing.title,
     });
 
-    const saved = await this.repitsRepo.save(updated);
+    let saved: Repit;
+    try {
+      saved = await this.repitsRepo.save(updated);
+    } catch (err) {
+      if (isLegacyRepitSchemaError(err)) {
+        return this.updateRepitLegacy(userId, id, body);
+      }
+      throw err;
+    }
 
     if (photoChanged && oldPhoto) {
       // Fire-and-forget cleanup of the orphaned file. Failure here shouldn't
@@ -99,9 +146,18 @@ export class RepitsService {
 
   async deleteRepit(userId: string, id: string): Promise<boolean> {
     // Fetch first so we can clean up the associated upload.
-    const existing = await this.repitsRepo.findOne({
-      where: { id, userId },
-    });
+    let existing: Repit | null;
+    try {
+      existing = await this.repitsRepo.findOne({
+        where: { id, userId },
+      });
+    } catch (err) {
+      if (isLegacyRepitSchemaError(err)) {
+        existing = await this.getRepitLegacy(userId, id);
+      } else {
+        throw err;
+      }
+    }
     if (!existing) return false;
 
     const result = await this.repitsRepo.delete({ id, userId });
@@ -131,5 +187,116 @@ export class RepitsService {
     } catch {
       // URL parse error — ignore.
     }
+  }
+
+  private getRepitLegacy(userId: string, id: string): Promise<Repit | null> {
+    return this.repitsRepo
+      .createQueryBuilder("repit")
+      .select([
+        "repit.id",
+        "repit.userId",
+        "repit.title",
+        "repit.artist",
+        "repit.status",
+        "repit.platform",
+        "repit.templateId",
+        "repit.songLink",
+        "repit.backgroundPhotoUrl",
+        "repit.createdAt",
+      ])
+      .where("repit.id = :id", { id })
+      .andWhere("repit.userId = :userId", { userId })
+      .getOne();
+  }
+
+  private async listRepitsLegacy(userId: string, take: number, skip: number) {
+    const [data, total] = await this.repitsRepo
+      .createQueryBuilder("repit")
+      .select([
+        "repit.id",
+        "repit.userId",
+        "repit.title",
+        "repit.artist",
+        "repit.status",
+        "repit.platform",
+        "repit.templateId",
+        "repit.songLink",
+        "repit.backgroundPhotoUrl",
+        "repit.createdAt",
+      ])
+      .where("repit.userId = :userId", { userId })
+      .orderBy("repit.createdAt", "DESC")
+      .take(take)
+      .skip(skip)
+      .getManyAndCount();
+
+    return { data, total, limit: take, offset: skip };
+  }
+
+  private async createRepitLegacy(userId: string, body: CreateRepitDto): Promise<Repit> {
+    const insertResult = await this.repitsRepo
+      .createQueryBuilder()
+      .insert()
+      .into(Repit)
+      .values({
+        userId,
+        title: body.songTitle ?? "Untitled Repitair",
+        artist: body.artistName,
+        platform: body.platform ?? "spotify",
+        templateId: body.templateId,
+        songLink: body.songLink ?? "",
+        status: "draft",
+        backgroundPhotoUrl: body.backgroundPhotoUrl ?? undefined,
+      })
+      .returning(["id"])
+      .execute();
+
+    const id = insertResult.identifiers[0]?.id as string | undefined;
+    if (!id) {
+      throw new Error("Could not create repit");
+    }
+
+    const repit = await this.getRepitLegacy(userId, id);
+    if (!repit) {
+      throw new Error("Created repit could not be loaded");
+    }
+
+    return repit;
+  }
+
+  private async updateRepitLegacy(userId: string, id: string, body: UpdateRepitDto): Promise<Repit | null> {
+    const existing = await this.getRepitLegacy(userId, id);
+    if (!existing) return null;
+
+    const oldPhoto = existing.backgroundPhotoUrl;
+    const newPhoto = body.backgroundPhotoUrl;
+    const photoChanged = newPhoto !== undefined && newPhoto !== oldPhoto;
+
+    const updatePayload: Record<string, unknown> = {
+      title: body.title ?? existing.title,
+      artist: body.artist ?? existing.artist,
+      status: body.status ?? existing.status,
+    };
+    if (body.backgroundPhotoUrl !== undefined) {
+      updatePayload.backgroundPhotoUrl = body.backgroundPhotoUrl ?? null;
+    }
+
+    const updateResult = await this.repitsRepo
+      .createQueryBuilder()
+      .update(Repit)
+      .set(updatePayload)
+      .where("id = :id", { id })
+      .andWhere("\"userId\" = :userId", { userId })
+      .execute();
+
+    if ((updateResult.affected ?? 0) === 0) {
+      return null;
+    }
+
+    if (photoChanged && oldPhoto) {
+      this.tryDeleteUpload(oldPhoto);
+    }
+
+    return this.getRepitLegacy(userId, id);
   }
 }
