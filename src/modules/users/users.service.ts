@@ -16,6 +16,15 @@ function isUniqueViolation(err: unknown): boolean {
   return err instanceof QueryFailedError && (err as QueryFailedError & { code?: string }).code === PG_UNIQUE_VIOLATION;
 }
 
+function isMissingAvatarUrlColumn(err: unknown): boolean {
+  if (!(err instanceof QueryFailedError)) {
+    return false;
+  }
+
+  const message = String((err as QueryFailedError & { message?: string }).message ?? "");
+  return message.includes("avatarUrl");
+}
+
 @Injectable()
 export class UsersService {
   constructor(
@@ -25,15 +34,77 @@ export class UsersService {
   ) {}
 
   async findByEmail(email: string): Promise<User | null> {
-    return this.usersRepo.findOne({
-      where: { email: ILike(email) },
-    });
+    try {
+      return await this.usersRepo.findOne({
+        where: { email: ILike(email) },
+      });
+    } catch (err) {
+      if (isMissingAvatarUrlColumn(err)) {
+        return this.findByEmailLegacy(email);
+      }
+      throw err;
+    }
   }
 
   async findById(id: string): Promise<User | null> {
-    return this.usersRepo.findOne({
-      where: { id },
-    });
+    try {
+      return await this.usersRepo.findOne({
+        where: { id },
+      });
+    } catch (err) {
+      if (isMissingAvatarUrlColumn(err)) {
+        return this.findByIdLegacy(id);
+      }
+      throw err;
+    }
+  }
+
+  private findByEmailLegacy(email: string): Promise<User | null> {
+    return this.usersRepo
+      .createQueryBuilder("user")
+      .select([
+        "user.id",
+        "user.fullName",
+        "user.email",
+        "user.country",
+        "user.passwordHash",
+        "user.connectedPlatforms",
+        "user.createdAt",
+        "user.resetCode",
+        "user.resetCodeExpiresAt",
+        "user.resetToken",
+        "user.resetTokenExpiresAt",
+        "user.resetCodeAttempts",
+        "user.emailVerified",
+        "user.emailVerifyCode",
+        "user.emailVerifyCodeExpiresAt",
+      ])
+      .where("LOWER(user.email) = LOWER(:email)", { email })
+      .getOne();
+  }
+
+  private findByIdLegacy(id: string): Promise<User | null> {
+    return this.usersRepo
+      .createQueryBuilder("user")
+      .select([
+        "user.id",
+        "user.fullName",
+        "user.email",
+        "user.country",
+        "user.passwordHash",
+        "user.connectedPlatforms",
+        "user.createdAt",
+        "user.resetCode",
+        "user.resetCodeExpiresAt",
+        "user.resetToken",
+        "user.resetTokenExpiresAt",
+        "user.resetCodeAttempts",
+        "user.emailVerified",
+        "user.emailVerifyCode",
+        "user.emailVerifyCodeExpiresAt",
+      ])
+      .where("user.id = :id", { id })
+      .getOne();
   }
 
   async createUser(data: {
