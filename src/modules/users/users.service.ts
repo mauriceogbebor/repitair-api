@@ -16,13 +16,23 @@ function isUniqueViolation(err: unknown): boolean {
   return err instanceof QueryFailedError && (err as QueryFailedError & { code?: string }).code === PG_UNIQUE_VIOLATION;
 }
 
-function isMissingAvatarUrlColumn(err: unknown): boolean {
+const LEGACY_MISSING_USER_COLUMNS = [
+  "avatarUrl",
+  "resetToken",
+  "resetTokenExpiresAt",
+  "resetCodeAttempts",
+  "emailVerified",
+  "emailVerifyCode",
+  "emailVerifyCodeExpiresAt",
+];
+
+function isLegacyUserSchemaError(err: unknown): boolean {
   if (!(err instanceof QueryFailedError)) {
     return false;
   }
 
   const message = String((err as QueryFailedError & { message?: string }).message ?? "");
-  return message.includes("avatarUrl");
+  return LEGACY_MISSING_USER_COLUMNS.some((column) => message.includes(column));
 }
 
 @Injectable()
@@ -39,7 +49,7 @@ export class UsersService {
         where: { email: ILike(email) },
       });
     } catch (err) {
-      if (isMissingAvatarUrlColumn(err)) {
+      if (isLegacyUserSchemaError(err)) {
         return this.findByEmailLegacy(email);
       }
       throw err;
@@ -52,7 +62,7 @@ export class UsersService {
         where: { id },
       });
     } catch (err) {
-      if (isMissingAvatarUrlColumn(err)) {
+      if (isLegacyUserSchemaError(err)) {
         return this.findByIdLegacy(id);
       }
       throw err;
@@ -72,12 +82,6 @@ export class UsersService {
         "user.createdAt",
         "user.resetCode",
         "user.resetCodeExpiresAt",
-        "user.resetToken",
-        "user.resetTokenExpiresAt",
-        "user.resetCodeAttempts",
-        "user.emailVerified",
-        "user.emailVerifyCode",
-        "user.emailVerifyCodeExpiresAt",
       ])
       .where("LOWER(user.email) = LOWER(:email)", { email })
       .getOne();
@@ -96,12 +100,6 @@ export class UsersService {
         "user.createdAt",
         "user.resetCode",
         "user.resetCodeExpiresAt",
-        "user.resetToken",
-        "user.resetTokenExpiresAt",
-        "user.resetCodeAttempts",
-        "user.emailVerified",
-        "user.emailVerifyCode",
-        "user.emailVerifyCodeExpiresAt",
       ])
       .where("user.id = :id", { id })
       .getOne();
