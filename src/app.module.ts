@@ -9,6 +9,7 @@ import { ImagesModule } from "./modules/images/images.module";
 import { MusicModule } from "./modules/music/music.module";
 import { NotificationsModule } from "./modules/notifications/notifications.module";
 import { RepitsModule } from "./modules/repits/repits.module";
+import { SpotlightModule } from "./modules/spotlight/spotlight.module";
 import { TemplatesModule } from "./modules/templates/templates.module";
 import { UploadsModule } from "./modules/uploads/uploads.module";
 import { UsersModule } from "./modules/users/users.module";
@@ -21,7 +22,7 @@ import { UploadRateLimitMiddleware } from "./common/middleware/upload-rate-limit
 import { MailModule } from "./common/services/mail.module";
 import { TokenBlacklistModule } from "./common/services/token-blacklist.module";
 import { JwtAuthModule } from "./common/modules/jwt-auth.module";
-import { User, Repit, PushToken, Template, ContactSubmission } from "./entities";
+import { User, Repit, PushToken, Template, ContactSubmission, Spotlight } from "./entities";
 
 @Module({
   imports: [
@@ -39,7 +40,7 @@ import { User, Repit, PushToken, Template, ContactSubmission } from "./entities"
         return {
           type: "postgres" as const,
           url: config.get<string>("DATABASE_URL") || "postgresql://repitair:repitair@localhost:5432/repitair",
-          entities: [User, Repit, PushToken, Template, ContactSubmission],
+          entities: [User, Repit, PushToken, Template, ContactSubmission, Spotlight],
           migrations: isProduction ? ["dist/migrations/*.js"] : ["src/migrations/*.ts"],
           synchronize: !isProduction,
           migrationsRun: false,
@@ -58,6 +59,7 @@ import { User, Repit, PushToken, Template, ContactSubmission } from "./entities"
     MusicModule,
     TemplatesModule,
     RepitsModule,
+    SpotlightModule,
     NotificationsModule,
     ContactModule,
   ]

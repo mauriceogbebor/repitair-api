@@ -47,6 +47,7 @@ export class AuthService {
         email: user.email,
         country: user.country,
         connectedPlatforms: user.connectedPlatforms,
+        avatarUrl: user.avatarUrl ?? null,
       },
     };
   }
@@ -72,6 +73,7 @@ export class AuthService {
         email: user.email,
         country: user.country,
         connectedPlatforms: user.connectedPlatforms,
+        avatarUrl: user.avatarUrl ?? null,
       },
     };
   }
