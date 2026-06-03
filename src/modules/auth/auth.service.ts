@@ -20,6 +20,7 @@ import { SocialAuthDto } from "./dto/social-auth.dto";
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
+  private readonly resetEmailDeliveryTimeoutMs = 10000;
 
   constructor(
     private readonly usersService: UsersService,
@@ -90,12 +91,12 @@ export class AuthService {
     if (dto.provider === "google") {
       const payload = await this.verifyGoogleIdToken(dto.idToken);
       email = payload.email;
-      fullName = dto.fullName || payload.name || "User";
+      fullName = dto.fullName || payload.name || this.deriveDisplayNameFromEmail(email);
     } else {
       const payload = await this.verifyAppleIdToken(dto.idToken);
       email = payload.email;
       // Apple only sends the name on first sign-in
-      fullName = dto.fullName || "User";
+      fullName = dto.fullName || this.deriveDisplayNameFromEmail(email);
     }
 
     // Find or create user
@@ -121,9 +122,22 @@ export class AuthService {
         email: user.email,
         country: user.country,
         connectedPlatforms: user.connectedPlatforms,
+        avatarUrl: user.avatarUrl ?? null,
       },
     };
   }
+
+private deriveDisplayNameFromEmail(email: string): string {
+  const base = email.split("@")[0]?.trim();
+  if (!base) return "Repitair User";
+
+  const words = base
+    .split(/[._-]+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1));
+
+  return words.length ? words.join(" ") : "Repitair User";
+}
 
   /**
    * Verify Google ID token using Google's tokeninfo endpoint.
@@ -226,15 +240,23 @@ export class AuthService {
   }
 
   async forgotPassword(email: string) {
-    const code = await this.usersService.setResetCode(email);
-    const user = await this.usersService.findByEmail(email);
+    const normalizedEmail = email.trim().toLowerCase();
+    const code = await this.usersService.setResetCode(normalizedEmail);
+    const user = await this.usersService.findByEmail(normalizedEmail);
     if (code && user) {
       try {
-        await this.mailService.sendPasswordResetCode(email, code, user.fullName);
+        await Promise.race([
+          this.mailService.sendPasswordResetCode(normalizedEmail, code, user.fullName),
+          new Promise<never>((_, reject) => {
+            setTimeout(() => reject(new Error("Password reset email delivery timed out")), this.resetEmailDeliveryTimeoutMs);
+          }),
+        ]);
       } catch (err) {
-        this.logger.error(`Failed to send reset email to ${email}: ${(err as Error).message}`);
+        this.logger.error(`Failed to send reset email to ${normalizedEmail}: ${(err as Error).message}`);
         // Don't leak email failure to the caller — preserve enumeration resistance.
       }
+    } else {
+      this.logger.warn(`Password reset requested for unknown email: ${normalizedEmail}`);
     }
     // Always return the same response whether or not the email exists,
     // to prevent account enumeration.

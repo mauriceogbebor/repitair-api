@@ -48,6 +48,7 @@ export class MusicService {
   private spotifyAccessToken: string | null = null;
   private spotifyTokenExpiry: number = 0;
   private redis: RedisClient | null = null;
+  private hasLoggedRedisFailure = false;
   /** In-memory fallback cache when Redis is unavailable */
   private readonly memCache = new Map<string, { data: ParsedTrack; expiresAt: number }>();
 
@@ -64,9 +65,34 @@ export class MusicService {
     if (!redisUrl) return;
     try {
       const Redis = require('ioredis');
-      this.redis = new Redis(redisUrl);
+      this.redis = new Redis(redisUrl, {
+        connectTimeout: 5000,
+        enableOfflineQueue: false,
+        lazyConnect: true,
+        maxRetriesPerRequest: 1,
+        retryStrategy: () => null,
+      });
       this.redis.on('error', (err: Error) => {
-        this.logger.error(`Music cache Redis error: ${err.message}`);
+        if (!this.hasLoggedRedisFailure) {
+          this.logger.error(`Music cache Redis error: ${err.message}`);
+          this.hasLoggedRedisFailure = true;
+        }
+        try {
+          this.redis?.disconnect();
+        } catch {}
+        this.redis = null;
+      });
+      this.redis.on('connect', () => {
+        this.hasLoggedRedisFailure = false;
+      });
+      void this.redis.connect().catch((err: Error) => {
+        if (!this.hasLoggedRedisFailure) {
+          this.logger.error(`Music cache Redis error: ${err.message}`);
+          this.hasLoggedRedisFailure = true;
+        }
+        try {
+          this.redis?.disconnect();
+        } catch {}
         this.redis = null;
       });
     } catch {

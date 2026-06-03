@@ -5,6 +5,9 @@ import * as nodemailer from "nodemailer";
 @Injectable()
 export class MailService {
   private readonly logger = new Logger(MailService.name);
+  private readonly smtpConnectionTimeoutMs = 10000;
+  private readonly smtpGreetingTimeoutMs = 10000;
+  private readonly smtpSocketTimeoutMs = 15000;
   private transporter: nodemailer.Transporter | null = null;
 
   constructor(private config: ConfigService) {
@@ -19,8 +22,11 @@ export class MailService {
         port,
         secure: port === 465,
         auth: { user, pass },
+        connectionTimeout: this.smtpConnectionTimeoutMs,
+        greetingTimeout: this.smtpGreetingTimeoutMs,
+        socketTimeout: this.smtpSocketTimeoutMs,
       });
-      this.logger.log("SMTP transport configured");
+      this.logger.log(`SMTP transport configured for ${host}:${port}`);
     } else {
       this.logger.warn("SMTP not configured — emails will be logged to console");
     }
@@ -28,13 +34,15 @@ export class MailService {
 
   async sendPasswordResetCode(to: string, code: string, fullName: string): Promise<void> {
     const subject = "Repitair — Your Password Reset Code";
+    const safeFullName = this.escapeHtml(fullName);
+    const safeCode = this.escapeHtml(code);
     const html = `
       <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px;">
         <h2 style="color: #111; margin-bottom: 8px;">Reset your password</h2>
-        <p style="color: #555; font-size: 15px;">Hi ${fullName},</p>
+        <p style="color: #555; font-size: 15px;">Hi ${safeFullName},</p>
         <p style="color: #555; font-size: 15px;">You requested a password reset. Use the code below to verify your identity:</p>
         <div style="background: #f4f4f4; border-radius: 12px; padding: 24px; text-align: center; margin: 24px 0;">
-          <span style="font-size: 32px; font-weight: 700; letter-spacing: 8px; color: #111;">${code}</span>
+          <span style="font-size: 32px; font-weight: 700; letter-spacing: 8px; color: #111;">${safeCode}</span>
         </div>
         <p style="color: #888; font-size: 13px;">This code expires in 10 minutes. If you didn't request this, you can safely ignore this email.</p>
         <hr style="border: none; border-top: 1px solid #eee; margin: 24px 0;" />
@@ -85,5 +93,14 @@ export class MailService {
       this.logger.warn(`[DEV EMAIL] To: ${options.to} | Subject: ${options.subject}`);
       this.logger.debug(`[DEV EMAIL] Body:\n${options.html}`);
     }
+  }
+
+  private escapeHtml(value: string): string {
+    return value
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/\"/g, "&quot;")
+      .replace(/'/g, "&#39;");
   }
 }
