@@ -18,14 +18,16 @@ export class TokenBlacklistService {
   private readonly blacklist = new Map<string, number>(); // Fallback for in-memory mode
   private readonly cleanupIntervalMs = 60 * 60 * 1000; // 1 hour
   private readonly keyPrefix = "token:blacklist:";
+  private cleanupInterval: NodeJS.Timeout | null = null;
   private isUsingRedis = false;
+  private hasLoggedRedisFailure = false;
 
   constructor(private configService: ConfigService) {
     this.initializeRedis();
 
-    // Only set up cleanup interval if using in-memory mode
+    // Only set up cleanup interval immediately when Redis is not configured.
     if (!this.isUsingRedis) {
-      setInterval(() => this.cleanup(), this.cleanupIntervalMs).unref();
+      this.ensureCleanupInterval();
     }
   }
 
@@ -37,6 +39,7 @@ export class TokenBlacklistService {
         "Token blacklist using in-memory Map (REDIS_URL not set)",
       );
       this.isUsingRedis = false;
+      this.ensureCleanupInterval();
       return;
     }
 
@@ -51,21 +54,52 @@ export class TokenBlacklistService {
             `Install ioredis to enable Redis support: npm install ioredis`,
         );
         this.isUsingRedis = false;
+        this.ensureCleanupInterval();
         return;
       }
 
-      this.redis = new Redis(redisUrl);
+      this.redis = new Redis(redisUrl, {
+        connectTimeout: 5000,
+        enableOfflineQueue: false,
+        lazyConnect: true,
+        maxRetriesPerRequest: 1,
+        retryStrategy: () => null,
+      });
       this.isUsingRedis = true;
 
       this.redis.on("error", (err: Error) => {
-        this.logger.error(
-          `Redis connection error (token blacklist will fall back to in-memory): ${err.message}`,
-        );
+        if (!this.hasLoggedRedisFailure) {
+          this.logger.error(
+            `Redis connection error (token blacklist will fall back to in-memory): ${err.message}`,
+          );
+          this.hasLoggedRedisFailure = true;
+        }
         this.isUsingRedis = false;
+        this.ensureCleanupInterval();
+        try {
+          this.redis?.disconnect();
+        } catch {}
+        this.redis = null;
       });
 
       this.redis.on("connect", () => {
         this.logger.log("Token blacklist connected to Redis");
+        this.hasLoggedRedisFailure = false;
+      });
+
+      void this.redis.connect().catch((err: Error) => {
+        if (!this.hasLoggedRedisFailure) {
+          this.logger.error(
+            `Redis connection error (token blacklist will fall back to in-memory): ${err.message}`,
+          );
+          this.hasLoggedRedisFailure = true;
+        }
+        this.isUsingRedis = false;
+        this.ensureCleanupInterval();
+        try {
+          this.redis?.disconnect();
+        } catch {}
+        this.redis = null;
       });
     } catch (error) {
       this.logger.warn(
@@ -74,6 +108,7 @@ export class TokenBlacklistService {
         }`,
       );
       this.isUsingRedis = false;
+      this.ensureCleanupInterval();
     }
   }
 
@@ -96,9 +131,11 @@ export class TokenBlacklistService {
             error instanceof Error ? error.message : String(error)
           }`,
         );
+        this.ensureCleanupInterval();
         this.blacklist.set(token, expiry);
       }
     } else {
+      this.ensureCleanupInterval();
       this.blacklist.set(token, expiry);
     }
   }
@@ -115,6 +152,7 @@ export class TokenBlacklistService {
             error instanceof Error ? error.message : String(error)
           }`,
         );
+        this.ensureCleanupInterval();
         // Fall through to in-memory check
       }
     }
@@ -131,6 +169,15 @@ export class TokenBlacklistService {
     }
 
     return true;
+  }
+
+  private ensureCleanupInterval(): void {
+    if (this.cleanupInterval) {
+      return;
+    }
+
+    this.cleanupInterval = setInterval(() => this.cleanup(), this.cleanupIntervalMs);
+    this.cleanupInterval.unref();
   }
 
   private cleanup(): void {
@@ -151,6 +198,11 @@ export class TokenBlacklistService {
    * Graceful shutdown — close Redis connection if in use.
    */
   async onModuleDestroy(): Promise<void> {
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
+      this.cleanupInterval = null;
+    }
+
     if (this.isUsingRedis && this.redis) {
       try {
         await this.redis.quit();
