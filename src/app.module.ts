@@ -42,7 +42,7 @@ import { User, Repit, PushToken, Template, ContactSubmission, Spotlight } from "
           url: config.get<string>("DATABASE_URL") || "postgresql://repitair:repitair@localhost:5432/repitair",
           entities: [User, Repit, PushToken, Template, ContactSubmission, Spotlight],
           migrations: isProduction ? ["dist/migrations/*.js"] : ["src/migrations/*.ts"],
-          synchronize: !isProduction,
+          synchronize: false,
           migrationsRun: false,
           logging: !isProduction,
         };

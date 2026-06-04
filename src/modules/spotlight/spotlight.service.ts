@@ -64,8 +64,15 @@ export class SpotlightService {
 
   // ── Admin endpoints ──
 
-  async findAll() {
-    return this.repo.find({ order: { priority: "ASC", createdAt: "DESC" } });
+  async findAll(options: { limit?: number; offset?: number } = {}) {
+    const take = Math.min(options.limit ?? 50, 100);
+    const skip = Math.max(options.offset ?? 0, 0);
+    const [data, total] = await this.repo.findAndCount({
+      order: { priority: "ASC", createdAt: "DESC" },
+      take,
+      skip,
+    });
+    return { data, total, limit: take, offset: skip };
   }
 
   async findOne(id: string) {

@@ -155,6 +155,12 @@ export class UploadsService {
    * Delete a file by its key
    */
   async deleteFile(key: string): Promise<void> {
+    // Prevent path traversal — only allow simple filenames (uuid + extension)
+    const sanitized = path.basename(key);
+    if (sanitized !== key || key.includes("..")) {
+      throw new BadRequestException("Invalid file key");
+    }
+
     try {
       if (this.uploadProvider === "s3") {
         await this.deleteFromS3(key);

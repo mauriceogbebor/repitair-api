@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Query, UseGuards } from "@nestjs/common";
 
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { CreateSpotlightDto } from "./dto/create-spotlight.dto";
@@ -30,8 +30,11 @@ export class SpotlightController {
   /** GET /spotlight/admin/all — list all campaigns (any status) */
   @Get("admin/all")
   @UseGuards(JwtAuthGuard)
-  findAll() {
-    return this.spotlightService.findAll();
+  findAll(
+    @Query("limit", new ParseIntPipe({ optional: true })) limit?: number,
+    @Query("offset", new ParseIntPipe({ optional: true })) offset?: number,
+  ) {
+    return this.spotlightService.findAll({ limit, offset });
   }
 
   /** GET /spotlight/admin/:id — single campaign details */

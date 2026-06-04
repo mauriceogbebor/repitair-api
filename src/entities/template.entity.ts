@@ -22,4 +22,16 @@ export class Template {
 
   @Column({ type: "int", default: 0 })
   sortOrder!: number;
+
+  /** Layout variant hint for client rendering (e.g. "classic", "neon", "bold") */
+  @Column({ default: "classic" })
+  layoutVariant!: string;
+
+  /** Player widget variant hint (e.g. "default", "playlist", "scatteredCards") */
+  @Column({ default: "default" })
+  playerVariant!: string;
+
+  /** Suggested overlay opacity for the photo layer (0–1) */
+  @Column({ type: "real", default: 0.3 })
+  overlayOpacity!: number;
 }

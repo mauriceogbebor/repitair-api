@@ -51,6 +51,8 @@ export class MusicService {
   private hasLoggedRedisFailure = false;
   /** In-memory fallback cache when Redis is unavailable */
   private readonly memCache = new Map<string, { data: ParsedTrack; expiresAt: number }>();
+  private appleMusicJwt: string | null = null;
+  private appleMusicJwtExpiry: number = 0;
 
   constructor(
     private configService: ConfigService,
@@ -215,7 +217,13 @@ export class MusicService {
         return null;
       }
 
-      const data = await response.json() as { access_token?: string };
+      const data = await response.json() as { access_token?: string; refresh_token?: string };
+
+      // Spotify may rotate the refresh token — persist the new one if provided
+      if (data.refresh_token && data.refresh_token !== refreshToken) {
+        await this.usersRepo.update(userId, { spotifyRefreshToken: data.refresh_token });
+      }
+
       return data.access_token ?? null;
     } catch (error) {
       this.logger.error(`Failed to refresh Spotify access token for user ${userId}`, error);
@@ -227,6 +235,11 @@ export class MusicService {
    * Generate Apple Music JWT token
    */
   private generateAppleMusicJwt(): string | null {
+    // Return cached token if still valid (refresh 1 day before expiry)
+    if (this.appleMusicJwt && Date.now() < this.appleMusicJwtExpiry) {
+      return this.appleMusicJwt;
+    }
+
     const teamId = this.configService.get<string>('APPLE_MUSIC_TEAM_ID');
     const keyId = this.configService.get<string>('APPLE_MUSIC_KEY_ID');
     const privateKeyStr = this.configService.get<string>('APPLE_MUSIC_PRIVATE_KEY');
@@ -251,6 +264,10 @@ export class MusicService {
           kid: keyId,
         },
       });
+
+      this.appleMusicJwt = token;
+      // Cache for 179 days (token is valid for 180)
+      this.appleMusicJwtExpiry = Date.now() + 179 * 24 * 60 * 60 * 1000;
 
       return token;
     } catch (error) {
