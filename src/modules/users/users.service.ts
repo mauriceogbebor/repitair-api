@@ -179,7 +179,10 @@ export class UsersService {
       return null;
     }
 
-    if (user.resetCode !== code) {
+    const codeMatch =
+      user.resetCode.length === code.length &&
+      timingSafeEqual(Buffer.from(user.resetCode, "utf8"), Buffer.from(code, "utf8"));
+    if (!codeMatch) {
       user.resetCodeAttempts += 1;
       await this.usersRepo.save(user);
       return null;
@@ -319,7 +322,11 @@ export class UsersService {
     if (!user || !user.emailVerifyCode || !user.emailVerifyCodeExpiresAt) return false;
 
     if (new Date(user.emailVerifyCodeExpiresAt) < new Date()) return false;
-    if (user.emailVerifyCode !== code) return false;
+
+    const codeMatch =
+      user.emailVerifyCode.length === code.length &&
+      timingSafeEqual(Buffer.from(user.emailVerifyCode, "utf8"), Buffer.from(code, "utf8"));
+    if (!codeMatch) return false;
 
     user.emailVerified = true;
     user.emailVerifyCode = undefined;

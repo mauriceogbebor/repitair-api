@@ -2,7 +2,7 @@ import 'reflect-metadata';
 import { DataSource } from 'typeorm';
 import { config as dotenvConfig } from 'dotenv';
 
-import { User, Repit, PushToken, Template, Spotlight } from './entities';
+import { User, Repit, PushToken, Template, ContactSubmission, Spotlight } from './entities';
 
 dotenvConfig();
 
@@ -22,7 +22,7 @@ export default new DataSource({
   url:
     process.env.DATABASE_URL ||
     'postgresql://repitair:repitair@localhost:5432/repitair',
-  entities: [User, Repit, PushToken, Template, Spotlight],
+  entities: [User, Repit, PushToken, Template, ContactSubmission, Spotlight],
   migrations: [isCompiled ? 'dist/migrations/*.js' : 'src/migrations/*.ts'],
   synchronize: false,
   logging: true,

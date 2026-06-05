@@ -4,6 +4,8 @@ import { Repository } from "typeorm";
 import { RepitsService } from "./repits.service";
 import { Repit, Template } from "../../entities";
 import { UploadsService } from "../uploads/uploads.service";
+import { RepitPlatform } from "./dto/repit-presentation.dto";
+import { CreateRepitDto } from "./dto/create-repit.dto";
 
 describe("RepitsService", () => {
   let service: RepitsService;
@@ -98,12 +100,12 @@ describe("RepitsService", () => {
 
   describe("createRepit", () => {
     it("should create a new repit", async () => {
-      const createDto = {
+      const createDto: CreateRepitDto = {
         songTitle: "New Song",
         artistName: "New Artist",
         templateId: "template_1",
         songLink: "https://example.com/track",
-        platform: "spotify",
+        platform: RepitPlatform.SPOTIFY,
         backgroundPhotoUrl: "https://example.com/photo.jpg",
       };
 

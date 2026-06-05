@@ -13,6 +13,7 @@ import { SpotlightModule } from "./modules/spotlight/spotlight.module";
 import { TemplatesModule } from "./modules/templates/templates.module";
 import { UploadsModule } from "./modules/uploads/uploads.module";
 import { UsersModule } from "./modules/users/users.module";
+import { RedisModule } from "./common/modules/redis.module";
 import { SecurityHeadersMiddleware } from "./common/middleware/security-headers.middleware";
 import { RateLimitMiddleware } from "./common/middleware/rate-limit.middleware";
 import { AuthRateLimitMiddleware } from "./common/middleware/auth-rate-limit.middleware";
@@ -48,6 +49,7 @@ import { User, Repit, PushToken, Template, ContactSubmission, Spotlight } from "
         };
       },
     }),
+    RedisModule,
     JwtAuthModule,
     TokenBlacklistModule,
     MailModule,

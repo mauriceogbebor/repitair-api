@@ -1,12 +1,13 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as jwt from 'jsonwebtoken';
 import { Repository } from 'typeorm';
 
 import { User } from '../../entities';
+import { REDIS_CLIENT } from '../../common/modules/redis.module';
 
-type RedisClient = any; // Lazy-loaded
+type RedisClient = any;
 
 export interface ParsedTrack {
   platform: 'spotify' | 'apple-music';
@@ -49,8 +50,6 @@ export class MusicService {
   private readonly logger = new Logger(MusicService.name);
   private spotifyAccessToken: string | null = null;
   private spotifyTokenExpiry: number = 0;
-  private redis: RedisClient | null = null;
-  private hasLoggedRedisFailure = false;
   /** In-memory fallback cache when Redis is unavailable */
   private readonly memCache = new Map<string, { data: ParsedTrack; expiresAt: number }>();
   private appleMusicJwt: string | null = null;
@@ -60,49 +59,8 @@ export class MusicService {
     private configService: ConfigService,
     @InjectRepository(User)
     private readonly usersRepo: Repository<User>,
-  ) {
-    this.initializeRedis();
-  }
-
-  private initializeRedis(): void {
-    const redisUrl = this.configService.get<string>('REDIS_URL');
-    if (!redisUrl) return;
-    try {
-      const Redis = require('ioredis');
-      this.redis = new Redis(redisUrl, {
-        connectTimeout: 5000,
-        enableOfflineQueue: false,
-        lazyConnect: true,
-        maxRetriesPerRequest: 1,
-        retryStrategy: () => null,
-      });
-      this.redis.on('error', (err: Error) => {
-        if (!this.hasLoggedRedisFailure) {
-          this.logger.error(`Music cache Redis error: ${err.message}`);
-          this.hasLoggedRedisFailure = true;
-        }
-        try {
-          this.redis?.disconnect();
-        } catch {}
-        this.redis = null;
-      });
-      this.redis.on('connect', () => {
-        this.hasLoggedRedisFailure = false;
-      });
-      void this.redis.connect().catch((err: Error) => {
-        if (!this.hasLoggedRedisFailure) {
-          this.logger.error(`Music cache Redis error: ${err.message}`);
-          this.hasLoggedRedisFailure = true;
-        }
-        try {
-          this.redis?.disconnect();
-        } catch {}
-        this.redis = null;
-      });
-    } catch {
-      // ioredis not installed — use in-memory cache
-    }
-  }
+    @Inject(REDIS_CLIENT) @Optional() private readonly redis: RedisClient | null,
+  ) {}
 
   private async getCached(key: string): Promise<ParsedTrack | null> {
     const fullKey = CACHE_PREFIX + key;
@@ -216,6 +174,13 @@ export class MusicService {
 
       if (!response.ok) {
         this.logger.warn(`Spotify refresh token exchange failed for user ${userId}: ${response.status}`);
+        // 400/401 means the refresh token has been revoked or is invalid.
+        // Clear the stale token so the user's connectedPlatforms reflects
+        // reality and they know to reconnect.
+        if (response.status === 400 || response.status === 401) {
+          this.logger.warn(`Clearing revoked Spotify refresh token for user ${userId}`);
+          await this.usersRepo.update(userId, { spotifyRefreshToken: undefined });
+        }
         return null;
       }
 
