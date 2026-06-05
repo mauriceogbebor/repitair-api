@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { LessThanOrEqual, MoreThanOrEqual, Repository } from "typeorm";
+import { LessThanOrEqual, MoreThanOrEqual, IsNull, Or, Repository } from "typeorm";
 
 import { Spotlight } from "../../entities/spotlight.entity";
 import { CreateSpotlightDto } from "./dto/create-spotlight.dto";
@@ -20,20 +20,14 @@ export class SpotlightService {
   async getActiveSpotlights() {
     const now = new Date();
 
-    const items = await this.repo.find({
+    const filtered = await this.repo.find({
       where: {
         status: "active" as const,
+        startsAt: Or(IsNull(), LessThanOrEqual(now)),
+        expiresAt: Or(IsNull(), MoreThanOrEqual(now)),
       },
       order: { priority: "ASC", createdAt: "DESC" },
       take: 10,
-    });
-
-    // Filter by date range in application layer (simpler than complex WHERE clauses
-    // with nullable columns)
-    const filtered = items.filter((item) => {
-      if (item.startsAt && item.startsAt > now) return false;
-      if (item.expiresAt && item.expiresAt < now) return false;
-      return true;
     });
 
     return {

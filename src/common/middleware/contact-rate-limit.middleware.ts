@@ -1,12 +1,8 @@
-import {
-  Injectable,
-  NestMiddleware,
-  HttpException,
-  HttpStatus,
-} from '@nestjs/common';
-import { Request, Response, NextFunction } from 'express';
+import { Inject, Injectable, NestMiddleware, Optional } from "@nestjs/common";
+import { Request, Response, NextFunction } from "express";
 
-type RateLimitEntry = { count: number; resetAt: number };
+import { REDIS_CLIENT } from "../modules/redis.module";
+import { BaseRateLimiter } from "./base-rate-limit";
 
 /**
  * Contact form rate limit: 3 submissions per hour per IP.
@@ -14,46 +10,20 @@ type RateLimitEntry = { count: number; resetAt: number };
  * mailer to the support inbox.
  */
 @Injectable()
-export class ContactRateLimitMiddleware implements NestMiddleware {
-  private readonly store = new Map<string, RateLimitEntry>();
-  private readonly windowMs = 60 * 60 * 1000; // 1 hours
-  private readonly maxRequests = 3;
-
-  constructor() {
-    setInterval(() => this.cleanup(), 10 * 60 * 1000).unref();
+export class ContactRateLimitMiddleware extends BaseRateLimiter implements NestMiddleware {
+  constructor(@Inject(REDIS_CLIENT) @Optional() redis: any | null) {
+    super(
+      {
+        windowMs: 60 * 60 * 1000,
+        maxRequests: 3,
+        message: "Too many contact submissions — try again later.",
+        sendHeaders: false,
+      },
+      redis,
+    );
   }
 
-  use(req: Request, _res: Response, next: NextFunction) {
-    const key = this.getKey(req);
-    const now = Date.now();
-    const entry = this.store.get(key);
-
-    if (!entry || now > entry.resetAt) {
-      this.store.set(key, { count: 1, resetAt: now + this.windowMs });
-      return next();
-    }
-
-    entry.count++;
-
-    if (entry.count > this.maxRequests) {
-      throw new HttpException(
-        'Too many contact submissions — try again later.',
-        HttpStatus.TOO_MANY_REQUESTS,
-      );
-    }
-
-    next();
-  }
-
-  private getKey(req: Request): string {
-    if (Array.isArray(req.ips) && req.ips.length > 0) return req.ips[0];
-    return req.ip ?? req.socket.remoteAddress ?? 'unknown';
-  }
-
-  private cleanup() {
-    const now = Date.now();
-    for (const [key, entry] of this.store) {
-      if (now > entry.resetAt) this.store.delete(key);
-    }
+  use(req: Request, res: Response, next: NextFunction) {
+    void this.check(req, res, next);
   }
 }
