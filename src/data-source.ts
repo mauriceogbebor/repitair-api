@@ -8,7 +8,7 @@ dotenvConfig();
 
 /**
  * Standalone DataSource used ONLY by the TypeORM CLI for generating
- * running migrations. The runtime app config lives in app.module.ts.
+ * running migrations. Thee runtime app config lives in app.module.ts.
  *
  * Keep these two in sync when you add entities or change connection options.
  *
