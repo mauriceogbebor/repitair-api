@@ -112,6 +112,7 @@ describe("AuthService", () => {
           email: mockUser.email,
           country: mockUser.country,
           connectedPlatforms: mockUser.connectedPlatforms,
+          avatarUrl: null,
         },
       });
     });
@@ -186,6 +187,7 @@ describe("AuthService", () => {
           email: mockUser.email,
           country: mockUser.country,
           connectedPlatforms: mockUser.connectedPlatforms,
+          avatarUrl: null,
         },
       });
     });
