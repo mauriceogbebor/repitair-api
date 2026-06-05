@@ -1,11 +1,21 @@
 import { Test, TestingModule } from "@nestjs/testing";
 import { ConfigService } from "@nestjs/config";
 import { BadRequestException } from "@nestjs/common";
+import { getRepositoryToken } from "@nestjs/typeorm";
 
 import { MusicService } from "./music.service";
+import { User } from "../../entities";
 
 describe("MusicService", () => {
   let service: MusicService;
+  const mockUsersRepo = {
+    createQueryBuilder: jest.fn(() => ({
+      addSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      getOne: jest.fn().mockResolvedValue(null),
+    })),
+    update: jest.fn(),
+  };
   const mockConfig = {
     get: jest.fn((key: string) => {
       const config: Record<string, string> = {
@@ -22,6 +32,7 @@ describe("MusicService", () => {
       providers: [
         MusicService,
         { provide: ConfigService, useValue: mockConfig },
+        { provide: getRepositoryToken(User), useValue: mockUsersRepo },
       ],
     }).compile();
 
@@ -66,6 +77,11 @@ describe("MusicService", () => {
   describe("search", () => {
     it("should return empty array for empty query", async () => {
       const result = await service.search("");
+      expect(result).toEqual([]);
+    });
+
+    it("should return empty array for empty Apple Music query", async () => {
+      const result = await service.search("", "apple-music");
       expect(result).toEqual([]);
     });
   });

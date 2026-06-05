@@ -26,8 +26,12 @@ export class MusicController {
   }
 
   @Get("search")
-  async search(@Query("q") query: string, @CurrentUser() user: CurrentUserPayload) {
-    return this.musicService.search(query);
+  async search(
+    @Query("q") query: string,
+    @Query("platform") platform?: "spotify" | "apple-music",
+    @Query("storefront") storefront?: string,
+  ) {
+    return this.musicService.search(query, platform, storefront);
   }
 
   @Get("recent")

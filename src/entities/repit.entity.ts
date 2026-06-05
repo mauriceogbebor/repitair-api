@@ -1,6 +1,35 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, ManyToOne, JoinColumn } from "typeorm";
 import { User } from "./user.entity";
 
+type RepitSongSelection = {
+  songLink?: string | null;
+  songTitle: string;
+  artistName: string;
+  platform: "spotify" | "apple-music";
+  durationMs?: number | null;
+  albumArtUrl?: string | null;
+};
+
+type RepitWidgetTransform = {
+  x: number;
+  y: number;
+  scale: number;
+  rotation: number;
+};
+
+type RepitEditorState = {
+  aspectRatio?: "9:16" | "4:5" | "1:1";
+  lyrics?: string;
+  showDate?: boolean;
+  showTime?: boolean;
+  showDay?: boolean;
+  customDate?: string | null;
+  customTime?: string | null;
+  playerTransform?: RepitWidgetTransform | null;
+  dateTimeTransform?: RepitWidgetTransform | null;
+  lyricsTransform?: RepitWidgetTransform | null;
+};
+
 @Entity("repits")
 export class Repit {
   @PrimaryGeneratedColumn("uuid")
@@ -17,7 +46,7 @@ export class Repit {
   title!: string;
 
   @Column({ nullable: true })
-  artist?: string;
+  artist?: string | null;
 
   @Column({ default: "draft" })
   status!: string;
@@ -32,13 +61,22 @@ export class Repit {
   songLink!: string;
 
   @Column({ nullable: true })
-  albumArt?: string;
+  albumArt?: string | null;
 
   @Column({ type: "int", nullable: true })
-  durationMs?: number;
+  durationMs?: number | null;
 
   @Column({ nullable: true })
-  backgroundPhotoUrl?: string;
+  backgroundPhotoUrl?: string | null;
+
+  @Column({ type: "jsonb", nullable: true })
+  selectedSongs?: RepitSongSelection[] | null;
+
+  @Column({ type: "jsonb", nullable: true })
+  widgetTransforms?: RepitWidgetTransform[] | null;
+
+  @Column({ type: "jsonb", nullable: true })
+  editorState?: RepitEditorState | null;
 
   @CreateDateColumn()
   createdAt!: Date;
