@@ -45,7 +45,7 @@ export class Repit {
   @Column({ default: "Untitled Repitair" })
   title!: string;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   artist?: string | null;
 
   @Column({ default: "draft" })
@@ -60,13 +60,13 @@ export class Repit {
   @Column({ default: "" })
   songLink!: string;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   albumArt?: string | null;
 
   @Column({ type: "int", nullable: true })
   durationMs?: number | null;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   backgroundPhotoUrl?: string | null;
 
   @Column({ type: "jsonb", nullable: true })
