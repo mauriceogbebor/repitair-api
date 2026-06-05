@@ -35,7 +35,9 @@ interface AppleMusicSong {
       url: string;
     };
     durationInMillis?: number;
+    url?: string;
   };
+  id?: string;
 }
 
 /** Cache TTL for song metadata — 24 hours */
@@ -309,6 +311,16 @@ export class MusicService {
     // Format: https://music.apple.com/{storefront}/album/...
     const match = url.match(/music\.apple\.com\/([a-z]{2})\//);
     return match ? match[1] : 'us';
+  }
+
+  private buildAppleMusicArtworkUrl(url?: string, size = 600): string | undefined {
+    if (!url) {
+      return undefined;
+    }
+
+    return url
+      .replace('{w}', String(size))
+      .replace('{h}', String(size));
   }
 
   /**
@@ -617,8 +629,16 @@ export class MusicService {
    * Search for tracks on Spotify by query string.
    * Returns up to 10 results.
    */
-  async search(query: string): Promise<ParsedTrack[]> {
+  async search(
+    query: string,
+    platform: 'spotify' | 'apple-music' = 'spotify',
+    storefront = 'us',
+  ): Promise<ParsedTrack[]> {
     if (!query?.trim()) return [];
+
+    if (platform === 'apple-music') {
+      return this.searchAppleMusic(query, storefront);
+    }
 
     const token = await this.getSpotifyAccessToken();
     if (!token) return [];
@@ -651,6 +671,55 @@ export class MusicService {
       }));
     } catch (error) {
       this.logger.error('Spotify search error', error);
+      return [];
+    }
+  }
+
+  private async searchAppleMusic(query: string, storefront = 'us'): Promise<ParsedTrack[]> {
+    const token = this.generateAppleMusicJwt();
+    if (!token) {
+      return [];
+    }
+
+    try {
+      const params = new URLSearchParams({
+        term: query,
+        types: 'songs',
+        limit: '10',
+      });
+      const response = await fetch(
+        `https://api.music.apple.com/v1/catalog/${storefront}/search?${params.toString()}`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        },
+      );
+
+      if (!response.ok) {
+        return [];
+      }
+
+      const data = await response.json() as {
+        results?: {
+          songs?: {
+            data?: AppleMusicSong[];
+          };
+        };
+      };
+
+      return (data.results?.songs?.data ?? [])
+        .filter((song) => song.attributes?.name && song.attributes?.artistName)
+        .map((song) => ({
+          platform: 'apple-music' as const,
+          title: song.attributes!.name,
+          artist: song.attributes!.artistName,
+          albumArt: this.buildAppleMusicArtworkUrl(song.attributes?.artwork?.url),
+          sourceLink: song.attributes?.url ?? `https://music.apple.com/${storefront}/song/${song.id}`,
+          durationMs: song.attributes?.durationInMillis,
+        }));
+    } catch (error) {
+      this.logger.error('Apple Music search error', error);
       return [];
     }
   }

@@ -9,7 +9,7 @@ import { UpdateRepitDto } from "./dto/update-repit.dto";
 
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 100;
-const LEGACY_MISSING_REPIT_COLUMNS = ["albumArt", "durationMs", "updatedAt"];
+const LEGACY_MISSING_REPIT_COLUMNS = ["albumArt", "durationMs", "updatedAt", "selectedSongs", "widgetTransforms", "editorState"];
 
 function isLegacyRepitSchemaError(err: unknown): boolean {
   if (!(err instanceof QueryFailedError)) {
@@ -83,6 +83,9 @@ export class RepitsService {
       durationMs: body.durationMs,
       status: "draft",
       backgroundPhotoUrl: body.backgroundPhotoUrl,
+      selectedSongs: body.selectedSongs ?? this.buildFallbackSelectedSongs(body),
+      widgetTransforms: body.widgetTransforms ?? null,
+      editorState: body.editorState ?? null,
     });
 
     try {
@@ -96,6 +99,13 @@ export class RepitsService {
   }
 
   async updateRepit(userId: string, id: string, body: UpdateRepitDto) {
+    if (body.templateId) {
+      const template = await this.templatesRepo.findOne({ where: { id: body.templateId } });
+      if (!template) {
+        throw new BadRequestException(`Template "${body.templateId}" does not exist`);
+      }
+    }
+
     let existing: Repit | null;
     try {
       // Scope the find by userId so we don't leak existence of other users' repits.
@@ -120,9 +130,19 @@ export class RepitsService {
 
     const updated = this.repitsRepo.merge(existing, {
       artist: body.artist ?? existing.artist,
-      backgroundPhotoUrl: body.backgroundPhotoUrl ?? existing.backgroundPhotoUrl,
+      albumArt: body.albumArt !== undefined ? body.albumArt ?? null : existing.albumArt,
+      backgroundPhotoUrl: body.backgroundPhotoUrl !== undefined
+        ? body.backgroundPhotoUrl ?? null
+        : existing.backgroundPhotoUrl,
+      durationMs: body.durationMs !== undefined ? body.durationMs ?? null : existing.durationMs,
+      platform: body.platform ?? existing.platform,
+      selectedSongs: body.selectedSongs ?? existing.selectedSongs,
+      songLink: body.songLink !== undefined ? body.songLink ?? "" : existing.songLink,
       status: body.status ?? existing.status,
+      templateId: body.templateId ?? existing.templateId,
       title: body.title ?? existing.title,
+      widgetTransforms: body.widgetTransforms ?? existing.widgetTransforms,
+      editorState: body.editorState ?? existing.editorState,
     });
 
     let saved: Repit;
@@ -187,6 +207,23 @@ export class RepitsService {
     } catch {
       // URL parse error — ignore.
     }
+  }
+
+  private buildFallbackSelectedSongs(body: CreateRepitDto): Repit["selectedSongs"] {
+    if (!body.songTitle || !body.artistName || !body.platform) {
+      return null;
+    }
+
+    return [
+      {
+        songLink: body.songLink ?? "",
+        songTitle: body.songTitle,
+        artistName: body.artistName,
+        platform: body.platform,
+        durationMs: body.durationMs ?? null,
+        albumArtUrl: body.albumArt ?? null,
+      },
+    ];
   }
 
   private getRepitLegacy(userId: string, id: string): Promise<Repit | null> {
@@ -273,6 +310,9 @@ export class RepitsService {
     const photoChanged = newPhoto !== undefined && newPhoto !== oldPhoto;
 
     const updatePayload: Record<string, unknown> = {
+      templateId: body.templateId ?? existing.templateId,
+      songLink: body.songLink !== undefined ? body.songLink ?? "" : existing.songLink,
+      platform: body.platform ?? existing.platform,
       title: body.title ?? existing.title,
       artist: body.artist ?? existing.artist,
       status: body.status ?? existing.status,

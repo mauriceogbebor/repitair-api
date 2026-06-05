@@ -1,9 +1,20 @@
-import { IsEnum, IsOptional, IsString, IsUrl } from "class-validator";
+import { Type } from "class-transformer";
+import {
+  IsArray,
+  IsEnum,
+  IsNumber,
+  IsObject,
+  IsOptional,
+  IsString,
+  IsUrl,
+  ValidateNested,
+} from "class-validator";
 
-enum Platform {
-  SPOTIFY = "spotify",
-  APPLE_MUSIC = "apple-music",
-}
+import {
+  RepitPlatform,
+  RepitSongSelectionDto,
+  RepitWidgetTransformDto,
+} from "./repit-presentation.dto";
 
 export class CreateRepitDto {
   @IsString()
@@ -11,7 +22,7 @@ export class CreateRepitDto {
 
   @IsOptional()
   @IsUrl({}, { message: "songLink must be a valid URL" })
-  songLink?: string;
+  songLink?: string | null;
 
   @IsOptional()
   @IsString()
@@ -22,17 +33,34 @@ export class CreateRepitDto {
   artistName?: string;
 
   @IsOptional()
-  @IsEnum(Platform)
-  platform?: string;
+  @IsEnum(RepitPlatform)
+  platform?: RepitPlatform;
 
   @IsOptional()
   @IsUrl({}, { message: "albumArt must be a valid URL" })
-  albumArt?: string;
+  albumArt?: string | null;
 
   @IsOptional()
-  durationMs?: number;
+  @IsNumber()
+  durationMs?: number | null;
 
   @IsOptional()
   @IsUrl({}, { message: "backgroundPhotoUrl must be a valid URL" })
-  backgroundPhotoUrl?: string;
+  backgroundPhotoUrl?: string | null;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => RepitSongSelectionDto)
+  selectedSongs?: RepitSongSelectionDto[];
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => RepitWidgetTransformDto)
+  widgetTransforms?: RepitWidgetTransformDto[];
+
+  @IsOptional()
+  @IsObject()
+  editorState?: Record<string, unknown> | null;
 }
