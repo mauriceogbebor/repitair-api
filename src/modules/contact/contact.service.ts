@@ -19,7 +19,6 @@ function escapeHtml(text: string): string {
 @Injectable()
 export class ContactService {
   private readonly logger = new Logger(ContactService.name);
-  private readonly deliveryTimeoutMs = 5000;
 
   constructor(
     @InjectRepository(ContactSubmission)
@@ -62,17 +61,15 @@ export class ContactService {
     `;
 
     try {
-      await Promise.race([
-        this.mailService.sendRaw({
-          to: supportAddress,
-          replyTo: dto.email,
-          subject,
-          html,
-        }),
-        new Promise<never>((_, reject) => {
-          setTimeout(() => reject(new Error("Contact email delivery timed out")), this.deliveryTimeoutMs);
-        }),
-      ]);
+      // Rely on the SMTP transport's own socket/greeting/connection timeouts
+      // (configured in MailService) rather than an external Promise.race,
+      // which would orphan the send promise on timeout.
+      await this.mailService.sendRaw({
+        to: supportAddress,
+        replyTo: dto.email,
+        subject,
+        html,
+      });
       this.logger.log(`Contact submission forwarded to ${supportAddress} from ${dto.email}`);
       // Mark as sent
       saved.emailSent = true;

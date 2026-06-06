@@ -54,6 +54,9 @@ export class MusicService {
   private readonly memCache = new Map<string, { data: ParsedTrack; expiresAt: number }>();
   private appleMusicJwt: string | null = null;
   private appleMusicJwtExpiry: number = 0;
+  /** Promise deduplication — prevents concurrent token fetches */
+  private pendingSpotifyToken: Promise<string | null> | null = null;
+  private pendingAppleMusicJwt: Promise<string | null> | null = null;
 
   constructor(
     private configService: ConfigService,
@@ -95,17 +98,29 @@ export class MusicService {
    * Get a valid Spotify access token, using cached token if available
    */
   private async getSpotifyAccessToken(): Promise<string | null> {
+    // Return cached token if still valid
+    if (this.spotifyAccessToken && Date.now() < this.spotifyTokenExpiry) {
+      return this.spotifyAccessToken;
+    }
+
+    // Deduplicate concurrent fetches
+    if (this.pendingSpotifyToken) return this.pendingSpotifyToken;
+
+    this.pendingSpotifyToken = this.fetchSpotifyToken();
+    try {
+      return await this.pendingSpotifyToken;
+    } finally {
+      this.pendingSpotifyToken = null;
+    }
+  }
+
+  private async fetchSpotifyToken(): Promise<string | null> {
     const clientId = this.configService.get<string>('SPOTIFY_CLIENT_ID');
     const clientSecret = this.configService.get<string>('SPOTIFY_CLIENT_SECRET');
 
     if (!clientId || !clientSecret) {
       this.logger.warn('Spotify credentials not configured');
       return null;
-    }
-
-    // Return cached token if still valid
-    if (this.spotifyAccessToken && Date.now() < this.spotifyTokenExpiry) {
-      return this.spotifyAccessToken;
     }
 
     try {
@@ -289,11 +304,27 @@ export class MusicService {
   }
 
   /**
-   * Extract Apple Music track ID from URL
+   * Extract Apple Music track ID from URL.
+   * Supports two formats:
+   *   - Album link with track param: /album/name/ALBUM_ID?i=TRACK_ID
+   *   - Direct song link: /song/name/TRACK_ID
    */
   private extractAppleMusicTrackId(url: string): string | null {
-    // Format: https://music.apple.com/ng/album/song-name/ALBUM_ID?i=TRACK_ID
-    const match = url.match(/[?&]i=([0-9]+)/);
+    // Format 1: https://music.apple.com/ng/album/song-name/ALBUM_ID?i=TRACK_ID
+    const paramMatch = url.match(/[?&]i=([0-9]+)/);
+    if (paramMatch) return paramMatch[1];
+
+    // Format 2: https://music.apple.com/us/song/song-name/TRACK_ID
+    const songMatch = url.match(/music\.apple\.com\/[a-z]{2}\/song\/[^/]+\/(\d+)/);
+    return songMatch ? songMatch[1] : null;
+  }
+
+  /**
+   * Extract Apple Music playlist ID from URL
+   */
+  private extractAppleMusicPlaylistId(url: string): string | null {
+    // Format: https://music.apple.com/{storefront}/playlist/{name}/{playlistId}
+    const match = url.match(/music\.apple\.com\/[a-z]{2}\/playlist\/[^/]+\/([a-zA-Z0-9.]+)/);
     return match ? match[1] : null;
   }
 
@@ -323,8 +354,10 @@ export class MusicService {
     }
 
     if (isAppleMusic) {
-      const albumId = this.extractAppleMusicAlbumId(link);
       const storefront = this.extractAppleMusicStorefront(link);
+      const playlistId = this.extractAppleMusicPlaylistId(link);
+      if (playlistId) return this.listAppleMusicPlaylist(playlistId, storefront);
+      const albumId = this.extractAppleMusicAlbumId(link);
       if (albumId) return this.listAppleMusicAlbum(albumId, storefront);
     }
 
@@ -425,7 +458,7 @@ export class MusicService {
       const album = data.data?.[0];
       if (!album?.attributes) return null;
 
-      const albumArt = album.attributes.artwork?.url;
+      const albumArt = this.buildAppleMusicArtworkUrl(album.attributes.artwork?.url);
       const trackList = album.relationships?.tracks?.data ?? [];
       const tracks: ParsedTrack[] = trackList
         .filter(t => t.attributes)
@@ -445,14 +478,68 @@ export class MusicService {
     }
   }
 
+  private async listAppleMusicPlaylist(playlistId: string, storefront = 'us'): Promise<{ type: 'playlist'; name: string; tracks: ParsedTrack[] } | null> {
+    const token = this.generateAppleMusicJwt();
+    if (!token) return null;
+
+    try {
+      const response = await fetch(
+        `https://api.music.apple.com/v1/catalog/${storefront}/playlists/${playlistId}`,
+        { headers: { 'Authorization': `Bearer ${token}` } },
+      );
+      if (!response.ok) return null;
+
+      const data = await response.json() as {
+        data?: Array<{
+          attributes?: { name: string; artwork?: { url: string } };
+          relationships?: {
+            tracks?: {
+              data?: Array<{
+                id: string;
+                attributes?: { name: string; artistName: string; artwork?: { url: string }; durationInMillis?: number };
+              }>;
+            };
+          };
+        }>;
+      };
+
+      const playlist = data.data?.[0];
+      if (!playlist?.attributes) return null;
+
+      const trackList = playlist.relationships?.tracks?.data ?? [];
+      const tracks: ParsedTrack[] = trackList
+        .filter(t => t.attributes)
+        .map(t => ({
+          platform: 'apple-music' as const,
+          title: t.attributes!.name,
+          artist: t.attributes!.artistName,
+          albumArt: this.buildAppleMusicArtworkUrl(t.attributes!.artwork?.url),
+          sourceLink: `https://music.apple.com/${storefront}/song/${t.id}`,
+          durationMs: t.attributes!.durationInMillis,
+        }));
+
+      return { type: 'playlist', name: playlist.attributes.name, tracks };
+    } catch (error) {
+      this.logger.error('Apple Music playlist listing error', error);
+      return null;
+    }
+  }
+
   /**
    * Detect whether a link is for an album, playlist, or single track
    */
   detectLinkType(link: string): 'track' | 'album' | 'playlist' {
     if (link.includes('spotify.com/album/')) return 'album';
     if (link.includes('spotify.com/playlist/')) return 'playlist';
-    if (link.includes('music.apple.com') && !link.includes('?i=')) {
+    if (link.includes('music.apple.com')) {
+      // Direct song links are always tracks
+      if (link.includes('/song/')) return 'track';
+      // Album links with ?i= are single tracks
+      if (link.includes('?i=')) return 'track';
+      // Album links without ?i= are albums
       if (link.includes('/album/')) return 'album';
+      // Playlist links
+      if (link.includes('/playlist/')) return 'playlist';
     }
     return 'track';
   }
@@ -508,7 +595,6 @@ export class MusicService {
         {
           headers: {
             'Authorization': `Bearer ${token}`,
-            'Music-User-Token': '', // Optional, for personalization
           },
         }
       );
@@ -529,7 +615,7 @@ export class MusicService {
         platform: 'apple-music',
         title: song.attributes.name,
         artist: song.attributes.artistName,
-        albumArt: song.attributes.artwork?.url,
+        albumArt: this.buildAppleMusicArtworkUrl(song.attributes.artwork?.url),
         sourceLink: `https://music.apple.com/${storefront}/song/${trackId}`,
         durationMs: song.attributes.durationInMillis,
       };

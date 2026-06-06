@@ -24,9 +24,8 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         "message" in exceptionResponse
       ) {
         const raw = (exceptionResponse as { message: string | string[] }).message;
-        // ValidationPipe returns an array of error strings — join them for
-        // a single human-readable message.
-        message = Array.isArray(raw) ? raw.join(", ") : raw;
+        // Preserve the array so clients can show per-field validation errors.
+        message = raw;
       }
     }
 
