@@ -320,6 +320,15 @@ export class MusicService {
   }
 
   /**
+   * Extract Apple Music playlist ID from URL
+   */
+  private extractAppleMusicPlaylistId(url: string): string | null {
+    // Format: https://music.apple.com/{storefront}/playlist/{name}/{playlistId}
+    const match = url.match(/music\.apple\.com\/[a-z]{2}\/playlist\/[^/]+\/([a-zA-Z0-9.]+)/);
+    return match ? match[1] : null;
+  }
+
+  /**
    * Extract Apple Music album ID from URL (no ?i= track param)
    */
   private extractAppleMusicAlbumId(url: string): string | null {
@@ -345,8 +354,10 @@ export class MusicService {
     }
 
     if (isAppleMusic) {
-      const albumId = this.extractAppleMusicAlbumId(link);
       const storefront = this.extractAppleMusicStorefront(link);
+      const playlistId = this.extractAppleMusicPlaylistId(link);
+      if (playlistId) return this.listAppleMusicPlaylist(playlistId, storefront);
+      const albumId = this.extractAppleMusicAlbumId(link);
       if (albumId) return this.listAppleMusicAlbum(albumId, storefront);
     }
 
@@ -467,6 +478,53 @@ export class MusicService {
     }
   }
 
+  private async listAppleMusicPlaylist(playlistId: string, storefront = 'us'): Promise<{ type: 'playlist'; name: string; tracks: ParsedTrack[] } | null> {
+    const token = this.generateAppleMusicJwt();
+    if (!token) return null;
+
+    try {
+      const response = await fetch(
+        `https://api.music.apple.com/v1/catalog/${storefront}/playlists/${playlistId}`,
+        { headers: { 'Authorization': `Bearer ${token}` } },
+      );
+      if (!response.ok) return null;
+
+      const data = await response.json() as {
+        data?: Array<{
+          attributes?: { name: string; artwork?: { url: string } };
+          relationships?: {
+            tracks?: {
+              data?: Array<{
+                id: string;
+                attributes?: { name: string; artistName: string; artwork?: { url: string }; durationInMillis?: number };
+              }>;
+            };
+          };
+        }>;
+      };
+
+      const playlist = data.data?.[0];
+      if (!playlist?.attributes) return null;
+
+      const trackList = playlist.relationships?.tracks?.data ?? [];
+      const tracks: ParsedTrack[] = trackList
+        .filter(t => t.attributes)
+        .map(t => ({
+          platform: 'apple-music' as const,
+          title: t.attributes!.name,
+          artist: t.attributes!.artistName,
+          albumArt: this.buildAppleMusicArtworkUrl(t.attributes!.artwork?.url),
+          sourceLink: `https://music.apple.com/${storefront}/song/${t.id}`,
+          durationMs: t.attributes!.durationInMillis,
+        }));
+
+      return { type: 'playlist', name: playlist.attributes.name, tracks };
+    } catch (error) {
+      this.logger.error('Apple Music playlist listing error', error);
+      return null;
+    }
+  }
+
   /**
    * Detect whether a link is for an album, playlist, or single track
    */
@@ -480,6 +538,8 @@ export class MusicService {
       if (link.includes('?i=')) return 'track';
       // Album links without ?i= are albums
       if (link.includes('/album/')) return 'album';
+      // Playlist links
+      if (link.includes('/playlist/')) return 'playlist';
     }
     return 'track';
   }
