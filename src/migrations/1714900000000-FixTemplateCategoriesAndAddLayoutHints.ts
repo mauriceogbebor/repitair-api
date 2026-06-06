@@ -29,13 +29,13 @@ export class FixTemplateCategoriesAndAddLayoutHints1714900000000
   }> = [
     { id: "audioverse",    layoutVariant: "neon",     playerVariant: "scatteredCards", overlayOpacity: 0.45 },
     { id: "echo-room",     layoutVariant: "classic",  playerVariant: "playlist",       overlayOpacity: 0.4 },
-    { id: "matcha-mood",   layoutVariant: "minimal",  playerVariant: "spotifyCard",    overlayOpacity: 0.3 },
-    { id: "midnight-mood", layoutVariant: "classic",  playerVariant: "scatteredCards", overlayOpacity: 0.35 },
+    { id: "matcha-mood",   layoutVariant: "minimal",  playerVariant: "matchaWindow",   overlayOpacity: 0.3 },
+    { id: "midnight-mood", layoutVariant: "classic",  playerVariant: "miniBar",        overlayOpacity: 0.35 },
     { id: "sonic-orbit",   layoutVariant: "bold",     playerVariant: "collage",        overlayOpacity: 0.45 },
     { id: "soundscape",    layoutVariant: "classic",  playerVariant: "albumGrid",      overlayOpacity: 0.45 },
-    { id: "air-wave",      layoutVariant: "minimal",  playerVariant: "vinylCard",      overlayOpacity: 0.3 },
+    { id: "air-wave",      layoutVariant: "minimal",  playerVariant: "airwaveArc",     overlayOpacity: 0.3 },
     { id: "ice-girl",      layoutVariant: "gradient", playerVariant: "nowPlaying",     overlayOpacity: 0.4 },
-    { id: "minion",        layoutVariant: "classic",  playerVariant: "fullPlayer",     overlayOpacity: 0.35 },
+    { id: "minion",        layoutVariant: "classic",  playerVariant: "posterStack",    overlayOpacity: 0.35 },
     { id: "motion-2",      layoutVariant: "gradient", playerVariant: "scatteredCards", overlayOpacity: 0.4 },
   ];
 
