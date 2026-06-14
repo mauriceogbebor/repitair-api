@@ -286,6 +286,30 @@ export class UsersService {
     await this.usersRepo.save(user);
   }
 
+  /**
+   * Retrieve the user's stored Spotify refresh token (select: false on entity).
+   */
+  async getSpotifyRefreshToken(userId: string): Promise<string | null> {
+    const user = await this.usersRepo
+      .createQueryBuilder("user")
+      .addSelect("user.spotifyRefreshToken")
+      .where("user.id = :id", { id: userId })
+      .getOne();
+    return user?.spotifyRefreshToken ?? null;
+  }
+
+  /**
+   * Retrieve the user's stored Apple Music user token (select: false on entity).
+   */
+  async getAppleMusicUserToken(userId: string): Promise<string | null> {
+    const user = await this.usersRepo
+      .createQueryBuilder("user")
+      .addSelect("user.appleMusicUserToken")
+      .where("user.id = :id", { id: userId })
+      .getOne();
+    return user?.appleMusicUserToken ?? null;
+  }
+
   async connectAppleMusic(userId: string, userToken: string): Promise<void> {
     const user = await this.findById(userId);
     if (!user) {
