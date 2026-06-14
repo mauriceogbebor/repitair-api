@@ -95,6 +95,18 @@ export class MusicService {
   }
 
   /**
+   * Get the user's stored Apple Music user token for personal playlist access.
+   */
+  async getUserAppleMusicToken(userId: string): Promise<string | null> {
+    const user = await this.usersRepo
+      .createQueryBuilder("user")
+      .addSelect("user.appleMusicUserToken")
+      .where("user.id = :id", { id: userId })
+      .getOne();
+    return user?.appleMusicUserToken ?? null;
+  }
+
+  /**
    * Get a valid Spotify access token, using cached token if available
    */
   private async getSpotifyAccessToken(): Promise<string | null> {
@@ -263,7 +275,8 @@ export class MusicService {
    */
   private extractSpotifyTrackId(url: string): string | null {
     // Format: https://open.spotify.com/track/TRACK_ID?si=xxx
-    const match = url.match(/spotify\.com\/track\/([a-zA-Z0-9]+)/);
+    // Also handles /intl-{country}/ prefix
+    const match = url.match(/spotify\.com\/(?:intl-[a-z]+\/)?track\/([a-zA-Z0-9]+)/);
     return match ? match[1] : null;
   }
 
@@ -271,7 +284,7 @@ export class MusicService {
    * Extract Spotify album ID from URL
    */
   private extractSpotifyAlbumId(url: string): string | null {
-    const match = url.match(/spotify\.com\/album\/([a-zA-Z0-9]+)/);
+    const match = url.match(/spotify\.com\/(?:intl-[a-z]+\/)?album\/([a-zA-Z0-9]+)/);
     return match ? match[1] : null;
   }
 
@@ -279,7 +292,7 @@ export class MusicService {
    * Extract Spotify playlist ID from URL
    */
   private extractSpotifyPlaylistId(url: string): string | null {
-    const match = url.match(/spotify\.com\/playlist\/([a-zA-Z0-9]+)/);
+    const match = url.match(/spotify\.com\/(?:intl-[a-z]+\/)?playlist\/([a-zA-Z0-9]+)/);
     return match ? match[1] : null;
   }
 
@@ -328,7 +341,8 @@ export class MusicService {
    */
   private extractAppleMusicPlaylistId(url: string): string | null {
     // Format: https://music.apple.com/{storefront}/playlist/{name}/{playlistId}
-    const match = url.match(/music\.apple\.com\/[a-z]{2}\/playlist\/[^/]+\/([a-zA-Z0-9.]+)/);
+    // Playlist IDs can contain letters, numbers, dots, and hyphens (e.g. pl.u-xxxxx)
+    const match = url.match(/music\.apple\.com\/[a-z]{2}\/playlist\/[^/]+\/([a-zA-Z0-9._-]+)/);
     return match ? match[1] : null;
   }
 
@@ -345,7 +359,7 @@ export class MusicService {
   /**
    * List tracks from a Spotify album
    */
-  async listAlbumTracks(link: string): Promise<{ type: 'album' | 'playlist'; name: string; tracks: ParsedTrack[] } | null> {
+  async listAlbumTracks(link: string, userId?: string): Promise<{ type: 'album' | 'playlist'; name: string; tracks: ParsedTrack[] } | null> {
     const isSpotify = link.includes('spotify.com');
     const isAppleMusic = link.includes('music.apple.com');
 
@@ -354,13 +368,13 @@ export class MusicService {
       const playlistId = this.extractSpotifyPlaylistId(link);
 
       if (albumId) return this.listSpotifyAlbum(albumId);
-      if (playlistId) return this.listSpotifyPlaylist(playlistId);
+      if (playlistId) return this.listSpotifyPlaylist(playlistId, userId);
     }
 
     if (isAppleMusic) {
       const storefront = this.extractAppleMusicStorefront(link);
       const playlistId = this.extractAppleMusicPlaylistId(link);
-      if (playlistId) return this.listAppleMusicPlaylist(playlistId, storefront);
+      if (playlistId) return this.listAppleMusicPlaylist(playlistId, storefront, userId);
       const albumId = this.extractAppleMusicAlbumId(link);
       if (albumId) return this.listAppleMusicAlbum(albumId, storefront);
     }
@@ -401,37 +415,65 @@ export class MusicService {
     }
   }
 
-  private async listSpotifyPlaylist(playlistId: string): Promise<{ type: 'playlist'; name: string; tracks: ParsedTrack[] } | null> {
-    const token = await this.getSpotifyAccessToken();
+  private async listSpotifyPlaylist(playlistId: string, userId?: string): Promise<{ type: 'playlist'; name: string; tracks: ParsedTrack[] } | null> {
+    // Try user token first (required for private playlists), fall back to client credentials
+    let token: string | null = null;
+    if (userId) {
+      token = await this.getUserSpotifyAccessToken(userId);
+    }
+    if (!token) {
+      token = await this.getSpotifyAccessToken();
+    }
     if (!token) return null;
 
     try {
-      const response = await fetch(`https://api.spotify.com/v1/playlists/${playlistId}?fields=name,tracks.items(track(id,name,artists(name),album(images),duration_ms))`, {
+      const response = await fetch(`https://api.spotify.com/v1/playlists/${playlistId}`, {
         headers: { 'Authorization': `Bearer ${token}` },
       });
-      if (!response.ok) return null;
 
-      const data = await response.json() as {
-        name: string;
-        tracks: { items: Array<{ track: SpotifyTrack & { id: string; duration_ms: number } }> };
-      };
+      // If client credentials got a 403, retry with user token (if we haven't already)
+      if (response.status === 403 && userId && !token) {
+        const userToken = await this.getUserSpotifyAccessToken(userId);
+        if (userToken) {
+          const retryResponse = await fetch(`https://api.spotify.com/v1/playlists/${playlistId}`, {
+            headers: { 'Authorization': `Bearer ${userToken}` },
+          });
+          if (retryResponse.ok) {
+            return this.parseSpotifyPlaylistResponse(playlistId, retryResponse);
+          }
+        }
+      }
 
-      const tracks: ParsedTrack[] = data.tracks.items
-        .filter(item => item.track)
-        .map(item => ({
-          platform: 'spotify' as const,
-          title: item.track.name,
-          artist: item.track.artists.map(a => a.name).join(', '),
-          albumArt: item.track.album?.images?.[0]?.url,
-          sourceLink: `https://open.spotify.com/track/${item.track.id}`,
-          durationMs: item.track.duration_ms,
-        }));
+      if (!response.ok) {
+        this.logger.warn(`Spotify playlist lookup failed: ${response.status} ${response.statusText} (playlist=${playlistId})`);
+        return null;
+      }
 
-      return { type: 'playlist', name: data.name, tracks };
+      return this.parseSpotifyPlaylistResponse(playlistId, response);
     } catch (error) {
       this.logger.error('Spotify playlist listing error', error);
       return null;
     }
+  }
+
+  private async parseSpotifyPlaylistResponse(playlistId: string, response: Response): Promise<{ type: 'playlist'; name: string; tracks: ParsedTrack[] } | null> {
+    const data = await response.json() as {
+      name: string;
+      tracks: { items: Array<{ track: { id: string; name: string; artists: Array<{ name: string }>; album?: { images?: Array<{ url: string }> }; duration_ms: number } | null }> };
+    };
+
+    const tracks: ParsedTrack[] = data.tracks.items
+      .filter(item => item.track)
+      .map(item => ({
+        platform: 'spotify' as const,
+        title: item.track!.name,
+        artist: item.track!.artists.map(a => a.name).join(', '),
+        albumArt: item.track!.album?.images?.[0]?.url,
+        sourceLink: `https://open.spotify.com/track/${item.track!.id}`,
+        durationMs: item.track!.duration_ms,
+      }));
+
+    return { type: 'playlist', name: data.name, tracks };
   }
 
   private async listAppleMusicAlbum(albumId: string, storefront = 'us'): Promise<{ type: 'album'; name: string; tracks: ParsedTrack[] } | null> {
@@ -488,16 +530,39 @@ export class MusicService {
     }
   }
 
-  private async listAppleMusicPlaylist(playlistId: string, storefront = 'us'): Promise<{ type: 'playlist'; name: string; tracks: ParsedTrack[] } | null> {
-    const token = this.generateAppleMusicJwt();
-    if (!token) return null;
+  private async listAppleMusicPlaylist(playlistId: string, storefront = 'us', userId?: string): Promise<{ type: 'playlist'; name: string; tracks: ParsedTrack[] } | null> {
+    const devToken = this.generateAppleMusicJwt();
+    if (!devToken) {
+      this.logger.warn('Apple Music JWT generation failed — cannot list playlist');
+      return null;
+    }
+
+    const isPersonal = playlistId.startsWith('pl.u-');
 
     try {
-      const response = await fetch(
-        `https://api.music.apple.com/v1/catalog/${storefront}/playlists/${playlistId}?include=tracks`,
-        { headers: { 'Authorization': `Bearer ${token}` } },
-      );
-      if (!response.ok) return null;
+      // Personal playlists (pl.u-*) use the library endpoint with Music-User-Token
+      // Public/editorial playlists use the catalog endpoint
+      let apiUrl: string;
+      const headers: Record<string, string> = { 'Authorization': `Bearer ${devToken}` };
+
+      if (isPersonal) {
+        // User's library playlist — requires Music-User-Token
+        const userToken = userId ? await this.getUserAppleMusicToken(userId) : null;
+        if (!userToken) {
+          this.logger.warn(`No Apple Music user token for personal playlist (playlist=${playlistId}, user=${userId})`);
+          return null;
+        }
+        headers['Music-User-Token'] = userToken;
+        apiUrl = `https://api.music.apple.com/v1/me/library/playlists/${playlistId}?include=tracks`;
+      } else {
+        apiUrl = `https://api.music.apple.com/v1/catalog/${storefront}/playlists/${playlistId}?include=tracks`;
+      }
+
+      const response = await fetch(apiUrl, { headers });
+      if (!response.ok) {
+        this.logger.warn(`Apple Music playlist lookup failed: ${response.status} ${response.statusText} (playlist=${playlistId}, storefront=${storefront}, personal=${isPersonal})`);
+        return null;
+      }
 
       const data = await response.json() as {
         data?: Array<{
@@ -536,11 +601,26 @@ export class MusicService {
   }
 
   /**
+   * Check if a playlist link points to a personal/private playlist
+   * that can't be accessed via the public catalog API.
+   * - Apple Music: personal playlists have IDs starting with "pl.u-"
+   * - Spotify: we can't tell upfront, but client credentials will get a 403
+   */
+  isPersonalPlaylist(link: string): boolean {
+    if (link.includes('music.apple.com')) {
+      const playlistId = this.extractAppleMusicPlaylistId(link);
+      return playlistId?.startsWith('pl.u-') ?? false;
+    }
+    return false;
+  }
+
+  /**
    * Detect whether a link is for an album, playlist, or single track
    */
   detectLinkType(link: string): 'track' | 'album' | 'playlist' {
-    if (link.includes('spotify.com/album/')) return 'album';
-    if (link.includes('spotify.com/playlist/')) return 'playlist';
+    // Spotify URLs may include /intl-{country}/ prefix (e.g. /intl-de/playlist/...)
+    if (/spotify\.com\/(intl-[a-z]+\/)?album\//.test(link)) return 'album';
+    if (/spotify\.com\/(intl-[a-z]+\/)?playlist\//.test(link)) return 'playlist';
     if (link.includes('music.apple.com')) {
       // Direct song links are always tracks
       if (link.includes('/song/')) return 'track';

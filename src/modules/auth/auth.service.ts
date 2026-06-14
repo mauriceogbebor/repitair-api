@@ -505,7 +505,13 @@ private deriveDisplayNameFromEmail(email: string): string {
     }
 
     const state = this.signOAuthState(userId);
-    const scopes = ["user-read-recently-played", "user-read-currently-playing", "user-top-read"];
+    const scopes = [
+      "user-read-recently-played",
+      "user-read-currently-playing",
+      "user-top-read",
+      "playlist-read-private",
+      "playlist-read-collaborative",
+    ];
 
     const params = new URLSearchParams({
       client_id: clientId,
