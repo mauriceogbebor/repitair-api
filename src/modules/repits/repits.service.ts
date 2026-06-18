@@ -3,13 +3,63 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { QueryFailedError, Repository } from "typeorm";
 
 import { Repit, Template } from "../../entities";
+import {
+  assertCanvasMeta,
+  assertRepitComposition,
+  DEFAULT_CANVAS_META,
+  normalizeCanvasMeta,
+  normalizeRepitState,
+} from "../../common/composition/composition.utils";
+import type { CompositionCanvasMeta, RepitComposition } from "../../common/composition/composition.types";
 import { UploadsService } from "../uploads/uploads.service";
 import { CreateRepitDto } from "./dto/create-repit.dto";
 import { UpdateRepitDto } from "./dto/update-repit.dto";
 
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 100;
-const LEGACY_MISSING_REPIT_COLUMNS = ["albumArt", "durationMs", "updatedAt", "selectedSongs", "widgetTransforms", "editorState"];
+const LEGACY_MISSING_REPIT_COLUMNS = [
+  "albumArt",
+  "durationMs",
+  "updatedAt",
+  "selectedSongs",
+  "widgetTransforms",
+  "editorState",
+  "templateVersion",
+  "canvasMeta",
+  "composition",
+];
+
+function resolveTemplateVersion(value: unknown, fallback = 1): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function resolveCanvasMeta(
+  explicitMeta: CompositionCanvasMeta | null | undefined,
+  composition: RepitComposition | null | undefined,
+): CompositionCanvasMeta | null {
+  if (explicitMeta && typeof explicitMeta === "object") {
+    return explicitMeta;
+  }
+
+  const compositionMeta = composition?.canvasMeta ?? null;
+
+  return compositionMeta && typeof compositionMeta === "object" ? compositionMeta : null;
+}
+
+function resolveTemplateVersionFromComposition(
+  explicitVersion: number | null | undefined,
+  composition: { templateVersion?: unknown } | null | undefined,
+): number {
+  if (typeof explicitVersion === "number" && Number.isFinite(explicitVersion)) {
+    return explicitVersion;
+  }
+
+  const compositionVersion = composition && typeof composition === "object"
+    ? (composition as { templateVersion?: unknown }).templateVersion
+    : undefined;
+
+  return resolveTemplateVersion(compositionVersion, 1);
+}
 
 function isLegacyRepitSchemaError(err: unknown): boolean {
   if (!(err instanceof QueryFailedError)) {
@@ -37,7 +87,8 @@ export class RepitsService {
 
   async getRepit(userId: string, id: string): Promise<Repit | null> {
     try {
-      return await this.repitsRepo.findOne({ where: { id, userId } });
+      const repit = await this.repitsRepo.findOne({ where: { id, userId } });
+      return repit ? this.normalizeRepit(repit) : null;
     } catch (err) {
       if (isLegacyRepitSchemaError(err)) {
         return this.getRepitLegacy(userId, id);
@@ -56,7 +107,12 @@ export class RepitsService {
         take,
         skip,
       });
-      return { data, total, limit: take, offset: skip };
+      return {
+        data: data.map((repit) => this.normalizeRepit(repit)),
+        total,
+        limit: take,
+        offset: skip,
+      };
     } catch (err) {
       if (isLegacyRepitSchemaError(err)) {
         return this.listRepitsLegacy(userId, take, skip);
@@ -72,6 +128,19 @@ export class RepitsService {
       throw new BadRequestException(`Template "${body.templateId}" does not exist`);
     }
 
+    const fallbackCanvasMeta = normalizeCanvasMeta(template.canvasMeta, DEFAULT_CANVAS_META);
+    const validatedCanvasMeta = body.canvasMeta !== undefined
+      ? assertCanvasMeta(body.canvasMeta, "canvasMeta")
+      : null;
+    const validatedComposition = body.composition !== undefined
+      ? assertRepitComposition(body.composition, {
+        context: "composition",
+        templateId: body.templateId,
+        templateVersion: body.templateVersion ?? template.templateVersion,
+        fallbackCanvasMeta: validatedCanvasMeta ?? fallbackCanvasMeta,
+      })
+      : null;
+
     const repit = this.repitsRepo.create({
       userId,
       title: body.songTitle ?? "Untitled Repitair",
@@ -86,10 +155,14 @@ export class RepitsService {
       selectedSongs: body.selectedSongs ?? this.buildFallbackSelectedSongs(body),
       widgetTransforms: body.widgetTransforms ?? null,
       editorState: body.editorState ?? null,
+      templateVersion: resolveTemplateVersionFromComposition(body.templateVersion, validatedComposition),
+      canvasMeta: resolveCanvasMeta(validatedCanvasMeta, validatedComposition),
+      composition: validatedComposition,
     });
 
     try {
-      return await this.repitsRepo.save(repit);
+      const saved = await this.repitsRepo.save(repit);
+      return this.normalizeRepit(saved);
     } catch (err) {
       if (isLegacyRepitSchemaError(err)) {
         return this.createRepitLegacy(userId, body);
@@ -123,6 +196,19 @@ export class RepitsService {
       return null;
     }
 
+    const effectiveTemplateId = body.templateId ?? existing.templateId;
+    const validatedCanvasMeta = body.canvasMeta !== undefined
+      ? assertCanvasMeta(body.canvasMeta, "canvasMeta")
+      : undefined;
+    const validatedComposition = body.composition !== undefined
+      ? assertRepitComposition(body.composition, {
+        context: "composition",
+        templateId: effectiveTemplateId,
+        templateVersion: body.templateVersion ?? existing.templateVersion ?? null,
+        fallbackCanvasMeta: validatedCanvasMeta ?? normalizeCanvasMeta(existing.canvasMeta, DEFAULT_CANVAS_META),
+      })
+      : undefined;
+
     // If the photo is changing, schedule the old file for deletion.
     const oldPhoto = existing.backgroundPhotoUrl;
     const newPhoto = body.backgroundPhotoUrl;
@@ -140,9 +226,16 @@ export class RepitsService {
       songLink: body.songLink !== undefined ? body.songLink ?? "" : existing.songLink,
       status: body.status ?? existing.status,
       templateId: body.templateId ?? existing.templateId,
+      templateVersion: body.templateVersion !== undefined
+        ? resolveTemplateVersionFromComposition(body.templateVersion, validatedComposition)
+        : existing.templateVersion,
       title: body.title ?? existing.title,
       widgetTransforms: body.widgetTransforms ?? existing.widgetTransforms,
       editorState: body.editorState ?? existing.editorState,
+      canvasMeta: validatedCanvasMeta !== undefined || validatedComposition !== undefined
+        ? resolveCanvasMeta(validatedCanvasMeta, validatedComposition)
+        : existing.canvasMeta,
+      composition: validatedComposition !== undefined ? validatedComposition : existing.composition,
     });
 
     let saved: Repit;
@@ -161,7 +254,7 @@ export class RepitsService {
       this.tryDeleteUpload(oldPhoto);
     }
 
-    return saved;
+    return this.normalizeRepit(saved);
   }
 
   async deleteRepit(userId: string, id: string): Promise<boolean> {
@@ -224,6 +317,10 @@ export class RepitsService {
         albumArtUrl: body.albumArt ?? null,
       },
     ];
+  }
+
+  private normalizeRepit(repit: Repit): Repit {
+    return normalizeRepitState(repit) as Repit;
   }
 
   private getRepitLegacy(userId: string, id: string): Promise<Repit | null> {

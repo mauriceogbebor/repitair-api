@@ -3,6 +3,7 @@ import {
   IsArray,
   IsEnum,
   IsNumber,
+  IsInt,
   IsObject,
   IsOptional,
   IsString,
@@ -19,6 +20,18 @@ import {
 export class CreateRepitDto {
   @IsString()
   templateId!: string;
+
+  @IsOptional()
+  @IsInt()
+  templateVersion?: number | null;
+
+  @IsOptional()
+  @IsObject()
+  canvasMeta?: Record<string, unknown> | null;
+
+  @IsOptional()
+  @IsObject()
+  composition?: Record<string, unknown> | null;
 
   @IsOptional()
   @IsUrl({}, { message: "songLink must be a valid URL" })

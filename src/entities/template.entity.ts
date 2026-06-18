@@ -1,4 +1,5 @@
 import { Column, Entity, PrimaryColumn } from "typeorm";
+import type { CompositionCanvasMeta, TemplateComposition } from "../common/composition/composition.types";
 
 @Entity("templates")
 export class Template {
@@ -34,4 +35,13 @@ export class Template {
   /** Suggested overlay opacity for the photo layer (0–1) */
   @Column({ type: "real", default: 0.3 })
   overlayOpacity!: number;
+
+  @Column({ type: "int", default: 1 })
+  templateVersion!: number;
+
+  @Column({ type: "jsonb", nullable: true })
+  canvasMeta?: CompositionCanvasMeta | null;
+
+  @Column({ type: "jsonb", nullable: true })
+  composition?: TemplateComposition | null;
 }
