@@ -1,5 +1,6 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, ManyToOne, JoinColumn } from "typeorm";
 import { User } from "./user.entity";
+import type { CompositionCanvasMeta, RepitComposition } from "../common/composition/composition.types";
 
 type RepitSongSelection = {
   songLink?: string | null;
@@ -25,6 +26,7 @@ type RepitEditorState = {
   showDay?: boolean;
   customDate?: string | null;
   customTime?: string | null;
+  compositionEffects?: Record<string, unknown> | null;
   playerTransform?: RepitWidgetTransform | null;
   dateTimeTransform?: RepitWidgetTransform | null;
   lyricsTransform?: RepitWidgetTransform | null;
@@ -77,6 +79,15 @@ export class Repit {
 
   @Column({ type: "jsonb", nullable: true })
   editorState?: RepitEditorState | null;
+
+  @Column({ type: "int", default: 1 })
+  templateVersion!: number;
+
+  @Column({ type: "jsonb", nullable: true })
+  canvasMeta?: CompositionCanvasMeta | null;
+
+  @Column({ type: "jsonb", nullable: true })
+  composition?: RepitComposition | null;
 
   @CreateDateColumn()
   createdAt!: Date;

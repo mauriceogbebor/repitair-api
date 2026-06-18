@@ -1,3 +1,4 @@
+import { BadRequestException } from "@nestjs/common";
 import { Test, TestingModule } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
@@ -21,6 +22,9 @@ describe("RepitsService", () => {
     songLink: "https://open.spotify.com/track/example",
     status: "shared",
     templateId: "sunrise",
+    templateVersion: 1,
+    canvasMeta: null,
+    composition: null,
     backgroundPhotoUrl: undefined,
     user: undefined,
   };
@@ -42,6 +46,41 @@ describe("RepitsService", () => {
   const mockUploadsService = {
     deleteFile: jest.fn().mockResolvedValue(undefined),
     uploadFile: jest.fn(),
+  };
+
+  const validCanvasMeta = {
+    width: 1000,
+    height: 1778,
+    aspectRatio: "9:16",
+    coordinateSpace: "points" as const,
+  };
+
+  const validComposition = {
+    version: 1 as const,
+    templateId: "template_3",
+    templateVersion: 4,
+    canvasMeta: validCanvasMeta,
+    layers: [
+      {
+        id: "photo",
+        name: "Photo",
+        type: "photo",
+        interactive: true,
+        frame: {
+          x: 0,
+          y: 0,
+          width: 1000,
+          height: 1778,
+          scale: 1,
+          rotation: 0,
+          opacity: 1,
+          zIndex: 0,
+          locked: false,
+          visible: true,
+        },
+        data: {},
+      },
+    ],
   };
 
   beforeEach(async () => {
@@ -98,6 +137,25 @@ describe("RepitsService", () => {
     });
   });
 
+  describe("getRepit", () => {
+    it("should return old repits without composition safely", async () => {
+      mockRepository.findOne.mockResolvedValue({
+        ...mockRepit,
+        composition: null,
+        canvasMeta: null,
+      });
+
+      const result = await service.getRepit("user_1", mockRepit.id);
+
+      expect(result).toEqual(expect.objectContaining({
+        id: mockRepit.id,
+        templateVersion: 1,
+        composition: null,
+        canvasMeta: null,
+      }));
+    });
+  });
+
   describe("createRepit", () => {
     it("should create a new repit", async () => {
       const createDto: CreateRepitDto = {
@@ -139,7 +197,7 @@ describe("RepitsService", () => {
         }),
       );
       expect(repository.save).toHaveBeenCalled();
-      expect(result).toEqual(newRepit);
+      expect(result).toEqual(expect.objectContaining(newRepit));
     });
 
     it("should use default values for optional fields", async () => {
@@ -162,8 +220,52 @@ describe("RepitsService", () => {
           title: "Untitled Repitair",
           platform: "spotify",
           status: "draft",
+          templateVersion: 1,
         })
       );
+    });
+
+    it("should persist canonical composition payload when provided", async () => {
+      const createDto: CreateRepitDto = {
+        templateId: "template_3",
+        songTitle: "Blinding Lights",
+        artistName: "The Weeknd",
+        platform: RepitPlatform.SPOTIFY,
+        templateVersion: 4,
+        canvasMeta: validComposition.canvasMeta,
+        composition: validComposition,
+      };
+
+      mockTemplatesRepo.findOne.mockResolvedValue({ id: "template_3" });
+      mockRepository.create.mockReturnValue({ ...mockRepit, composition: validComposition, templateVersion: 4, canvasMeta: validComposition.canvasMeta });
+      mockRepository.save.mockResolvedValue({ ...mockRepit, composition: validComposition, templateVersion: 4, canvasMeta: validComposition.canvasMeta });
+
+      await service.createRepit("user_1", createDto);
+
+      expect(repository.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          templateVersion: 4,
+          canvasMeta: expect.objectContaining(validComposition.canvasMeta),
+          composition: expect.objectContaining({
+            templateId: "template_3",
+            templateVersion: 4,
+            canvasMeta: expect.objectContaining(validComposition.canvasMeta),
+          }),
+        }),
+      );
+    });
+
+    it("should reject malformed composition payloads", async () => {
+      mockTemplatesRepo.findOne.mockResolvedValue({ id: "template_3" });
+
+      await expect(service.createRepit("user_1", {
+        templateId: "template_3",
+        composition: {
+          version: 1,
+          templateId: "other-template",
+          layers: [],
+        },
+      })).rejects.toBeInstanceOf(BadRequestException);
     });
   });
 
@@ -186,7 +288,48 @@ describe("RepitsService", () => {
       expect(repository.findOne).toHaveBeenCalledWith({
         where: { id: mockRepit.id, userId: "user_1" },
       });
-      expect(result).toEqual(updatedRepit);
+      expect(result).toEqual(expect.objectContaining(updatedRepit));
+    });
+
+    it("should preserve composition version when updating canonical payload", async () => {
+      const updateDto = {
+        templateVersion: 3,
+        canvasMeta: { width: 1000, height: 1250, aspectRatio: "4:5", coordinateSpace: "points" },
+        composition: {
+          ...validComposition,
+          templateId: "sunrise",
+          templateVersion: 3,
+          canvasMeta: { width: 1000, height: 1250, aspectRatio: "4:5", coordinateSpace: "points" as const },
+        },
+      };
+      const updatedRepit = { ...mockRepit, ...updateDto };
+
+      mockRepository.findOne.mockResolvedValue(mockRepit);
+      mockRepository.merge.mockReturnValue(updatedRepit);
+      mockRepository.save.mockResolvedValue(updatedRepit);
+
+      const result = await service.updateRepit("user_1", mockRepit.id, updateDto);
+
+      expect(repository.merge).toHaveBeenCalledWith(
+        mockRepit,
+        expect.objectContaining({
+          templateVersion: 3,
+          canvasMeta: expect.objectContaining(updateDto.canvasMeta),
+          composition: expect.objectContaining({
+            templateId: "sunrise",
+            templateVersion: 3,
+          }),
+        }),
+      );
+      expect(result).toEqual(expect.objectContaining({
+        id: updatedRepit.id,
+        templateVersion: 3,
+        canvasMeta: expect.objectContaining(updateDto.canvasMeta),
+        composition: expect.objectContaining({
+          templateId: "sunrise",
+          templateVersion: 3,
+        }),
+      }));
     });
 
     it("should return null if repit not found", async () => {
