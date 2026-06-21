@@ -59,6 +59,52 @@ describe("MusicService", () => {
     it("should detect Apple Music track links (with ?i=)", () => {
       expect(service.detectLinkType("https://music.apple.com/us/album/test/12345?i=67890")).toBe("track");
     });
+
+    it("should detect Apple Music playlist links from iTunes host", () => {
+      expect(service.detectLinkType("https://itunes.apple.com/us/playlist/chill-mix/pl.pm-123456789")).toBe("playlist");
+    });
+
+    it("should detect Apple Music album links from iTunes host", () => {
+      expect(service.detectLinkType("https://itunes.apple.com/us/album/test/12345")).toBe("album");
+    });
+
+    it("should detect Apple Music track links from iTunes host (with ?i=)", () => {
+      expect(service.detectLinkType("https://itunes.apple.com/us/album/test/12345?i=67890")).toBe("track");
+    });
+  });
+
+  describe("Apple Music extractors", () => {
+    it("should extract storefront from music.apple.com album links", () => {
+      expect((service as any).extractAppleMusicStorefront("https://music.apple.com/us/album/album-name/123456789")).toBe("us");
+    });
+
+    it("should extract storefront from itunes.apple.com album links", () => {
+      expect((service as any).extractAppleMusicStorefront("https://itunes.apple.com/us/album/album-name/123456789")).toBe("us");
+    });
+
+    it("should extract album ID from music.apple.com album links", () => {
+      expect((service as any).extractAppleMusicAlbumId("https://music.apple.com/us/album/album-name/123456789")).toBe("123456789");
+    });
+
+    it("should extract album ID from itunes.apple.com album links", () => {
+      expect((service as any).extractAppleMusicAlbumId("https://itunes.apple.com/us/album/album-name/123456789")).toBe("123456789");
+    });
+
+    it("should extract playlist ID from music.apple.com playlist links", () => {
+      expect((service as any).extractAppleMusicPlaylistId("https://music.apple.com/us/playlist/playlist-name/pl.xxxxx")).toBe("pl.xxxxx");
+    });
+
+    it("should extract playlist ID from itunes.apple.com playlist links", () => {
+      expect((service as any).extractAppleMusicPlaylistId("https://itunes.apple.com/us/playlist/playlist-name/pl.xxxxx")).toBe("pl.xxxxx");
+    });
+
+    it("should extract track ID from music.apple.com album links with ?i=", () => {
+      expect((service as any).extractAppleMusicTrackId("https://music.apple.com/us/album/album-name/123456789?i=987654321")).toBe("987654321");
+    });
+
+    it("should extract track ID from itunes.apple.com album links with ?i=", () => {
+      expect((service as any).extractAppleMusicTrackId("https://itunes.apple.com/us/album/album-name/123456789?i=987654321")).toBe("987654321");
+    });
   });
 
   describe("parseLink", () => {
