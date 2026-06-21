@@ -16,6 +16,11 @@ export class MusicController {
   async parseLink(@Body() body: ParseLinkDto, @CurrentUser() user: CurrentUserPayload) {
     // First check if it's an album/playlist — return type info so frontend knows to show picker
     const linkType = this.musicService.detectLinkType(body.link);
+    const provider = body.link.includes("spotify.com")
+      ? "spotify"
+      : (body.link.includes("music.apple.com") || body.link.includes("itunes.apple.com"))
+        ? "apple-music"
+        : "unknown";
     if (linkType !== 'track') {
       // Pass userId so the service can use the user's auth tokens for private playlists
       const result = await this.musicService.listAlbumTracks(body.link, user.sub);
@@ -24,7 +29,7 @@ export class MusicController {
       }
       // listAlbumTracks returned null — the API call failed for this album/playlist link.
       // Don't fall through to parseLink (it would try to extract a track ID from an album URL).
-      this.logger.warn(`listAlbumTracks returned null for ${linkType} link: ${body.link}`);
+      this.logger.warn(`listAlbumTracks returned null for provider=${provider} kind=${linkType} user=${user.sub}`);
 
       // Provide a more helpful message for personal playlists
       if (linkType === 'playlist' && this.musicService.isPersonalPlaylist(body.link)) {
@@ -34,7 +39,7 @@ export class MusicController {
       }
 
       throw new BadRequestException(
-        `We couldn't load tracks from that ${linkType}. Please check the link and try again.`,
+        `We couldn't load tracks from that ${provider === "spotify" ? "Spotify" : provider === "apple-music" ? "Apple Music" : ""} ${linkType}`.trim() + '. Please check the link and try again.',
       );
     }
     // Single track
