@@ -30,6 +30,15 @@ export class AuthService {
     private readonly configService: ConfigService,
   ) {}
 
+  /** Return a required config value or throw at runtime. */
+  private requireSecret(key: string): string {
+    const value = this.configService.get<string>(key);
+    if (!value) {
+      throw new Error(`Missing required environment variable: ${key}`);
+    }
+    return value;
+  }
+
   async signup(dto: SignupDto) {
     const user = await this.usersService.createUser({
       fullName: dto.fullName,
@@ -376,7 +385,7 @@ private deriveDisplayNameFromEmail(email: string): string {
    * so the callback can verify it wasn't forged.
    */
   private signOAuthState(userId: string): string {
-    const secret = this.configService.get<string>("JWT_SECRET") ?? "fallback-dev-secret";
+    const secret = this.requireSecret("JWT_SECRET");
     const payload = Buffer.from(userId).toString("base64url");
     const sig = createHmac("sha256", secret).update(payload).digest("base64url");
     return `${payload}.${sig}`;
@@ -387,7 +396,7 @@ private deriveDisplayNameFromEmail(email: string): string {
    * Returns the userId or throws on tampered/invalid state.
    */
   private verifyOAuthState(state: string): string {
-    const secret = this.configService.get<string>("JWT_SECRET") ?? "fallback-dev-secret";
+    const secret = this.requireSecret("JWT_SECRET");
     const dotIndex = state.lastIndexOf(".");
     if (dotIndex === -1) throw new BadRequestException("Invalid state parameter");
 
