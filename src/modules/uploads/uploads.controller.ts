@@ -27,7 +27,7 @@ export class UploadsController {
    */
   @Post("image")
   @UseGuards(JwtAuthGuard)
-  @UseInterceptors(FileInterceptor("file", { limits: { fileSize: 5 * 1024 * 1024 } }))
+  @UseInterceptors(FileInterceptor("file", { limits: { fileSize: 10 * 1024 * 1024 } }))
   async uploadImage(
     @UploadedFile() file: Express.Multer.File,
   ): Promise<UploadResponseDto> {
