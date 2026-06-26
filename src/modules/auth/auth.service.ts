@@ -8,7 +8,7 @@ import {
 } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { ConfigService } from "@nestjs/config";
-import { createHmac, createPublicKey, randomBytes, timingSafeEqual } from "crypto";
+import { createHmac, createPublicKey, randomBytes, randomUUID, timingSafeEqual } from "crypto";
 
 import { UsersService } from "../users/users.service";
 import { MailService } from "../../common/services/mail.service";
@@ -253,19 +253,14 @@ private deriveDisplayNameFromEmail(email: string): string {
     const code = await this.usersService.setResetCode(normalizedEmail);
     const user = await this.usersService.findByEmail(normalizedEmail);
     if (code && user) {
-      try {
-        await Promise.race([
-          this.mailService.sendPasswordResetCode(normalizedEmail, code, user.fullName),
-          new Promise<never>((_, reject) => {
-            setTimeout(() => reject(new Error("Password reset email delivery timed out")), this.resetEmailDeliveryTimeoutMs);
-          }),
-        ]);
-      } catch (err) {
-        this.logger.error(`Failed to send reset email to ${normalizedEmail}: ${(err as Error).message}`);
-        // Don't leak email failure to the caller — preserve enumeration resistance.
-      }
-    } else {
-      this.logger.warn(`Password reset requested for unknown email: ${normalizedEmail}`);
+      // Fire-and-forget — do NOT await, to prevent timing side-channel
+      // that reveals whether an email exists. The response returns
+      // immediately regardless of email delivery outcome.
+      this.mailService
+        .sendPasswordResetCode(normalizedEmail, code, user.fullName)
+        .catch((err: Error) => {
+          this.logger.error(`Failed to send reset email to ${normalizedEmail}: ${err.message}`);
+        });
     }
     // Always return the same response whether or not the email exists,
     // to prevent account enumeration.
@@ -292,13 +287,14 @@ private deriveDisplayNameFromEmail(email: string): string {
   }
 
   async logout(token: string) {
-    // Decode (not verify — already verified by the guard) to pull the exp claim
-    // so we only keep the token blacklisted until its natural expiry.
+    // Decode (not verify — already verified by the guard) to pull exp and jti.
+    // We blacklist only the jti (36 chars) instead of the full token (~300 chars).
+    // Tokens issued before jti was added fall back to the full token string.
     try {
-      const decoded = this.jwtService.decode(token) as { exp?: number } | null;
-      await this.tokenBlacklist.add(token, decoded?.exp);
+      const decoded = this.jwtService.decode(token) as { exp?: number; jti?: string } | null;
+      const key = decoded?.jti ?? token;
+      await this.tokenBlacklist.add(key, decoded?.exp);
     } catch {
-      // If decode fails for any reason, blacklist with default expiry.
       await this.tokenBlacklist.add(token);
     }
     return { message: "Logged out successfully" };
@@ -309,12 +305,12 @@ private deriveDisplayNameFromEmail(email: string): string {
    * The old token is blacklisted to prevent reuse.
    */
   async refresh(currentToken: string, userId: string, email: string) {
-    // Blacklist the old token so it can't be reused
+    // Blacklist the old token's jti so it can't be reused
     try {
-      const decoded = this.jwtService.decode(currentToken) as { exp?: number } | null;
-      await this.tokenBlacklist.add(currentToken, decoded?.exp);
+      const decoded = this.jwtService.decode(currentToken) as { exp?: number; jti?: string } | null;
+      const key = decoded?.jti ?? currentToken;
+      await this.tokenBlacklist.add(key, decoded?.exp);
     } catch {
-      // If decode fails, blacklist with default expiry
       await this.tokenBlacklist.add(currentToken);
     }
 
@@ -377,7 +373,7 @@ private deriveDisplayNameFromEmail(email: string): string {
   }
 
   private signToken(userId: string, email: string): string {
-    return this.jwtService.sign({ sub: userId, email });
+    return this.jwtService.sign({ sub: userId, email, jti: randomUUID() });
   }
 
   /**

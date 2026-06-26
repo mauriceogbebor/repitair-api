@@ -163,12 +163,14 @@ describe("JwtAuthGuard", () => {
 
     it("should reject a blacklisted token", async () => {
       const mockContext = createMockContext({ authorization: `Bearer ${mockValidToken}` });
+      // verify succeeds (token is valid) but its jti is blacklisted
+      (jwtService.verify as jest.Mock).mockReturnValue({ ...mockJwtPayload, jti: "revoked-jti" });
       (tokenBlacklist.isBlacklisted as jest.Mock).mockResolvedValueOnce(true);
 
       await expect(jwtAuthGuard.canActivate(mockContext)).rejects.toThrow(
         new UnauthorizedException("Token has been revoked")
       );
-      expect(jwtService.verify).not.toHaveBeenCalled();
+      expect(tokenBlacklist.isBlacklisted).toHaveBeenCalledWith("revoked-jti");
     });
   });
 });

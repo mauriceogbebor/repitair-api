@@ -16,6 +16,7 @@ import {
   RepitSongSelectionDto,
   RepitWidgetTransformDto,
 } from "./repit-presentation.dto";
+import { IsValidEditorState } from "./editor-state.dto";
 
 enum Status {
   DRAFT = "draft",
@@ -86,6 +87,6 @@ export class UpdateRepitDto {
   widgetTransforms?: RepitWidgetTransformDto[];
 
   @IsOptional()
-  @IsObject()
+  @IsValidEditorState()
   editorState?: Record<string, unknown> | null;
 }

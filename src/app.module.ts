@@ -20,6 +20,7 @@ import { AuthRateLimitMiddleware } from "./common/middleware/auth-rate-limit.mid
 import { VerifyCodeRateLimitMiddleware } from "./common/middleware/verify-code-rate-limit.middleware";
 import { ContactRateLimitMiddleware } from "./common/middleware/contact-rate-limit.middleware";
 import { UploadRateLimitMiddleware } from "./common/middleware/upload-rate-limit.middleware";
+import { MusicRateLimitMiddleware } from "./common/middleware/music-rate-limit.middleware";
 import { MailModule } from "./common/services/mail.module";
 import { TokenBlacklistModule } from "./common/services/token-blacklist.module";
 import { JwtAuthModule } from "./common/modules/jwt-auth.module";
@@ -92,6 +93,11 @@ export class AppModule implements NestModule {
     consumer
       .apply(ContactRateLimitMiddleware)
       .forRoutes({ path: "contact", method: RequestMethod.POST });
+
+    // Rate-limit music endpoints — each triggers upstream Spotify/Apple Music API calls.
+    consumer
+      .apply(MusicRateLimitMiddleware)
+      .forRoutes({ path: "music/*", method: RequestMethod.ALL });
 
     // Stricter limit on file uploads and image processing (expensive operations).
     consumer

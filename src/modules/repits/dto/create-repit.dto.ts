@@ -16,6 +16,7 @@ import {
   RepitSongSelectionDto,
   RepitWidgetTransformDto,
 } from "./repit-presentation.dto";
+import { IsValidEditorState } from "./editor-state.dto";
 
 export class CreateRepitDto {
   @IsString()
@@ -74,6 +75,6 @@ export class CreateRepitDto {
   widgetTransforms?: RepitWidgetTransformDto[];
 
   @IsOptional()
-  @IsObject()
+  @IsValidEditorState()
   editorState?: Record<string, unknown> | null;
 }

@@ -1,11 +1,69 @@
-import { ValidationPipe } from "@nestjs/common";
+import { Logger, ValidationPipe } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { NestExpressApplication } from "@nestjs/platform-express";
 
 import { AppModule } from "./app.module";
 import { GlobalExceptionFilter } from "./common/filters/global-exception.filter";
 
+/**
+ * Validate critical environment variables at startup.
+ * Throws for hard blockers; logs warnings for missing feature credentials.
+ */
+function validateEnvironment(): void {
+  const log = new Logger("EnvironmentValidation");
+  const isProduction = process.env.NODE_ENV === "production";
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  // ── Hard requirements (production only) ──
+  if (isProduction) {
+    if (!process.env.DATABASE_URL) errors.push("DATABASE_URL is required");
+    if (!process.env.JWT_SECRET) errors.push("JWT_SECRET is required");
+
+    // Upload storage — local is forbidden in production (UploadsService also checks, but fail early)
+    if (!process.env.UPLOAD_PROVIDER || process.env.UPLOAD_PROVIDER === "local") {
+      errors.push("UPLOAD_PROVIDER must be 's3' in production (files are lost on redeploy with 'local')");
+    }
+  }
+
+  // ── S3 credentials (required when UPLOAD_PROVIDER=s3) ──
+  if (process.env.UPLOAD_PROVIDER === "s3") {
+    const s3Vars = ["AWS_S3_BUCKET", "AWS_REGION", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"];
+    for (const v of s3Vars) {
+      if (!process.env[v]) errors.push(`${v} is required when UPLOAD_PROVIDER=s3`);
+    }
+  }
+
+  // ── Feature credentials — warn only ──
+  if (!process.env.SPOTIFY_CLIENT_ID || !process.env.SPOTIFY_CLIENT_SECRET) {
+    warnings.push("Spotify credentials missing (SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET) — Spotify song lookup will fail");
+  }
+  if (!process.env.APPLE_MUSIC_TEAM_ID || !process.env.APPLE_MUSIC_KEY_ID || !process.env.APPLE_MUSIC_PRIVATE_KEY) {
+    warnings.push("Apple Music credentials missing (APPLE_MUSIC_TEAM_ID, APPLE_MUSIC_KEY_ID, APPLE_MUSIC_PRIVATE_KEY) — Apple Music lookup will fail");
+  }
+  if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
+    warnings.push("SMTP credentials missing (SMTP_HOST, SMTP_USER, SMTP_PASS) — email sending will fail");
+  }
+  if (!process.env.ADMIN_EMAILS) {
+    warnings.push("ADMIN_EMAILS not set — admin features will be inaccessible");
+  }
+
+  // ── Log results ──
+  for (const w of warnings) log.warn(w);
+
+  if (errors.length > 0) {
+    for (const e of errors) log.error(e);
+    throw new Error(
+      `Environment validation failed with ${errors.length} error(s):\n  - ${errors.join("\n  - ")}`,
+    );
+  }
+
+  log.log("Environment validation passed");
+}
+
 async function bootstrap() {
+  validateEnvironment();
+
   const defaultCorsOrigins = [
     "http://localhost:3000",
     "http://localhost:3001",

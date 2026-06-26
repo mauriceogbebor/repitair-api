@@ -2,7 +2,7 @@ import { ConflictException, Injectable, NotFoundException } from "@nestjs/common
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository, ILike, QueryFailedError } from "typeorm";
 import * as bcrypt from "bcryptjs";
-import { randomBytes, randomInt, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 
 import { User } from "../../entities";
 import { UploadsService } from "../uploads/uploads.service";
@@ -143,20 +143,24 @@ export class UsersService {
     return bcrypt.compare(password, user.passwordHash);
   }
 
+  /** SHA-256 hash a reset code so it's never stored in plaintext. */
+  private hashCode(code: string): string {
+    return createHash("sha256").update(code).digest("hex");
+  }
+
   async setResetCode(email: string): Promise<string | null> {
     const user = await this.findByEmail(email);
     if (!user) return null;
 
-    // 6-digit code using CSPRNG. The previous implementation used Math.random()
-    // (insecure) and only 4 digits (brute-forceable in ~10k attempts).
+    // 6-digit code using CSPRNG. Store only the hash — never the plaintext.
     const code = String(randomInt(100000, 1000000));
-    user.resetCode = code;
+    user.resetCode = this.hashCode(code);
     user.resetCodeExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
     user.resetCodeAttempts = 0; // reset attempt counter on new code
 
     await this.usersRepo.save(user);
 
-    return code;
+    return code; // plaintext returned only for email delivery
   }
 
   /**
@@ -179,9 +183,11 @@ export class UsersService {
       return null;
     }
 
-    const codeMatch =
-      user.resetCode.length === code.length &&
-      timingSafeEqual(Buffer.from(user.resetCode, "utf8"), Buffer.from(code, "utf8"));
+    // Compare hashed input against stored hash (constant-time)
+    const inputHash = this.hashCode(code);
+    const storedBuf = Buffer.from(user.resetCode, "utf8");
+    const inputBuf = Buffer.from(inputHash, "utf8");
+    const codeMatch = storedBuf.length === inputBuf.length && timingSafeEqual(storedBuf, inputBuf);
     if (!codeMatch) {
       user.resetCodeAttempts += 1;
       await this.usersRepo.save(user);
@@ -332,10 +338,10 @@ export class UsersService {
     if (!user) return null;
 
     const code = String(randomInt(100000, 1000000));
-    user.emailVerifyCode = code;
+    user.emailVerifyCode = this.hashCode(code);
     user.emailVerifyCodeExpiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 min
     await this.usersRepo.save(user);
-    return code;
+    return code; // plaintext returned only for email delivery
   }
 
   /**
@@ -347,9 +353,10 @@ export class UsersService {
 
     if (new Date(user.emailVerifyCodeExpiresAt) < new Date()) return false;
 
-    const codeMatch =
-      user.emailVerifyCode.length === code.length &&
-      timingSafeEqual(Buffer.from(user.emailVerifyCode, "utf8"), Buffer.from(code, "utf8"));
+    const inputHash = this.hashCode(code);
+    const storedBuf = Buffer.from(user.emailVerifyCode, "utf8");
+    const inputBuf = Buffer.from(inputHash, "utf8");
+    const codeMatch = storedBuf.length === inputBuf.length && timingSafeEqual(storedBuf, inputBuf);
     if (!codeMatch) return false;
 
     user.emailVerified = true;
@@ -399,6 +406,8 @@ export class UsersService {
       if (repit.backgroundPhotoUrl) {
         this.tryDeleteUpload(repit.backgroundPhotoUrl);
       }
+      // Clean up images embedded in composition layers
+      this.tryDeleteCompositionAssets(repit.composition);
     }
 
     // CASCADE on the FK handles repits and push tokens
@@ -416,6 +425,20 @@ export class UsersService {
       void this.uploadsService.deleteFile(key).catch(() => {});
     } catch {
       // URL parse error — ignore.
+    }
+  }
+
+  /**
+   * Extract uploaded image URLs from composition layers and delete them.
+   */
+  private tryDeleteCompositionAssets(composition: unknown): void {
+    if (!composition || typeof composition !== "object") return;
+    const comp = composition as { layers?: Array<{ photoUri?: string; imageUri?: string }> };
+    if (!Array.isArray(comp.layers)) return;
+
+    for (const layer of comp.layers) {
+      if (layer.photoUri) this.tryDeleteUpload(layer.photoUri);
+      if (layer.imageUri) this.tryDeleteUpload(layer.imageUri);
     }
   }
 }

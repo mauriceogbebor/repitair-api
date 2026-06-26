@@ -35,22 +35,46 @@ export class UploadsService {
   private DeleteObjectCommand: S3CommandCtor | null = null;
   private localUploadDir: string;
 
-  // Allowed MIME types for images
+  // Allowed MIME types for images (HEIC/HEIF for iOS camera uploads)
   private readonly ALLOWED_MIME_TYPES = [
     "image/jpeg",
     "image/png",
     "image/webp",
     "image/gif",
+    "image/heic",
+    "image/heif",
   ];
 
   // Maximum file size: 10MB
   private readonly MAX_FILE_SIZE = 10 * 1024 * 1024;
 
+  private readonly awsRegion: string;
   private baseUrl: string;
 
   constructor(private configService: ConfigService) {
     this.uploadProvider = (this.configService.get<string>("UPLOAD_PROVIDER") ||
       "local") as "local" | "s3";
+    this.awsRegion = this.configService.get<string>("AWS_REGION") || "us-east-1";
+
+    // ── Production safety: never silently use local storage ──
+    const isProduction = this.configService.get<string>("NODE_ENV") === "production";
+    if (isProduction && this.uploadProvider === "local") {
+      Logger.error(
+        "UPLOAD_PROVIDER is 'local' in production! Uploaded files WILL BE LOST on restart/redeploy. " +
+        "Set UPLOAD_PROVIDER=s3 with valid AWS credentials.",
+        "UploadsService",
+      );
+      throw new Error(
+        "Cannot start in production with UPLOAD_PROVIDER=local. " +
+        "Set UPLOAD_PROVIDER=s3 and configure AWS_S3_BUCKET, AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY.",
+      );
+    } else if (this.uploadProvider === "local") {
+      Logger.warn(
+        "UPLOAD_PROVIDER=local — uploads will be stored on the local filesystem. " +
+        "This is fine for development but MUST NOT be used in production.",
+        "UploadsService",
+      );
+    }
     this.s3Bucket = this.configService.get<string>("AWS_S3_BUCKET") || "";
     this.localUploadDir = path.join(process.cwd(), "data", "uploads");
     const port = this.configService.get<string>("PORT") || "4000";
@@ -213,8 +237,8 @@ export class UploadsService {
 
     await this.s3Client.send(command);
 
-    // Return S3 URL
-    const url = `https://${this.s3Bucket}.s3.amazonaws.com/${filename}`;
+    // Return S3 URL — include region to work outside us-east-1
+    const url = `https://${this.s3Bucket}.s3.${this.awsRegion}.amazonaws.com/${filename}`;
     return {
       url,
       key: filename,
@@ -263,6 +287,8 @@ export class UploadsService {
       "image/png": ".png",
       "image/webp": ".webp",
       "image/gif": ".gif",
+      "image/heic": ".heic",
+      "image/heif": ".heif",
     };
 
     return mimeTypeMap[mimetype] || ".jpg";

@@ -1,5 +1,6 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, ManyToOne, JoinColumn } from "typeorm";
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, ManyToOne, JoinColumn, Index } from "typeorm";
 import { User } from "./user.entity";
+import { Template } from "./template.entity";
 import type { CompositionCanvasMeta, RepitComposition } from "../common/composition/composition.types";
 
 type RepitSongSelection = {
@@ -57,7 +58,12 @@ export class Repit {
   platform!: string;
 
   @Column()
+  @Index()
   templateId!: string;
+
+  @ManyToOne(() => Template, { onDelete: "RESTRICT" })
+  @JoinColumn({ name: "templateId" })
+  template!: Template;
 
   @Column({ default: "" })
   songLink!: string;

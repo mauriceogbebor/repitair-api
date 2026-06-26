@@ -47,6 +47,11 @@ class DisconnectPlatformDto {
   platform!: string;
 }
 
+class DeleteAccountDto {
+  @IsString()
+  password!: string;
+}
+
 @Controller("me")
 @UseGuards(JwtAuthGuard)
 export class UsersController {
@@ -127,12 +132,18 @@ export class UsersController {
   }
 
   @Delete()
-  async deleteAccount(@CurrentUser() user: CurrentUserPayload) {
-    const deleted = await this.usersService.deleteUser(user.sub);
-    if (!deleted) {
+  async deleteAccount(@CurrentUser() user: CurrentUserPayload, @Body() body: DeleteAccountDto) {
+    const foundUser = await this.usersService.findById(user.sub);
+    if (!foundUser) {
       throw new UnauthorizedException("User not found");
     }
 
+    const valid = await this.usersService.validatePassword(foundUser, body.password);
+    if (!valid) {
+      throw new BadRequestException("Password is incorrect");
+    }
+
+    await this.usersService.deleteUser(user.sub);
     return { ok: true, message: "Account deleted successfully" };
   }
 }

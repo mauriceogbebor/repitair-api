@@ -1,4 +1,4 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn } from "typeorm";
+import { Entity, Index, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn } from "typeorm";
 
 export type SpotlightTag = "NEW_SINGLE" | "NEW_ALBUM" | "TRENDING";
 export type SpotlightStatus = "pending" | "active" | "paused" | "expired";
@@ -33,6 +33,7 @@ export class Spotlight {
   priority!: number;
 
   /** Campaign status */
+  @Index()
   @Column({ default: "pending" })
   status!: SpotlightStatus;
 

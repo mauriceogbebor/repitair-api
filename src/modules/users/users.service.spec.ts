@@ -3,9 +3,15 @@ import { ConflictException, NotFoundException } from "@nestjs/common";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { Repository, QueryFailedError } from "typeorm";
 import * as bcrypt from "bcryptjs";
+import { createHash } from "node:crypto";
 import { UsersService } from "./users.service";
 import { UploadsService } from "../uploads/uploads.service";
 import { User } from "../../entities";
+
+/** Mirror the service's hash function for test setup */
+function hashCode(code: string): string {
+  return createHash("sha256").update(code).digest("hex");
+}
 
 describe("UsersService", () => {
   let service: UsersService;
@@ -198,7 +204,7 @@ describe("UsersService", () => {
     it("should return a reset token for valid code within window", async () => {
       const userWithCode = {
         ...mockUser,
-        resetCode: "123456",
+        resetCode: hashCode("123456"),
         resetCodeExpiresAt: new Date(Date.now() + 5 * 60 * 1000),
       };
       mockRepository.findOne.mockResolvedValue(userWithCode);
@@ -214,7 +220,7 @@ describe("UsersService", () => {
     it("should return null for wrong code", async () => {
       const userWithCode = {
         ...mockUser,
-        resetCode: "123456",
+        resetCode: hashCode("123456"),
         resetCodeExpiresAt: new Date(Date.now() + 5 * 60 * 1000),
       };
       mockRepository.findOne.mockResolvedValue(userWithCode);
@@ -228,7 +234,7 @@ describe("UsersService", () => {
     it("should return null for expired code", async () => {
       const userWithCode = {
         ...mockUser,
-        resetCode: "123456",
+        resetCode: hashCode("123456"),
         resetCodeExpiresAt: new Date(Date.now() - 5 * 60 * 1000),
       };
       mockRepository.findOne.mockResolvedValue(userWithCode);
@@ -260,7 +266,7 @@ describe("UsersService", () => {
       const validToken = "abc123validtoken";
       const userBeforeReset = {
         ...mockUser,
-        resetCode: "123456",
+        resetCode: hashCode("123456"),
         resetCodeExpiresAt: new Date(),
         resetToken: validToken,
         resetTokenExpiresAt: new Date(Date.now() + 600000),

@@ -29,14 +29,27 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       }
     }
 
+    // Detect upstream timeout / network errors that escaped local catch blocks
+    if (!(exception instanceof HttpException) && exception instanceof Error) {
+      if (exception.name === "TimeoutError" || exception.name === "AbortError") {
+        status = HttpStatus.GATEWAY_TIMEOUT;
+        message = "An upstream service did not respond in time. Please try again.";
+      } else if (exception.message?.includes("fetch failed") || exception.message?.includes("ECONNREFUSED")) {
+        status = HttpStatus.BAD_GATEWAY;
+        message = "An upstream service is temporarily unavailable. Please try again.";
+      }
+    }
+
     // Log error details server-side (never expose to client)
     if (status >= 500) {
       this.logger.error(
         `[${request.method} ${request.url}] ${exception instanceof Error ? exception.message : String(exception)}`,
         exception instanceof Error ? exception.stack : undefined,
       );
-      // Never send internal error details to the client
-      message = "Internal server error";
+      // Never send internal error details to the client (unless we already set a user-facing message above)
+      if (status === HttpStatus.INTERNAL_SERVER_ERROR) {
+        message = "Internal server error";
+      }
     }
 
     response.status(status).json({

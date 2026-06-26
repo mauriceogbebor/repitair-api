@@ -100,10 +100,9 @@ describe("AuthService", () => {
         password: signupDto.password,
         country: signupDto.country,
       });
-      expect(jwtService.sign).toHaveBeenCalledWith({
-        sub: mockUser.id,
-        email: mockUser.email,
-      });
+      expect(jwtService.sign).toHaveBeenCalledWith(
+        expect.objectContaining({ sub: mockUser.id, email: mockUser.email }),
+      );
       expect(result).toEqual({
         token: mockToken,
         user: {
@@ -175,10 +174,9 @@ describe("AuthService", () => {
         mockUser,
         loginDto.password
       );
-      expect(jwtService.sign).toHaveBeenCalledWith({
-        sub: mockUser.id,
-        email: mockUser.email,
-      });
+      expect(jwtService.sign).toHaveBeenCalledWith(
+        expect.objectContaining({ sub: mockUser.id, email: mockUser.email }),
+      );
       expect(result).toEqual({
         token: mockToken,
         user: {
