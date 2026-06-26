@@ -62,8 +62,8 @@ describe("UploadsService", () => {
       ).rejects.toThrow(BadRequestException);
     });
 
-    it("should reject with BadRequestException when buffer exceeds 5MB", async () => {
-      const buffer = Buffer.alloc(5 * 1024 * 1024 + 1);
+    it("should reject with BadRequestException when buffer exceeds 10MB", async () => {
+      const buffer = Buffer.alloc(10 * 1024 * 1024 + 1);
 
       await expect(
         service.uploadFile(buffer, "test.jpg", "image/jpeg")
@@ -126,6 +126,24 @@ describe("UploadsService", () => {
       const result = await service.uploadFile(buffer, "animation", "image/gif");
 
       expect(result.key).toMatch(/\.gif$/);
+    });
+
+    it("should handle image/heic mimetype (iOS camera)", async () => {
+      const buffer = Buffer.from("test image data");
+      (fs.writeFileSync as jest.Mock).mockReturnValue(undefined);
+
+      const result = await service.uploadFile(buffer, "photo", "image/heic");
+
+      expect(result.key).toMatch(/\.heic$/);
+    });
+
+    it("should handle image/heif mimetype", async () => {
+      const buffer = Buffer.from("test image data");
+      (fs.writeFileSync as jest.Mock).mockReturnValue(undefined);
+
+      const result = await service.uploadFile(buffer, "photo", "image/heif");
+
+      expect(result.key).toMatch(/\.heif$/);
     });
   });
 

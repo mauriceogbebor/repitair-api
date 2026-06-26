@@ -258,7 +258,7 @@ export class RepitsService {
   }
 
   async deleteRepit(userId: string, id: string): Promise<boolean> {
-    // Fetch first so we can clean up the associated upload.
+    // Fetch first so we can clean up the associated uploads.
     let existing: Repit | null;
     try {
       existing = await this.repitsRepo.findOne({
@@ -276,11 +276,32 @@ export class RepitsService {
     const result = await this.repitsRepo.delete({ id, userId });
     const deleted = (result.affected ?? 0) > 0;
 
-    if (deleted && existing.backgroundPhotoUrl) {
-      this.tryDeleteUpload(existing.backgroundPhotoUrl);
+    if (deleted) {
+      // Best-effort cleanup of all uploaded assets associated with this repit.
+      // Failures are silently swallowed — orphans are caught by periodic sweep.
+      if (existing.backgroundPhotoUrl) {
+        this.tryDeleteUpload(existing.backgroundPhotoUrl);
+      }
+      // Clean up images embedded in composition layers (photo layers, etc.)
+      this.tryDeleteCompositionAssets(existing.composition);
     }
 
     return deleted;
+  }
+
+  /**
+   * Extract uploaded image URLs from composition layers and delete them.
+   * Only deletes URLs that look like our own uploads (contain /api/uploads/ or S3 bucket).
+   */
+  private tryDeleteCompositionAssets(composition: unknown): void {
+    if (!composition || typeof composition !== "object") return;
+    const comp = composition as { layers?: Array<{ photoUri?: string; imageUri?: string }> };
+    if (!Array.isArray(comp.layers)) return;
+
+    for (const layer of comp.layers) {
+      if (layer.photoUri) this.tryDeleteUpload(layer.photoUri);
+      if (layer.imageUri) this.tryDeleteUpload(layer.imageUri);
+    }
   }
 
   /**

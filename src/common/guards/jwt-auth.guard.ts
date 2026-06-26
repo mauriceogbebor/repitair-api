@@ -20,19 +20,23 @@ export class JwtAuthGuard implements CanActivate {
 
     const token = authHeader.slice(7);
 
-    if (await this.tokenBlacklist.isBlacklisted(token)) {
-      throw new UnauthorizedException("Token has been revoked");
-    }
-
     try {
       const payload = this.jwtService.verify(token);
+
+      // Check blacklist using jti (compact) or full token (pre-jti backwards compat)
+      const blacklistKey = payload.jti ?? token;
+      if (await this.tokenBlacklist.isBlacklisted(blacklistKey)) {
+        throw new UnauthorizedException("Token has been revoked");
+      }
+
       request.user = {
         sub: payload.sub,
         email: payload.email,
         token, // expose raw token so controllers (e.g. logout) can blacklist it
       };
       return true;
-    } catch {
+    } catch (err) {
+      if (err instanceof UnauthorizedException) throw err;
       throw new UnauthorizedException("Invalid or expired token");
     }
   }

@@ -45,6 +45,11 @@ interface AppleMusicSong {
 const CACHE_TTL_SECONDS = 24 * 60 * 60;
 const CACHE_PREFIX = 'music:track:';
 
+/** Default timeout for upstream API calls (Spotify, Apple Music) */
+const FETCH_TIMEOUT_MS = 10_000;
+/** Maximum retries for transient upstream failures */
+const FETCH_MAX_RETRIES = 1;
+
 @Injectable()
 export class MusicService {
   private readonly logger = new Logger(MusicService.name);
@@ -103,6 +108,59 @@ export class MusicService {
   }
 
   /**
+   * Wrapper around fetch that adds a timeout and retries transient failures.
+   * - Timeout: AbortSignal.timeout(FETCH_TIMEOUT_MS)
+   * - Retries: only on 429, 5xx, or network/timeout errors
+   * - Never retries 400, 401, 403, 404 (validation/auth errors)
+   */
+  private async resilientFetch(
+    url: string,
+    options: RequestInit = {},
+    { retries = FETCH_MAX_RETRIES, timeoutMs = FETCH_TIMEOUT_MS }: { retries?: number; timeoutMs?: number } = {},
+  ): Promise<Response> {
+    let lastError: Error | null = null;
+
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const response = await this.resilientFetch(url, {
+          ...options,
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+
+        // Success or non-retryable client error → return immediately
+        if (response.ok || (response.status >= 400 && response.status < 500 && response.status !== 429)) {
+          return response;
+        }
+
+        // Retryable: 429 rate-limit or 5xx server error
+        if (attempt < retries) {
+          const delay = Math.pow(2, attempt) * 1000;
+          this.logger.warn(
+            `Upstream ${response.status} from ${new URL(url).pathname} — retrying in ${delay}ms (attempt ${attempt + 1}/${retries})`,
+          );
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
+
+        return response; // exhausted retries
+      } catch (error) {
+        lastError = error as Error;
+        // Timeout or network error → retryable
+        if (attempt < retries) {
+          const delay = Math.pow(2, attempt) * 1000;
+          this.logger.warn(
+            `Fetch error for ${new URL(url).pathname}: ${(error as Error).message} — retrying in ${delay}ms (attempt ${attempt + 1}/${retries})`,
+          );
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
+      }
+    }
+
+    throw lastError ?? new Error(`Failed to fetch ${url}`);
+  }
+
+  /**
    * Get the user's stored Apple Music user token for personal playlist access.
    */
   async getUserAppleMusicToken(userId: string): Promise<string | null> {
@@ -145,7 +203,7 @@ export class MusicService {
 
     try {
       const auth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
-      const response = await fetch('https://accounts.spotify.com/api/token', {
+      const response = await this.resilientFetch('https://accounts.spotify.com/api/token', {
         method: 'POST',
         headers: {
           'Authorization': `Basic ${auth}`,
@@ -198,7 +256,7 @@ export class MusicService {
         refresh_token: refreshToken,
       });
 
-      const response = await fetch('https://accounts.spotify.com/api/token', {
+      const response = await this.resilientFetch('https://accounts.spotify.com/api/token', {
         method: 'POST',
         headers: {
           Authorization: `Basic ${auth}`,
@@ -396,7 +454,7 @@ export class MusicService {
     if (!token) return null;
 
     try {
-      const response = await fetch(`https://api.spotify.com/v1/albums/${albumId}`, {
+      const response = await this.resilientFetch(`https://api.spotify.com/v1/albums/${albumId}`, {
         headers: { 'Authorization': `Bearer ${token}` },
       });
       if (!response.ok) {
@@ -441,7 +499,7 @@ export class MusicService {
     if (!token) return null;
 
     try {
-      const response = await fetch(`https://api.spotify.com/v1/playlists/${playlistId}`, {
+      const response = await this.resilientFetch(`https://api.spotify.com/v1/playlists/${playlistId}`, {
         headers: { 'Authorization': `Bearer ${token}` },
       });
 
@@ -449,7 +507,7 @@ export class MusicService {
       if (response.status === 403 && userId && !usedUserToken) {
         const userToken = await this.getUserSpotifyAccessToken(userId);
         if (userToken) {
-          const retryResponse = await fetch(`https://api.spotify.com/v1/playlists/${playlistId}`, {
+          const retryResponse = await this.resilientFetch(`https://api.spotify.com/v1/playlists/${playlistId}`, {
             headers: { 'Authorization': `Bearer ${userToken}` },
           });
           if (retryResponse.ok) {
@@ -498,7 +556,7 @@ export class MusicService {
     }
 
     try {
-      const response = await fetch(
+      const response = await this.resilientFetch(
         `https://api.music.apple.com/v1/catalog/${storefront}/albums/${albumId}?include=tracks`,
         { headers: { 'Authorization': `Bearer ${token}` } },
       );
@@ -572,7 +630,7 @@ export class MusicService {
         apiUrl = `https://api.music.apple.com/v1/catalog/${storefront}/playlists/${playlistId}?include=tracks`;
       }
 
-      const response = await fetch(apiUrl, { headers });
+      const response = await this.resilientFetch(apiUrl, { headers });
       if (!response.ok) {
         this.logger.warn(`Apple Music playlist lookup failed: ${response.status} ${response.statusText} (playlist=${playlistId}, storefront=${storefront}, personal=${isPersonal})`);
         return null;
@@ -658,7 +716,7 @@ export class MusicService {
     }
 
     try {
-      const response = await fetch(`https://api.spotify.com/v1/tracks/${trackId}`, {
+      const response = await this.resilientFetch(`https://api.spotify.com/v1/tracks/${trackId}`, {
         headers: {
           'Authorization': `Bearer ${token}`,
         },
@@ -694,7 +752,7 @@ export class MusicService {
     }
 
     try {
-      const response = await fetch(
+      const response = await this.resilientFetch(
         `https://api.music.apple.com/v1/catalog/${storefront}/songs/${trackId}`,
         {
           headers: {
@@ -804,7 +862,7 @@ export class MusicService {
         type: 'track',
         limit: '10',
       });
-      const response = await fetch(`https://api.spotify.com/v1/search?${params}`, {
+      const response = await this.resilientFetch(`https://api.spotify.com/v1/search?${params}`, {
         headers: { 'Authorization': `Bearer ${token}` },
       });
 
@@ -842,7 +900,7 @@ export class MusicService {
         types: 'songs',
         limit: '10',
       });
-      const response = await fetch(
+      const response = await this.resilientFetch(
         `https://api.music.apple.com/v1/catalog/${storefront}/search?${params.toString()}`,
         {
           headers: {
@@ -892,7 +950,7 @@ export class MusicService {
     if (!token) return [];
 
     try {
-      const response = await fetch(
+      const response = await this.resilientFetch(
         'https://api.spotify.com/v1/me/player/recently-played?limit=10',
         {
           headers: { Authorization: `Bearer ${token}` },
