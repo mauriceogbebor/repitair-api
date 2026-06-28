@@ -108,10 +108,13 @@ export class MusicService {
   }
 
   /**
-   * Wrapper around fetch that adds a timeout and retries transient failures.
+   * Wrapper around the global `fetch` that adds a timeout and retries transient failures.
    * - Timeout: AbortSignal.timeout(FETCH_TIMEOUT_MS)
    * - Retries: only on 429, 5xx, or network/timeout errors
    * - Never retries 400, 401, 403, 404 (validation/auth errors)
+   *
+   * IMPORTANT: The retry loop calls the global `fetch()`, NOT `this.resilientFetch()`.
+   * Calling itself would cause infinite recursion (Maximum call stack size exceeded).
    */
   private async resilientFetch(
     url: string,
@@ -122,7 +125,7 @@ export class MusicService {
 
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
-        const response = await this.resilientFetch(url, {
+        const response = await fetch(url, {
           ...options,
           signal: AbortSignal.timeout(timeoutMs),
         });
