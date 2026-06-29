@@ -10,6 +10,7 @@ import { ResetPasswordDto } from "./dto/reset-password.dto";
 import { SignupDto } from "./dto/signup.dto";
 import { SocialAuthDto } from "./dto/social-auth.dto";
 import { VerifyCodeDto } from "./dto/verify-code.dto";
+import { VerifyEmailDto } from "./dto/verify-email.dto";
 
 @Controller("auth")
 export class AuthController {
@@ -92,7 +93,7 @@ export class AuthController {
    */
   @Post("verify-email")
   @UseGuards(JwtAuthGuard)
-  verifyEmail(@CurrentUser() user: CurrentUserPayload, @Body() body: { code: string }) {
+  verifyEmail(@CurrentUser() user: CurrentUserPayload, @Body() body: VerifyEmailDto) {
     return this.authService.verifyEmail(user.sub, body.code);
   }
 
