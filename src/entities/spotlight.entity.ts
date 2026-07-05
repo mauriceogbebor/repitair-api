@@ -1,61 +1,92 @@
 import { Entity, Index, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn } from "typeorm";
 
 export type SpotlightTag = "NEW_SINGLE" | "NEW_ALBUM" | "TRENDING";
-export type SpotlightStatus = "pending" | "active" | "paused" | "expired";
+export type SpotlightStatus = "draft" | "scheduled" | "active" | "paused" | "expired" | "archived";
 
 @Entity("spotlights")
 export class Spotlight {
   @PrimaryGeneratedColumn("uuid")
   id!: string;
 
-  /** Song / track title */
   @Column()
   title!: string;
 
-  /** Artist or label name */
+  @Column({ nullable: true })
+  subtitle?: string | null;
+
   @Column()
   artist!: string;
 
-  /** Album art image URL */
+  @Column({ nullable: true })
+  song?: string | null;
+
   @Column()
   albumArt!: string;
 
-  /** Promotional tag shown on the card */
+  @Column({ nullable: true })
+  backgroundImage?: string | null;
+
+  @Column({ default: "editorial" })
+  campaignType!: string;
+
+  @Column({ nullable: true })
+  buttonLabel?: string | null;
+
   @Column({ default: "NEW_SINGLE" })
   tag!: SpotlightTag;
 
-  /** Optional deep link when user taps the card (e.g. "/song/xyz") */
   @Column({ nullable: true })
-  deepLink?: string;
+  deepLink?: string | null;
 
-  /** Higher priority = shown first. Used for queue ordering / paid tiers. */
   @Column({ type: "int", default: 0 })
   priority!: number;
 
-  /** Campaign status */
   @Index()
-  @Column({ default: "pending" })
+  @Column({ default: "draft" })
   status!: SpotlightStatus;
 
-  /** Total impressions served */
   @Column({ type: "int", default: 0 })
   impressionCount!: number;
 
-  /** When the campaign goes live */
-  @Column({ type: "timestamptz", nullable: true })
-  startsAt?: Date;
+  @Column({ type: "int", default: 0 })
+  tapCount!: number;
 
-  /** When the campaign expires */
   @Column({ type: "timestamptz", nullable: true })
-  expiresAt?: Date;
+  startsAt?: Date | null;
 
-  /** Contact email for the artist/label who submitted this */
+  @Column({ type: "timestamptz", nullable: true })
+  expiresAt?: Date | null;
+
+  @Column({ type: "timestamptz", nullable: true })
+  scheduledAt?: Date | null;
+
+  @Column({ type: "timestamptz", nullable: true })
+  publishedAt?: Date | null;
+
+  @Column({ type: "timestamptz", nullable: true })
+  archivedAt?: Date | null;
+
   @Column({ nullable: true })
-  submitterEmail?: string;
+  submitterEmail?: string | null;
 
-  @CreateDateColumn()
+  @Column({ nullable: true })
+  createdByAdminUserId?: string | null;
+
+  @Column({ nullable: true })
+  createdByAdminEmail?: string | null;
+
+  @Column({ nullable: true })
+  updatedByAdminUserId?: string | null;
+
+  @Column({ nullable: true })
+  updatedByAdminEmail?: string | null;
+
+  @Column({ nullable: true })
+  duplicateOfSpotlightId?: string | null;
+
+  @CreateDateColumn({ type: "timestamptz" })
   createdAt!: Date;
 
-  @UpdateDateColumn()
+  @UpdateDateColumn({ type: "timestamptz" })
   updatedAt!: Date;
 }

@@ -5,36 +5,31 @@ import { NestExpressApplication } from "@nestjs/platform-express";
 import { AppModule } from "./app.module";
 import { GlobalExceptionFilter } from "./common/filters/global-exception.filter";
 
-/**
- * Validate critical environment variables at startup.
- * Throws for hard blockers; logs warnings for missing feature credentials.
- */
 function validateEnvironment(): void {
   const log = new Logger("EnvironmentValidation");
   const isProduction = process.env.NODE_ENV === "production";
   const errors: string[] = [];
   const warnings: string[] = [];
 
-  // ── Hard requirements (production only) ──
   if (isProduction) {
     if (!process.env.DATABASE_URL) errors.push("DATABASE_URL is required");
     if (!process.env.JWT_SECRET) errors.push("JWT_SECRET is required");
+    if (!process.env.ADMIN_JWT_SECRET) errors.push("ADMIN_JWT_SECRET is required");
 
-    // Upload storage — local is forbidden in production (UploadsService also checks, but fail early)
     if (!process.env.UPLOAD_PROVIDER || process.env.UPLOAD_PROVIDER === "local") {
       errors.push("UPLOAD_PROVIDER must be 's3' in production (files are lost on redeploy with 'local')");
     }
   }
 
-  // ── S3 credentials (required when UPLOAD_PROVIDER=s3) ──
   if (process.env.UPLOAD_PROVIDER === "s3") {
     const s3Vars = ["AWS_S3_BUCKET", "AWS_REGION", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"];
-    for (const v of s3Vars) {
-      if (!process.env[v]) errors.push(`${v} is required when UPLOAD_PROVIDER=s3`);
+    for (const variableName of s3Vars) {
+      if (!process.env[variableName]) {
+        errors.push(`${variableName} is required when UPLOAD_PROVIDER=s3`);
+      }
     }
   }
 
-  // ── Feature credentials — warn only ──
   if (!process.env.SPOTIFY_CLIENT_ID || !process.env.SPOTIFY_CLIENT_SECRET) {
     warnings.push("Spotify credentials missing (SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET) — Spotify song lookup will fail");
   }
@@ -44,18 +39,15 @@ function validateEnvironment(): void {
   if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
     warnings.push("SMTP credentials missing (SMTP_HOST, SMTP_USER, SMTP_PASS) — email sending will fail");
   }
-  if (!process.env.ADMIN_EMAILS) {
-    warnings.push("ADMIN_EMAILS not set — admin features will be inaccessible");
+  if (!process.env.ADMIN_BOOTSTRAP_EMAIL || !process.env.ADMIN_BOOTSTRAP_PASSWORD || !process.env.ADMIN_BOOTSTRAP_MFA_SECRET) {
+    warnings.push("Admin bootstrap credentials missing (ADMIN_BOOTSTRAP_EMAIL, ADMIN_BOOTSTRAP_PASSWORD, ADMIN_BOOTSTRAP_MFA_SECRET) — the first admin account will not be auto-created");
   }
 
-  // ── Log results ──
-  for (const w of warnings) log.warn(w);
+  for (const warning of warnings) log.warn(warning);
 
   if (errors.length > 0) {
-    for (const e of errors) log.error(e);
-    throw new Error(
-      `Environment validation failed with ${errors.length} error(s):\n  - ${errors.join("\n  - ")}`,
-    );
+    for (const error of errors) log.error(error);
+    throw new Error(`Environment validation failed with ${errors.length} error(s):\n  - ${errors.join("\n  - ")}`);
   }
 
   log.log("Environment validation passed");
@@ -67,20 +59,18 @@ async function bootstrap() {
   const defaultCorsOrigins = [
     "http://localhost:3000",
     "http://localhost:3001",
+    "http://localhost:3002",
     "https://repitair.com",
     "https://www.repitair.com",
   ];
 
   const corsOrigins = process.env.CORS_ORIGINS
-    ? process.env.CORS_ORIGINS.split(",")
-      .map((origin) => origin.trim())
-      .filter(Boolean)
+    ? process.env.CORS_ORIGINS.split(",").map((origin) => origin.trim()).filter(Boolean)
     : defaultCorsOrigins;
 
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     cors: {
       origin: (origin, callback) => {
-        // Allow non-browser clients like mobile apps, curl, and server-side calls.
         if (!origin) {
           callback(null, true);
           return;
@@ -97,16 +87,6 @@ async function bootstrap() {
     },
   });
 
-  // Required for correct client IP resolution behind a proxy/load balancer.
-  // Without this, req.ip is the proxy's IP and per-IP rate limits degrade
-  // into a single shared bucket across all users.
-  //
-  // Set TRUST_PROXY:
-  //   - "true" to trust all hops (convenient but lets a client spoof X-Forwarded-For
-  //     if they reach the app directly)
-  //   - a number like "1" or "2" for the number of trusted proxy hops
-  //   - an IP or CIDR list for specific proxies
-  // Default is "1" hop (common for most hosted platforms like Render/Railway/Fly).
   const trustProxy = process.env.TRUST_PROXY ?? "1";
   const parsedTrustProxy = /^\d+$/.test(trustProxy)
     ? Number(trustProxy)
@@ -116,8 +96,6 @@ async function bootstrap() {
   app.set("trust proxy", parsedTrustProxy);
 
   app.setGlobalPrefix("api");
-
-  // Add body size limits to prevent abuse
   app.use(require("express").json({ limit: "10mb" }));
   app.use(require("express").urlencoded({ limit: "10mb", extended: true }));
 

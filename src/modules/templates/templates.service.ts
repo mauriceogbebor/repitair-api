@@ -21,7 +21,7 @@ export class TemplatesService {
 
   async findAll() {
     const templates = await this.repo.find({ order: { sortOrder: "ASC" } });
-    return templates.map((template) => this.normalizeTemplate(template));
+    return templates.map((template) => this.serializeForPublic(this.normalizeTemplate(template)));
   }
 
   async updateComposition(id: string, body: UpdateTemplateCompositionDto) {
@@ -57,10 +57,19 @@ export class TemplatesService {
     });
 
     const saved = await this.repo.save(updated);
-    return this.normalizeTemplate(saved);
+    return this.serializeForPublic(this.normalizeTemplate(saved));
   }
 
   private normalizeTemplate(template: Template): Template {
     return normalizeTemplateState(template) as Template;
+  }
+
+  /**
+   * Strip internal-only fields from the public API response.
+   * designerNotes and certificationMeta are strictly admin-internal.
+   */
+  private serializeForPublic(template: Template): Omit<Template, "designerNotes" | "certificationMeta"> {
+    const { designerNotes, certificationMeta, ...publicFields } = template;
+    return publicFields;
   }
 }

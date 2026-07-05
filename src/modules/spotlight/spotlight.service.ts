@@ -13,10 +13,6 @@ export class SpotlightService {
     private readonly repo: Repository<Spotlight>,
   ) {}
 
-  /**
-   * Public endpoint — returns active spotlights for the mobile carousel.
-   * Only items with status "active" whose date range includes now.
-   */
   async getActiveSpotlights() {
     const now = new Date();
 
@@ -45,9 +41,6 @@ export class SpotlightService {
     };
   }
 
-  /**
-   * Increment impression count for analytics/billing.
-   */
   async trackImpression(id: string) {
     const result = await this.repo.increment({ id }, "impressionCount", 1);
     if (result.affected === 0) {
@@ -55,8 +48,6 @@ export class SpotlightService {
     }
     return { ok: true as const };
   }
-
-  // ── Admin endpoints ──
 
   async findAll(options: { limit?: number; offset?: number } = {}) {
     const take = Math.min(options.limit ?? 50, 100);
@@ -78,7 +69,7 @@ export class SpotlightService {
   async create(dto: CreateSpotlightDto) {
     const spotlight = this.repo.create({
       ...dto,
-      status: "pending",
+      status: "draft",
       startsAt: dto.startsAt ? new Date(dto.startsAt) : undefined,
       expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
     });
