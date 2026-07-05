@@ -68,4 +68,19 @@ export class User {
 
   @Column({ nullable: true, select: false })
   appleMusicUserToken?: string;
+
+  @Column({ default: false })
+  isSuspended!: boolean;
+
+  @Column({ nullable: true })
+  suspensionReason?: string | null;
+
+  @Column({ type: "timestamptz", nullable: true })
+  suspendedAt?: Date | null;
+
+  @Column({ type: "timestamptz", nullable: true })
+  lastLoginAt?: Date | null;
+
+  @Column({ nullable: true })
+  signupSource?: string | null;
 }

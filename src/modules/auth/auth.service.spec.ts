@@ -20,6 +20,7 @@ describe("AuthService", () => {
     country: "US",
     connectedPlatforms: [],
     password: "hashedPassword123",
+    isSuspended: false,
   };
 
   const mockToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...";
@@ -33,6 +34,7 @@ describe("AuthService", () => {
       createUser: jest.fn(),
       findByEmail: jest.fn(),
       validatePassword: jest.fn(),
+      recordLogin: jest.fn(),
       setResetCode: jest.fn(),
       verifyResetCode: jest.fn(),
       resetPassword: jest.fn(),
@@ -99,6 +101,7 @@ describe("AuthService", () => {
         email: signupDto.email,
         password: signupDto.password,
         country: signupDto.country,
+        signupSource: "email",
       });
       expect(jwtService.sign).toHaveBeenCalledWith(
         expect.objectContaining({ sub: mockUser.id, email: mockUser.email }),
@@ -136,6 +139,7 @@ describe("AuthService", () => {
         email: signupDto.email,
         password: signupDto.password,
         country: "",
+        signupSource: "email",
       });
     });
 
@@ -174,6 +178,7 @@ describe("AuthService", () => {
         mockUser,
         loginDto.password
       );
+      expect(usersService.recordLogin).toHaveBeenCalledWith(mockUser.id);
       expect(jwtService.sign).toHaveBeenCalledWith(
         expect.objectContaining({ sub: mockUser.id, email: mockUser.email }),
       );

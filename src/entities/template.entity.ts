@@ -1,5 +1,15 @@
-import { Column, Entity, PrimaryColumn } from "typeorm";
+import { Column, CreateDateColumn, Entity, PrimaryColumn, UpdateDateColumn } from "typeorm";
 import type { CompositionCanvasMeta, TemplateComposition } from "../common/composition/composition.types";
+import type {
+  TemplateCapabilities,
+  TemplateDesignTokens,
+  TemplateConstraints,
+  TemplateDesignerNotes,
+  TemplateWorkflowConfig,
+  TemplateCertificationMeta,
+} from "../common/template-metadata/template-metadata.types";
+
+export type TemplateAdminStatus = "draft" | "published" | "archived";
 
 @Entity("templates")
 export class Template {
@@ -24,6 +34,12 @@ export class Template {
   @Column({ type: "int", default: 0 })
   sortOrder!: number;
 
+  @Column({ default: "draft" })
+  status!: TemplateAdminStatus;
+
+  @Column({ default: true })
+  isActive!: boolean;
+
   /** Layout variant hint for client rendering (e.g. "classic", "neon", "bold") */
   @Column({ default: "classic" })
   layoutVariant!: string;
@@ -44,4 +60,60 @@ export class Template {
 
   @Column({ type: "jsonb", nullable: true })
   composition?: TemplateComposition | null;
+
+  @Column({ type: "jsonb", nullable: true })
+  previewImages?: string[] | null;
+
+  /* ── Template-First Metadata (Sprint D) ─────────────────────────── */
+
+  /** Template capabilities — what content types and features this template supports. */
+  @Column({ type: "jsonb", nullable: true })
+  capabilities?: TemplateCapabilities | null;
+
+  /** Design tokens — colour/spacing metadata describing the template's visual identity. */
+  @Column({ type: "jsonb", nullable: true })
+  designTokens?: TemplateDesignTokens | null;
+
+  /** Constraints — creative boundaries and recommendations for this template. */
+  @Column({ type: "jsonb", nullable: true })
+  constraints?: TemplateConstraints | null;
+
+  /** Designer notes — internal creative intent, mood, and guidance. Never exposed to users. */
+  @Column({ type: "jsonb", nullable: true })
+  designerNotes?: TemplateDesignerNotes | null;
+
+  /** Workflow configuration — authored content-first editing journey. */
+  @Column({ type: "jsonb", nullable: true })
+  workflow?: TemplateWorkflowConfig | null;
+
+  /** Certification metadata — publishing pipeline status. */
+  @Column({ type: "jsonb", nullable: true })
+  certificationMeta?: TemplateCertificationMeta | null;
+
+  @Column({ nullable: true })
+  createdByAdminUserId?: string | null;
+
+  @Column({ nullable: true })
+  createdByAdminEmail?: string | null;
+
+  @Column({ nullable: true })
+  updatedByAdminUserId?: string | null;
+
+  @Column({ nullable: true })
+  updatedByAdminEmail?: string | null;
+
+  @Column({ nullable: true })
+  lastChangeSummary?: string | null;
+
+  @Column({ type: "timestamptz", nullable: true })
+  publishedAt?: Date | null;
+
+  @Column({ type: "timestamptz", nullable: true })
+  archivedAt?: Date | null;
+
+  @CreateDateColumn({ type: "timestamptz" })
+  createdAt!: Date;
+
+  @UpdateDateColumn({ type: "timestamptz" })
+  updatedAt!: Date;
 }

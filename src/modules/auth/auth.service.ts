@@ -5,6 +5,7 @@ import {
   BadRequestException,
   NotFoundException,
   ServiceUnavailableException,
+  ForbiddenException,
 } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { ConfigService } from "@nestjs/config";
@@ -30,7 +31,6 @@ export class AuthService {
     private readonly configService: ConfigService,
   ) {}
 
-  /** Return a required config value or throw at runtime. */
   private requireSecret(key: string): string {
     const value = this.configService.get<string>(key);
     if (!value) {
@@ -39,12 +39,19 @@ export class AuthService {
     return value;
   }
 
+  private assertUserCanSignIn(user: { isSuspended?: boolean; suspensionReason?: string | null }) {
+    if (user.isSuspended) {
+      throw new ForbiddenException(user.suspensionReason || "This account has been suspended");
+    }
+  }
+
   async signup(dto: SignupDto) {
     const user = await this.usersService.createUser({
       fullName: dto.fullName,
       email: dto.email,
       password: dto.password,
       country: dto.country ?? "",
+      signupSource: "email",
     });
 
     const token = this.signToken(user.id, user.email);
@@ -68,11 +75,14 @@ export class AuthService {
       throw new UnauthorizedException("Invalid email or password");
     }
 
+    this.assertUserCanSignIn(user);
+
     const valid = await this.usersService.validatePassword(user, dto.password);
     if (!valid) {
       throw new UnauthorizedException("Invalid email or password");
     }
 
+    await this.usersService.recordLogin(user.id);
     const token = this.signToken(user.id, user.email);
 
     return {
@@ -88,11 +98,6 @@ export class AuthService {
     };
   }
 
-  /**
-   * Social auth — Sign in with Apple or Google.
-   * Verifies the ID token, creates the user if they don't exist,
-   * and returns a JWT + user payload.
-   */
   async socialAuth(dto: SocialAuthDto) {
     let email: string;
     let fullName: string;
@@ -104,22 +109,23 @@ export class AuthService {
     } else {
       const payload = await this.verifyAppleIdToken(dto.idToken);
       email = payload.email;
-      // Apple only sends the name on first sign-in
       fullName = dto.fullName || this.deriveDisplayNameFromEmail(email);
     }
 
-    // Find or create user
     let user = await this.usersService.findByEmail(email);
     if (!user) {
-      // Create with a cryptographically random password (social auth users don't use password login)
       const randomPassword = randomBytes(32).toString("base64url");
       user = await this.usersService.createUser({
         fullName,
         email,
         password: randomPassword,
         country: "",
+        signupSource: dto.provider,
       });
     }
+
+    this.assertUserCanSignIn(user);
+    await this.usersService.recordLogin(user.id);
 
     const token = this.signToken(user.id, user.email);
 
@@ -136,21 +142,18 @@ export class AuthService {
     };
   }
 
-private deriveDisplayNameFromEmail(email: string): string {
-  const base = email.split("@")[0]?.trim();
-  if (!base) return "Repitair User";
+  private deriveDisplayNameFromEmail(email: string): string {
+    const base = email.split("@")[0]?.trim();
+    if (!base) return "Repitair User";
 
-  const words = base
-    .split(/[._-]+/)
-    .filter(Boolean)
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1));
+    const words = base
+      .split(/[._-]+/)
+      .filter(Boolean)
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1));
 
-  return words.length ? words.join(" ") : "Repitair User";
-}
+    return words.length ? words.join(" ") : "Repitair User";
+  }
 
-  /**
-   * Verify Google ID token using Google's tokeninfo endpoint.
-   */
   private async verifyGoogleIdToken(idToken: string): Promise<{ email: string; name?: string }> {
     const expectedClientIds = [
       this.configService.get<string>("GOOGLE_CLIENT_ID"),
@@ -169,7 +172,7 @@ private deriveDisplayNameFromEmail(email: string): string {
       if (!response.ok) {
         throw new UnauthorizedException("Invalid Google ID token");
       }
-      const payload = await response.json() as { email?: string; name?: string; aud?: string };
+      const payload = (await response.json()) as { email?: string; name?: string; aud?: string };
 
       if (!payload.aud || !expectedClientIds.includes(payload.aud)) {
         throw new UnauthorizedException("Google token audience mismatch");
@@ -187,10 +190,6 @@ private deriveDisplayNameFromEmail(email: string): string {
     }
   }
 
-  /**
-   * Verify Apple ID token by decoding the JWT and validating against Apple's public keys.
-   * Uses Apple's JWKS endpoint for key verification.
-   */
   private async verifyAppleIdToken(idToken: string): Promise<{ email: string }> {
     const expectedClientId = this.configService.get<string>("APPLE_CLIENT_ID");
     if (!expectedClientId) {
@@ -200,23 +199,22 @@ private deriveDisplayNameFromEmail(email: string): string {
     }
 
     try {
-      // Decode the token header to get the key ID
       const headerB64 = idToken.split(".")[0];
       const header = JSON.parse(Buffer.from(headerB64, "base64").toString()) as { kid: string; alg: string };
 
-      // Fetch Apple's public keys
       const keysResponse = await fetch("https://appleid.apple.com/auth/keys");
       if (!keysResponse.ok) {
         throw new UnauthorizedException("Failed to fetch Apple public keys");
       }
-      const keysData = await keysResponse.json() as { keys: Array<{ kid: string; kty: string; use: string; n: string; e: string }> };
+      const keysData = (await keysResponse.json()) as {
+        keys: Array<{ kid: string; kty: string; use: string; n: string; e: string }>;
+      };
 
-      const appleKey = keysData.keys.find(k => k.kid === header.kid);
+      const appleKey = keysData.keys.find((k) => k.kid === header.kid);
       if (!appleKey) {
         throw new UnauthorizedException("Apple key not found for token");
       }
 
-      // Build the public key
       const publicKey = createPublicKey({
         key: {
           kty: appleKey.kty,
@@ -226,8 +224,6 @@ private deriveDisplayNameFromEmail(email: string): string {
         format: "jwk",
       });
 
-      // Verify the token using NestJS JwtService with the Apple public key
-      // Export to PEM string since JwtService expects string | Buffer
       const publicKeyPem = publicKey.export({ type: "spki", format: "pem" }) as string;
       const payload = this.jwtService.verify(idToken, {
         algorithms: [header.alg as "RS256" | "ES256"],
@@ -253,17 +249,12 @@ private deriveDisplayNameFromEmail(email: string): string {
     const code = await this.usersService.setResetCode(normalizedEmail);
     const user = await this.usersService.findByEmail(normalizedEmail);
     if (code && user) {
-      // Fire-and-forget — do NOT await, to prevent timing side-channel
-      // that reveals whether an email exists. The response returns
-      // immediately regardless of email delivery outcome.
       this.mailService
         .sendPasswordResetCode(normalizedEmail, code, user.fullName)
         .catch((err: Error) => {
           this.logger.error(`Failed to send reset email to ${normalizedEmail}: ${err.message}`);
         });
     }
-    // Always return the same response whether or not the email exists,
-    // to prevent account enumeration.
     return {
       message: "If that email exists, a verification code has been sent",
     };
@@ -274,7 +265,6 @@ private deriveDisplayNameFromEmail(email: string): string {
     if (!resetToken) {
       throw new UnauthorizedException("Invalid or expired code");
     }
-    // Return the reset token — the client must include it when calling reset-password
     return { verified: true, resetToken };
   }
 
@@ -287,9 +277,6 @@ private deriveDisplayNameFromEmail(email: string): string {
   }
 
   async logout(token: string) {
-    // Decode (not verify — already verified by the guard) to pull exp and jti.
-    // We blacklist only the jti (36 chars) instead of the full token (~300 chars).
-    // Tokens issued before jti was added fall back to the full token string.
     try {
       const decoded = this.jwtService.decode(token) as { exp?: number; jti?: string } | null;
       const key = decoded?.jti ?? token;
@@ -300,12 +287,7 @@ private deriveDisplayNameFromEmail(email: string): string {
     return { message: "Logged out successfully" };
   }
 
-  /**
-   * Refresh — issue a new access token if the current one is still valid.
-   * The old token is blacklisted to prevent reuse.
-   */
   async refresh(currentToken: string, userId: string, email: string) {
-    // Blacklist the old token's jti so it can't be reused
     try {
       const decoded = this.jwtService.decode(currentToken) as { exp?: number; jti?: string } | null;
       const key = decoded?.jti ?? currentToken;
@@ -315,8 +297,6 @@ private deriveDisplayNameFromEmail(email: string): string {
     }
 
     const token = this.signToken(userId, email);
-
-    // Include user data so the client can update its local state
     const user = await this.usersService.findById(userId);
     return {
       token,
@@ -333,9 +313,6 @@ private deriveDisplayNameFromEmail(email: string): string {
     };
   }
 
-  /**
-   * Send an email verification code to the user.
-   */
   async sendEmailVerification(userId: string, email: string) {
     const code = await this.usersService.setEmailVerifyCode(userId);
     if (code) {
@@ -361,9 +338,6 @@ private deriveDisplayNameFromEmail(email: string): string {
     return { message: "If that email exists, a verification code has been sent" };
   }
 
-  /**
-   * Verify the email verification code.
-   */
   async verifyEmail(userId: string, code: string) {
     const success = await this.usersService.verifyEmail(userId, code);
     if (!success) {
@@ -376,10 +350,6 @@ private deriveDisplayNameFromEmail(email: string): string {
     return this.jwtService.sign({ sub: userId, email, jti: randomUUID() });
   }
 
-  /**
-   * Build an HMAC-signed state parameter: "base64(userId).hmac"
-   * so the callback can verify it wasn't forged.
-   */
   private signOAuthState(userId: string): string {
     const secret = this.requireSecret("JWT_SECRET");
     const payload = Buffer.from(userId).toString("base64url");
@@ -387,10 +357,6 @@ private deriveDisplayNameFromEmail(email: string): string {
     return `${payload}.${sig}`;
   }
 
-  /**
-   * Verify and decode an HMAC-signed state parameter.
-   * Returns the userId or throws on tampered/invalid state.
-   */
   private verifyOAuthState(state: string): string {
     const secret = this.requireSecret("JWT_SECRET");
     const dotIndex = state.lastIndexOf(".");
@@ -409,11 +375,6 @@ private deriveDisplayNameFromEmail(email: string): string {
     return Buffer.from(payload, "base64url").toString("utf8");
   }
 
-  /**
-   * Build the Apple Music authorization URL.
-   * Serves a backend-hosted page that uses MusicKit JS to request user authorization.
-   * The signed state parameter encodes the user ID for the callback.
-   */
   buildAppleMusicAuthUrl(userId: string): string {
     const teamId = this.configService.get<string>("APPLE_MUSIC_TEAM_ID");
     const keyId = this.configService.get<string>("APPLE_MUSIC_KEY_ID");
@@ -432,10 +393,6 @@ private deriveDisplayNameFromEmail(email: string): string {
     return `${baseUrl}/auth/apple-music/authorize?${params.toString()}`;
   }
 
-  /**
-   * Generate a MusicKit developer token (JWT signed with ES256).
-   * This token is used client-side by MusicKit JS to authenticate with Apple.
-   */
   generateMusicKitDeveloperToken(): string | null {
     const teamId = this.configService.get<string>("APPLE_MUSIC_TEAM_ID");
     const keyId = this.configService.get<string>("APPLE_MUSIC_KEY_ID");
@@ -448,7 +405,7 @@ private deriveDisplayNameFromEmail(email: string): string {
     try {
       const privateKey = privateKeyStr.replace(/\\n/g, "\n");
       const now = Math.floor(Date.now() / 1000);
-      const exp = now + 6 * 30 * 24 * 60 * 60; // 6 months
+      const exp = now + 6 * 30 * 24 * 60 * 60;
 
       const header = { alg: "ES256", kid: keyId, typ: "JWT" };
       const payload = { iss: teamId, iat: now, exp };
@@ -468,14 +425,7 @@ private deriveDisplayNameFromEmail(email: string): string {
     }
   }
 
-  /**
-   * Handle Apple Music authorization callback.
-   * Marks the user as connected to Apple Music.
-   */
-  async handleAppleMusicCallback(
-    state: string,
-    userToken: string,
-  ): Promise<{ success: boolean; message: string }> {
+  async handleAppleMusicCallback(state: string, userToken: string): Promise<{ success: boolean; message: string }> {
     const userId = this.verifyOAuthState(state);
 
     if (!userToken?.trim()) {
@@ -495,10 +445,6 @@ private deriveDisplayNameFromEmail(email: string): string {
     return { success: true, message: "Apple Music account connected successfully" };
   }
 
-  /**
-   * Build the Spotify authorization URL for the user to visit.
-   * Encodes the user's ID in a signed state parameter for retrieval on callback.
-   */
   buildSpotifyAuthUrl(userId: string): string {
     const clientId = this.configService.get<string>("SPOTIFY_CLIENT_ID");
     const redirectUri = this.configService.get<string>("SPOTIFY_REDIRECT_URI");
@@ -529,10 +475,6 @@ private deriveDisplayNameFromEmail(email: string): string {
     return `https://accounts.spotify.com/authorize?${params.toString()}`;
   }
 
-  /**
-   * Exchange Spotify authorization code for tokens and save refresh token to user.
-   * Validates the HMAC-signed state to extract the user ID.
-   */
   async handleSpotifyCallback(code: string, state: string): Promise<{ success: boolean; message: string }> {
     const clientId = this.configService.get<string>("SPOTIFY_CLIENT_ID");
     const clientSecret = this.configService.get<string>("SPOTIFY_CLIENT_SECRET");
@@ -544,10 +486,8 @@ private deriveDisplayNameFromEmail(email: string): string {
       );
     }
 
-    // Verify HMAC-signed state and extract user ID
     const userId = this.verifyOAuthState(state);
 
-    // Exchange code for tokens
     const tokenResponse = await fetch("https://accounts.spotify.com/api/token", {
       method: "POST",
       headers: {
@@ -573,7 +513,6 @@ private deriveDisplayNameFromEmail(email: string): string {
       expires_in: number;
     };
 
-    // Save the refresh token to the user
     try {
       await this.usersService.connectSpotify(userId, tokenData.refresh_token);
     } catch (err) {

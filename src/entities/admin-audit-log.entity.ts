@@ -1,0 +1,49 @@
+import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn } from "typeorm";
+
+@Entity("admin_audit_logs")
+export class AdminAuditLog {
+  @PrimaryGeneratedColumn("uuid")
+  id!: string;
+
+  @Column({ nullable: true })
+  actorAdminUserId?: string | null;
+
+  @Column({ nullable: true })
+  actorEmail?: string | null;
+
+  @Column()
+  action!: string;
+
+  @Column({ nullable: true })
+  targetType?: string | null;
+
+  @Column({ nullable: true })
+  targetId?: string | null;
+
+  @Column({ nullable: true })
+  requestId?: string | null;
+
+  @Column({ nullable: true })
+  method?: string | null;
+
+  @Column({ nullable: true })
+  path?: string | null;
+
+  @Column({ nullable: true })
+  ipAddress?: string | null;
+
+  @Column({ nullable: true })
+  userAgent?: string | null;
+
+  @Column({ type: "jsonb", nullable: true })
+  beforeState?: Record<string, unknown> | null;
+
+  @Column({ type: "jsonb", nullable: true })
+  afterState?: Record<string, unknown> | null;
+
+  @Column({ type: "jsonb", nullable: true })
+  metadata?: Record<string, unknown> | null;
+
+  @CreateDateColumn({ type: "timestamptz" })
+  createdAt!: Date;
+}

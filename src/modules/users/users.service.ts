@@ -9,7 +9,6 @@ import { UploadsService } from "../uploads/uploads.service";
 
 export type { User as UserRecord };
 
-// Postgres unique-violation SQLSTATE code
 const PG_UNIQUE_VIOLATION = "23505";
 
 function isUniqueViolation(err: unknown): boolean {
@@ -24,6 +23,11 @@ const LEGACY_MISSING_USER_COLUMNS = [
   "emailVerified",
   "emailVerifyCode",
   "emailVerifyCodeExpiresAt",
+  "isSuspended",
+  "suspensionReason",
+  "suspendedAt",
+  "lastLoginAt",
+  "signupSource",
 ];
 
 function isLegacyUserSchemaError(err: unknown): boolean {
@@ -110,6 +114,7 @@ export class UsersService {
     email: string;
     country: string;
     password: string;
+    signupSource?: string | null;
   }): Promise<User> {
     const existing = await this.findByEmail(data.email);
     if (existing) {
@@ -124,14 +129,12 @@ export class UsersService {
       country: data.country,
       passwordHash,
       connectedPlatforms: [],
+      signupSource: data.signupSource ?? "email",
     });
 
     try {
       return await this.usersRepo.save(user);
     } catch (err) {
-      // Guards against race: two concurrent signups with the same email can
-      // both pass the findByEmail check, and the DB's unique constraint catches
-      // the second one. Convert it back into a clean 409 instead of a 500.
       if (isUniqueViolation(err)) {
         throw new ConflictException("An account with this email already exists");
       }
@@ -143,7 +146,10 @@ export class UsersService {
     return bcrypt.compare(password, user.passwordHash);
   }
 
-  /** SHA-256 hash a reset code so it's never stored in plaintext. */
+  async recordLogin(userId: string): Promise<void> {
+    await this.usersRepo.update({ id: userId }, { lastLoginAt: new Date() });
+  }
+
   private hashCode(code: string): string {
     return createHash("sha256").update(code).digest("hex");
   }
@@ -152,29 +158,22 @@ export class UsersService {
     const user = await this.findByEmail(email);
     if (!user) return null;
 
-    // 6-digit code using CSPRNG. Store only the hash — never the plaintext.
     const code = String(randomInt(100000, 1000000));
     user.resetCode = this.hashCode(code);
     user.resetCodeExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
-    user.resetCodeAttempts = 0; // reset attempt counter on new code
+    user.resetCodeAttempts = 0;
 
     await this.usersRepo.save(user);
 
-    return code; // plaintext returned only for email delivery
+    return code;
   }
 
-  /**
-   * Verify a reset code. On success, issues an opaque reset token (valid 10 min)
-   * that must be presented to `resetPassword` — this prevents the password from
-   * being changed without completing the code-verification step.
-   */
   async verifyResetCode(email: string, code: string): Promise<string | null> {
     const user = await this.findByEmail(email);
     if (!user || !user.resetCode || !user.resetCodeExpiresAt) return null;
 
     if (new Date(user.resetCodeExpiresAt) < new Date()) return null;
 
-    // Lockout after 5 failed attempts — invalidate the code entirely
     if (user.resetCodeAttempts >= 5) {
       user.resetCode = undefined;
       user.resetCodeExpiresAt = undefined;
@@ -183,7 +182,6 @@ export class UsersService {
       return null;
     }
 
-    // Compare hashed input against stored hash (constant-time)
     const inputHash = this.hashCode(code);
     const storedBuf = Buffer.from(user.resetCode, "utf8");
     const inputBuf = Buffer.from(inputHash, "utf8");
@@ -194,11 +192,9 @@ export class UsersService {
       return null;
     }
 
-    // Issue a one-time reset token
     const resetToken = randomBytes(32).toString("hex");
     user.resetToken = resetToken;
-    user.resetTokenExpiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 min
-    // Consume the code so it can't be reused
+    user.resetTokenExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
     user.resetCode = undefined;
     user.resetCodeExpiresAt = undefined;
 
@@ -207,17 +203,12 @@ export class UsersService {
     return resetToken;
   }
 
-  /**
-   * Reset a user's password. Requires a valid reset token obtained from
-   * `verifyResetCode` — callers can no longer skip the verification step.
-   */
   async resetPassword(email: string, resetToken: string, newPassword: string): Promise<boolean> {
     const user = await this.findByEmail(email);
     if (!user || !user.resetToken || !user.resetTokenExpiresAt) return false;
 
     if (new Date(user.resetTokenExpiresAt) < new Date()) return false;
 
-    // Constant-time comparison to prevent timing attacks
     const expected = Buffer.from(user.resetToken, "utf8");
     const received = Buffer.from(resetToken, "utf8");
     if (expected.length !== received.length || !timingSafeEqual(expected, received)) {
@@ -242,7 +233,6 @@ export class UsersService {
     const user = await this.findById(userId);
     if (!user) return null;
 
-    // Only look up duplicate email if the email is actually changing.
     if (data.email && data.email.toLowerCase() !== user.email) {
       const existing = await this.findByEmail(data.email);
       if (existing && existing.id !== userId) {
@@ -254,7 +244,6 @@ export class UsersService {
     if (data.email !== undefined) user.email = data.email.toLowerCase();
     if (data.country !== undefined) user.country = data.country;
     if (data.avatarUrl !== undefined) {
-      // Treat empty string as "remove avatar"
       user.avatarUrl = data.avatarUrl.trim() || undefined;
     }
 
@@ -292,9 +281,6 @@ export class UsersService {
     await this.usersRepo.save(user);
   }
 
-  /**
-   * Retrieve the user's stored Spotify refresh token (select: false on entity).
-   */
   async getSpotifyRefreshToken(userId: string): Promise<string | null> {
     const user = await this.usersRepo
       .createQueryBuilder("user")
@@ -304,9 +290,6 @@ export class UsersService {
     return user?.spotifyRefreshToken ?? null;
   }
 
-  /**
-   * Retrieve the user's stored Apple Music user token (select: false on entity).
-   */
   async getAppleMusicUserToken(userId: string): Promise<string | null> {
     const user = await this.usersRepo
       .createQueryBuilder("user")
@@ -330,23 +313,17 @@ export class UsersService {
     await this.usersRepo.save(user);
   }
 
-  /**
-   * Generate and save an email verification code for a user.
-   */
   async setEmailVerifyCode(userId: string): Promise<string | null> {
     const user = await this.findById(userId);
     if (!user) return null;
 
     const code = String(randomInt(100000, 1000000));
     user.emailVerifyCode = this.hashCode(code);
-    user.emailVerifyCodeExpiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 min
+    user.emailVerifyCodeExpiresAt = new Date(Date.now() + 30 * 60 * 1000);
     await this.usersRepo.save(user);
-    return code; // plaintext returned only for email delivery
+    return code;
   }
 
-  /**
-   * Verify the email verification code and mark the user as verified.
-   */
   async verifyEmail(userId: string, code: string): Promise<boolean> {
     const user = await this.findById(userId);
     if (!user || !user.emailVerifyCode || !user.emailVerifyCodeExpiresAt) return false;
@@ -366,10 +343,6 @@ export class UsersService {
     return true;
   }
 
-  /**
-   * Disconnect a music platform from the user's account.
-   * Removes the stored tokens and updates the connectedPlatforms array.
-   */
   async disconnectPlatform(userId: string, platform: string): Promise<User> {
     const user = await this.findById(userId);
     if (!user) {
@@ -386,11 +359,6 @@ export class UsersService {
     return this.usersRepo.save(user);
   }
 
-  /**
-   * Permanently delete a user account and all associated data.
-   * Cascading deletes handle repits and push tokens via DB constraints.
-   * Uploaded files (avatar, repit photos) are cleaned up best-effort.
-   */
   async deleteUser(userId: string): Promise<boolean> {
     const user = await this.usersRepo.findOne({
       where: { id: userId },
@@ -398,7 +366,6 @@ export class UsersService {
     });
     if (!user) return false;
 
-    // Best-effort cleanup of uploaded files
     if (user.avatarUrl) {
       this.tryDeleteUpload(user.avatarUrl);
     }
@@ -406,31 +373,23 @@ export class UsersService {
       if (repit.backgroundPhotoUrl) {
         this.tryDeleteUpload(repit.backgroundPhotoUrl);
       }
-      // Clean up images embedded in composition layers
       this.tryDeleteCompositionAssets(repit.composition);
     }
 
-    // CASCADE on the FK handles repits and push tokens
     const result = await this.usersRepo.delete({ id: userId });
     return (result.affected ?? 0) > 0;
   }
 
-  /**
-   * Best-effort deletion of an uploaded file given its public URL.
-   */
   private tryDeleteUpload(url: string): void {
     try {
       const key = url.split("/").pop();
       if (!key) return;
       void this.uploadsService.deleteFile(key).catch(() => {});
     } catch {
-      // URL parse error — ignore.
+      // ignore
     }
   }
 
-  /**
-   * Extract uploaded image URLs from composition layers and delete them.
-   */
   private tryDeleteCompositionAssets(composition: unknown): void {
     if (!composition || typeof composition !== "object") return;
     const comp = composition as { layers?: Array<{ photoUri?: string; imageUri?: string }> };

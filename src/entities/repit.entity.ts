@@ -95,6 +95,18 @@ export class Repit {
   @Column({ type: "jsonb", nullable: true })
   composition?: RepitComposition | null;
 
+  @Column({ default: "active" })
+  moderationStatus!: string;
+
+  @Column({ nullable: true })
+  flagReason?: string | null;
+
+  @Column({ type: "timestamptz", nullable: true })
+  archivedAt?: Date | null;
+
+  @Column({ type: "timestamptz", nullable: true })
+  deletedByAdminAt?: Date | null;
+
   @CreateDateColumn()
   createdAt!: Date;
 
