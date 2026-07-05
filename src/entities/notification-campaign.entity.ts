@@ -30,13 +30,13 @@ export class NotificationCampaign {
   @Column({ default: "push" })
   type!: AdminNotificationType;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   imageUrl?: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   deepLink?: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   ctaLabel?: string | null;
 
   @Column({ default: "draft" })
@@ -54,19 +54,19 @@ export class NotificationCampaign {
   @Column({ type: "timestamptz", nullable: true })
   failedAt?: Date | null;
 
-  @Column({ nullable: true })
+  @Column({ type: "uuid", nullable: true })
   createdByAdminUserId?: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   createdByAdminEmail?: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: "uuid", nullable: true })
   updatedByAdminUserId?: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   updatedByAdminEmail?: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: "uuid", nullable: true })
   duplicateOfNotificationId?: string | null;
 
   @Column({ type: "int", default: 0 })

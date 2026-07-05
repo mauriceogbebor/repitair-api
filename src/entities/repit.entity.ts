@@ -98,7 +98,7 @@ export class Repit {
   @Column({ default: "active" })
   moderationStatus!: string;
 
-  @Column({ nullable: true })
+  @Column({ type: "text", nullable: true })
   flagReason?: string | null;
 
   @Column({ type: "timestamptz", nullable: true })

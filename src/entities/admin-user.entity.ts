@@ -33,7 +33,7 @@ export class AdminUser {
   @Column({ default: false })
   mfaEnabled!: boolean;
 
-  @Column({ nullable: true, select: false })
+  @Column({ type: "varchar", nullable: true, select: false })
   mfaSecret?: string | null;
 
   @Column({ type: "int", default: 0 })

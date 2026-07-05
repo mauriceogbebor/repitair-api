@@ -36,19 +36,19 @@ export class ContactSubmission {
   @Column({ default: "medium" })
   priority!: SupportTicketPriority;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   category?: string | null;
 
   @Column("text", { array: true, default: () => "'{}'" })
   tags!: string[];
 
-  @Column({ nullable: true })
+  @Column({ type: "uuid", nullable: true })
   assignedAdminUserId?: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   assignedAdminEmail?: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: "uuid", nullable: true })
   relatedUserId?: string | null;
 
   @Column("text", { array: true, default: () => "'{}'" })

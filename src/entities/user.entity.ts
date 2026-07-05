@@ -27,17 +27,17 @@ export class User {
   @CreateDateColumn()
   createdAt!: Date;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   avatarUrl?: string;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   resetCode?: string;
 
   @Column({ type: "timestamp", nullable: true })
   resetCodeExpiresAt?: Date;
 
   /** Opaque token issued after successful code verification; required to reset the password. */
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   resetToken?: string;
 
   @Column({ type: "timestamp", nullable: true })
@@ -57,22 +57,22 @@ export class User {
   @Column({ default: false })
   emailVerified!: boolean;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   emailVerifyCode?: string;
 
   @Column({ type: "timestamp", nullable: true })
   emailVerifyCodeExpiresAt?: Date;
 
-  @Column({ nullable: true, select: false })
+  @Column({ type: "varchar", nullable: true, select: false })
   spotifyRefreshToken?: string;
 
-  @Column({ nullable: true, select: false })
+  @Column({ type: "varchar", nullable: true, select: false })
   appleMusicUserToken?: string;
 
   @Column({ default: false })
   isSuspended!: boolean;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   suspensionReason?: string | null;
 
   @Column({ type: "timestamptz", nullable: true })
@@ -81,6 +81,6 @@ export class User {
   @Column({ type: "timestamptz", nullable: true })
   lastLoginAt?: Date | null;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   signupSource?: string | null;
 }
