@@ -8,10 +8,10 @@ export class SupportTicketNote {
   @Column()
   ticketId!: string;
 
-  @Column({ nullable: true })
+  @Column({ type: "uuid", nullable: true })
   authorAdminUserId?: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   authorAdminEmail?: string | null;
 
   @Column("text")

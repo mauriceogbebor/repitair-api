@@ -90,19 +90,19 @@ export class Template {
   @Column({ type: "jsonb", nullable: true })
   certificationMeta?: TemplateCertificationMeta | null;
 
-  @Column({ nullable: true })
+  @Column({ type: "uuid", nullable: true })
   createdByAdminUserId?: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   createdByAdminEmail?: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: "uuid", nullable: true })
   updatedByAdminUserId?: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   updatedByAdminEmail?: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: "text", nullable: true })
   lastChangeSummary?: string | null;
 
   @Column({ type: "timestamptz", nullable: true })

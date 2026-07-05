@@ -5,34 +5,34 @@ export class AdminAuditLog {
   @PrimaryGeneratedColumn("uuid")
   id!: string;
 
-  @Column({ nullable: true })
+  @Column({ type: "uuid", nullable: true })
   actorAdminUserId?: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   actorEmail?: string | null;
 
   @Column()
   action!: string;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   targetType?: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   targetId?: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   requestId?: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   method?: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   path?: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   ipAddress?: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: "text", nullable: true })
   userAgent?: string | null;
 
   @Column({ type: "jsonb", nullable: true })

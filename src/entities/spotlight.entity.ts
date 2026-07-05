@@ -11,31 +11,31 @@ export class Spotlight {
   @Column()
   title!: string;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   subtitle?: string | null;
 
   @Column()
   artist!: string;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   song?: string | null;
 
   @Column()
   albumArt!: string;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   backgroundImage?: string | null;
 
   @Column({ default: "editorial" })
   campaignType!: string;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   buttonLabel?: string | null;
 
   @Column({ default: "NEW_SINGLE" })
   tag!: SpotlightTag;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   deepLink?: string | null;
 
   @Column({ type: "int", default: 0 })
@@ -66,22 +66,22 @@ export class Spotlight {
   @Column({ type: "timestamptz", nullable: true })
   archivedAt?: Date | null;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   submitterEmail?: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: "uuid", nullable: true })
   createdByAdminUserId?: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   createdByAdminEmail?: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: "uuid", nullable: true })
   updatedByAdminUserId?: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   updatedByAdminEmail?: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: "uuid", nullable: true })
   duplicateOfSpotlightId?: string | null;
 
   @CreateDateColumn({ type: "timestamptz" })

@@ -19,16 +19,16 @@ export class TemplateVersion {
   @Column({ default: "updated" })
   action!: TemplateVersionAction;
 
-  @Column({ nullable: true })
+  @Column({ type: "text", nullable: true })
   summary?: string | null;
 
   @Column({ type: "jsonb" })
   snapshot!: Record<string, unknown>;
 
-  @Column({ nullable: true })
+  @Column({ type: "uuid", nullable: true })
   authorAdminUserId?: string | null;
 
-  @Column({ nullable: true })
+  @Column({ type: "varchar", nullable: true })
   authorEmail?: string | null;
 
   @CreateDateColumn({ type: "timestamptz" })
