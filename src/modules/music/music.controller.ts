@@ -1,4 +1,6 @@
-import { BadRequestException, Body, Controller, Get, Logger, Post, Query, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Post, Query, Res, UseGuards } from "@nestjs/common";
+import { randomUUID } from "crypto";
+import { Response } from "express";
 
 import { CurrentUser, CurrentUserPayload } from "../../common/decorators/current-user.decorator";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
@@ -8,43 +10,25 @@ import { MusicService } from "./music.service";
 @Controller("music")
 @UseGuards(JwtAuthGuard)
 export class MusicController {
-  private readonly logger = new Logger(MusicController.name);
-
   constructor(private musicService: MusicService) {}
 
   @Post("parse-link")
-  async parseLink(@Body() body: ParseLinkDto, @CurrentUser() user: CurrentUserPayload) {
-    // First check if it's an album/playlist — return type info so frontend knows to show picker
-    const linkType = this.musicService.detectLinkType(body.link);
-    const provider = body.link.includes("spotify.com")
-      ? "spotify"
-      : (body.link.includes("music.apple.com") || body.link.includes("itunes.apple.com"))
-        ? "apple-music"
-        : "unknown";
-    if (linkType !== 'track') {
-      // Pass userId so the service can use the user's auth tokens for private playlists
-      const result = await this.musicService.listAlbumTracks(body.link, user.sub);
-      if (result) {
-        return { type: result.type, name: result.name, tracks: result.tracks };
-      }
-      // listAlbumTracks returned null — the API call failed for this album/playlist link.
-      // Don't fall through to parseLink (it would try to extract a track ID from an album URL).
-      this.logger.warn(`listAlbumTracks returned null for provider=${provider} kind=${linkType} user=${user.sub}`);
+  async parseLink(
+    @Body() body: ParseLinkDto,
+    @CurrentUser() user: CurrentUserPayload,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const requestId = response.req.header("x-client-request-id")?.trim() || randomUUID();
+    response.setHeader("x-request-id", requestId);
 
-      // Provide a more helpful message for personal playlists
-      if (linkType === 'playlist' && this.musicService.isPersonalPlaylist(body.link)) {
-        throw new BadRequestException(
-          'To use a personal playlist, connect your music account in Profile → Platforms. Or try a public playlist, album, or track link.',
-        );
-      }
-
-      throw new BadRequestException(
-        `We couldn't load tracks from that ${provider === "spotify" ? "Spotify" : provider === "apple-music" ? "Apple Music" : ""} ${linkType}`.trim() + '. Please check the link and try again.',
-      );
+    const prepared = await this.musicService.prepareLink(body.link, requestId, user.sub);
+    if (prepared.linkType !== "track") {
+      const result = await this.musicService.listAlbumTracks(prepared.normalizedUrl, user.sub, requestId);
+      return { type: result.type, name: result.name, tracks: result.tracks };
     }
-    // Single track
-    const track = await this.musicService.parseLink(body.link);
-    return { type: 'track', ...track };
+
+    const track = await this.musicService.parseLink(prepared.normalizedUrl, requestId);
+    return { type: "track", ...track };
   }
 
   @Get("search")
