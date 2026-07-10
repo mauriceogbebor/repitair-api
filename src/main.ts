@@ -35,6 +35,8 @@ function validateEnvironment(): void {
   }
   if (!process.env.APPLE_MUSIC_TEAM_ID || !process.env.APPLE_MUSIC_KEY_ID || !process.env.APPLE_MUSIC_PRIVATE_KEY) {
     warnings.push("Apple Music credentials missing (APPLE_MUSIC_TEAM_ID, APPLE_MUSIC_KEY_ID, APPLE_MUSIC_PRIVATE_KEY) — Apple Music lookup will fail");
+  } else if (!process.env.APPLE_MUSIC_PRIVATE_KEY.includes("BEGIN PRIVATE KEY")) {
+    warnings.push("APPLE_MUSIC_PRIVATE_KEY does not look like a PEM private key — Apple Music lookup may fail");
   }
   if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
     warnings.push("SMTP credentials missing (SMTP_HOST, SMTP_USER, SMTP_PASS) — email sending will fail");

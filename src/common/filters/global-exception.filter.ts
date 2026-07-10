@@ -12,6 +12,9 @@ export class GlobalExceptionFilter implements ExceptionFilter {
 
     let status = HttpStatus.INTERNAL_SERVER_ERROR;
     let message: string | string[] = "Internal server error";
+    let errorCode: string | null = null;
+    let requestId: string | null = request.header("x-client-request-id") ?? null;
+    let retriable: boolean | null = null;
 
     if (exception instanceof HttpException) {
       status = exception.getStatus();
@@ -23,9 +26,18 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         exceptionResponse !== null &&
         "message" in exceptionResponse
       ) {
-        const raw = (exceptionResponse as { message: string | string[] }).message;
+        const typedResponse = exceptionResponse as {
+          errorCode?: string;
+          message: string | string[];
+          requestId?: string;
+          retriable?: boolean;
+        };
+        const raw = typedResponse.message;
         // Preserve the array so clients can show per-field validation errors.
         message = raw;
+        errorCode = typedResponse.errorCode ?? null;
+        requestId = typedResponse.requestId ?? requestId;
+        retriable = typeof typedResponse.retriable === "boolean" ? typedResponse.retriable : retriable;
       }
     }
 
@@ -52,9 +64,16 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       }
     }
 
+    if (requestId) {
+      response.setHeader("x-request-id", requestId);
+    }
+
     response.status(status).json({
+      ...(errorCode ? { errorCode } : {}),
       statusCode: status,
       message,
+      ...(requestId ? { requestId } : {}),
+      ...(retriable !== null ? { retriable } : {}),
       timestamp: new Date().toISOString(),
     });
   }
