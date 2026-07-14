@@ -43,6 +43,7 @@ describe("MusicService", () => {
   });
 
   afterEach(() => {
+    service.onModuleDestroy();
     fetchSpy?.mockRestore();
   });
 
@@ -185,6 +186,306 @@ describe("MusicService", () => {
     it("returns an empty array for an empty query", async () => {
       await expect(service.search("")).resolves.toEqual([]);
       await expect(service.search("", "apple-music")).resolves.toEqual([]);
+    });
+  });
+
+  /* ================================================================
+   * PART 1 — MUSIC PIPELINE VERIFICATION
+   * Exercise every lifecycle and reliability code path.
+   * ================================================================ */
+
+  describe("startup token prewarming", () => {
+    it("pre-warms the Spotify token on module init and caches it", async () => {
+      fetchSpy = jest.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+        new Response(JSON.stringify({ access_token: "sp-warm-token", expires_in: 3600 }), { status: 200 }),
+      );
+
+      await service.onModuleInit();
+
+      // Cached — no additional fetch.
+      const token = await (service as any).getSpotifyAccessToken();
+      expect(token).toBe("sp-warm-token");
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not crash on init when Spotify credentials are missing", async () => {
+      const noCredsConfig = { get: jest.fn(() => "") };
+      const module: TestingModule = await Test.createTestingModule({
+        providers: [
+          MusicService,
+          { provide: ConfigService, useValue: noCredsConfig },
+          { provide: getRepositoryToken(User), useValue: mockUsersRepo },
+        ],
+      }).compile();
+      const svc = module.get<MusicService>(MusicService);
+      await expect(svc.onModuleInit()).resolves.not.toThrow();
+      svc.onModuleDestroy();
+    });
+
+    it("does not crash on init when Spotify token fetch fails", async () => {
+      fetchSpy = jest.spyOn(globalThis, "fetch").mockRejectedValueOnce(new TypeError("network down"));
+      await expect(service.onModuleInit()).resolves.not.toThrow();
+    });
+  });
+
+  describe("refresh timer scheduling", () => {
+    it("schedules a refresh timer after successful pre-warm", async () => {
+      fetchSpy = jest.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(JSON.stringify({ access_token: "sp-token", expires_in: 3600 }), { status: 200 }),
+      );
+
+      await service.onModuleInit();
+      expect((service as any).spotifyRefreshTimer).not.toBeNull();
+    });
+
+    it("does not schedule a refresh timer when token is null", async () => {
+      fetchSpy = jest.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+        new Response("Unauthorized", { status: 401 }),
+      );
+
+      await service.onModuleInit();
+      expect((service as any).spotifyRefreshTimer).toBeNull();
+    });
+
+    it("refresh timer invalidates the old token and acquires a new one", async () => {
+      jest.useFakeTimers();
+      try {
+        // Initial pre-warm with short expiry.
+        fetchSpy = jest.spyOn(globalThis, "fetch")
+          .mockResolvedValueOnce(
+            new Response(JSON.stringify({ access_token: "initial-token", expires_in: 60 }), { status: 200 }),
+          )
+          .mockResolvedValueOnce(
+            new Response(JSON.stringify({ access_token: "refreshed-token", expires_in: 3600 }), { status: 200 }),
+          );
+
+        await service.onModuleInit();
+        expect((service as any).spotifyAccessToken).toBe("initial-token");
+
+        // Advance past the refresh window — timer fires.
+        jest.advanceTimersByTime(35_000);
+
+        // Let the async timer callback resolve.
+        await Promise.resolve();
+        await Promise.resolve();
+        await jest.advanceTimersByTimeAsync(0);
+
+        expect((service as any).spotifyAccessToken).toBe("refreshed-token");
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+  });
+
+  describe("expired token path", () => {
+    it("re-fetches when the cached token has expired", async () => {
+      fetchSpy = jest.spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ access_token: "first", expires_in: 3600 }), { status: 200 }),
+        )
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ access_token: "second", expires_in: 3600 }), { status: 200 }),
+        );
+
+      // Get initial token.
+      const t1 = await (service as any).getSpotifyAccessToken();
+      expect(t1).toBe("first");
+
+      // Manually expire it.
+      (service as any).spotifyTokenExpiry = Date.now() - 1;
+
+      // Should fetch a new token.
+      const t2 = await (service as any).getSpotifyAccessToken();
+      expect(t2).toBe("second");
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe("invalid token path (401 recovery)", () => {
+    const makeContext = () => ({
+      requestId: "req-401",
+      endpoint: "/music/parse-link",
+      provider: "spotify" as const,
+      linkType: "track" as const,
+      normalizedUrl: "https://open.spotify.com/track/abc123",
+      rawUrl: "https://open.spotify.com/track/abc123",
+      storefront: null,
+    });
+
+    it("spotifyApiCall retries once with a fresh token on 401", async () => {
+      fetchSpy = jest.spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "expired", expires_in: 3600 }), { status: 200 }))
+        .mockResolvedValueOnce(new Response("Unauthorized", { status: 401 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "fresh", expires_in: 3600 }), { status: 200 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ name: "Track" }), { status: 200 }));
+
+      const response = await (service as any).spotifyApiCall(
+        "https://api.spotify.com/v1/tracks/abc123", makeContext(), "test",
+      );
+      expect(response.ok).toBe(true);
+      expect(fetchSpy).toHaveBeenCalledTimes(4);
+    });
+
+    it("spotifyApiCall returns 401 response when re-auth also fails", async () => {
+      fetchSpy = jest.spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "expired", expires_in: 3600 }), { status: 200 }))
+        .mockResolvedValueOnce(new Response("Unauthorized", { status: 401 }))
+        .mockResolvedValueOnce(new Response("Still Unauthorized", { status: 401 }));
+
+      const response = await (service as any).spotifyApiCall(
+        "https://api.spotify.com/v1/tracks/abc123", makeContext(), "test",
+      );
+      // The token fetch returned 401, so getSpotifyAccessToken returns null,
+      // and the original 401 response is returned.
+      expect(response.status).toBe(401);
+    });
+
+    it("appleMusicApiCall retries once with a fresh JWT on 401", async () => {
+      // Ensure a valid JWT exists first by seeding the cache.
+      (service as any).appleMusicJwt = "initial-jwt";
+      (service as any).appleMusicJwtExpiry = Date.now() + 86400000;
+
+      fetchSpy = jest.spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(new Response("Unauthorized", { status: 401 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ data: [] }), { status: 200 }));
+
+      // appleMusicApiCall regenerates the JWT synchronously — mock the method.
+      const genSpy = jest.spyOn(service as any, "generateAppleMusicJwt")
+        .mockReturnValueOnce("old-jwt")
+        .mockReturnValueOnce("fresh-jwt");
+
+      const context = { ...makeContext(), provider: "apple-music" as const };
+      const response = await (service as any).appleMusicApiCall(
+        "https://api.music.apple.com/v1/catalog/us/songs/123", context, "test",
+      );
+
+      expect(response.ok).toBe(true);
+      expect(genSpy).toHaveBeenCalledTimes(2);
+      genSpy.mockRestore();
+    });
+  });
+
+  describe("concurrent requests — deduplication", () => {
+    it("deduplicates concurrent token acquisitions via pendingSpotifyToken", async () => {
+      let resolveToken!: (v: Response) => void;
+      const tokenPromise = new Promise<Response>((resolve) => { resolveToken = resolve; });
+      fetchSpy = jest.spyOn(globalThis, "fetch").mockReturnValueOnce(tokenPromise as any);
+
+      // Launch two concurrent calls.
+      const p1 = (service as any).getSpotifyAccessToken();
+      const p2 = (service as any).getSpotifyAccessToken();
+
+      // Both should share the same pending promise.
+      expect((service as any).pendingSpotifyToken).not.toBeNull();
+
+      resolveToken(new Response(JSON.stringify({ access_token: "shared", expires_in: 3600 }), { status: 200 }));
+
+      const [t1, t2] = await Promise.all([p1, p2]);
+      expect(t1).toBe("shared");
+      expect(t2).toBe("shared");
+      // Only one fetch, not two.
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("timeout path", () => {
+    it("withDeadline rejects with PROVIDER_TIMEOUT when deadline expires", async () => {
+      const slowPromise = new Promise<string>((resolve) => {
+        setTimeout(() => resolve("too late"), 500);
+      });
+
+      await expect(
+        (service as any).withDeadline(slowPromise, 50, "Test deadline exceeded"),
+      ).rejects.toMatchObject({
+        code: "PROVIDER_TIMEOUT",
+        httpStatus: 504,
+        retriable: true,
+      });
+    });
+
+    it("withDeadline resolves when promise beats the deadline", async () => {
+      await expect(
+        (service as any).withDeadline(Promise.resolve("fast"), 5000, "nope"),
+      ).resolves.toBe("fast");
+    });
+
+    it("parseLink delegates to withDeadline with 18s budget", async () => {
+      // Block the inner IIFE so no stale fetch calls leak into later tests.
+      const prepareSpy = jest.spyOn(service as any, "prepareLink")
+        .mockImplementation(() => new Promise(() => {}));
+      const deadlineSpy = jest.spyOn(service as any, "withDeadline")
+        .mockRejectedValueOnce(Object.assign(new Error("mocked"), { code: "PROVIDER_TIMEOUT", httpStatus: 504, retriable: true }));
+
+      await expect(
+        service.parseLink("https://open.spotify.com/track/abc123", "req-deadline"),
+      ).rejects.toMatchObject({ code: "PROVIDER_TIMEOUT" });
+
+      expect(deadlineSpy).toHaveBeenCalledWith(
+        expect.any(Promise),
+        18_000,
+        expect.stringContaining("deadline"),
+      );
+      deadlineSpy.mockRestore();
+      prepareSpy.mockRestore();
+    });
+  });
+
+  describe("provider retry path", () => {
+    it("resilientFetch retries 429 then succeeds", async () => {
+      fetchSpy = jest.spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(new Response("", { status: 429 }))
+        .mockResolvedValueOnce(new Response("OK", { status: 200 }));
+
+      const response = await (service as any).resilientFetch(
+        "https://api.example.com/test", {},
+        { operation: "spec", provider: "spotify", requestId: "r1", retries: 1, timeoutMs: 5000 },
+      );
+      expect(response.ok).toBe(true);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it("resilientFetch retries 5xx then succeeds", async () => {
+      fetchSpy = jest.spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(new Response("", { status: 502 }))
+        .mockResolvedValueOnce(new Response("OK", { status: 200 }));
+
+      const response = await (service as any).resilientFetch(
+        "https://api.example.com/test", {},
+        { operation: "spec", provider: "spotify", requestId: "r2", retries: 1, timeoutMs: 5000 },
+      );
+      expect(response.ok).toBe(true);
+    });
+
+    it("resilientFetch does NOT retry 404", async () => {
+      fetchSpy = jest.spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(new Response("Not Found", { status: 404 }));
+
+      const response = await (service as any).resilientFetch(
+        "https://api.example.com/test", {},
+        { operation: "spec", provider: "spotify", requestId: "r3", retries: 2, timeoutMs: 5000 },
+      );
+      expect(response.status).toBe(404);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("cleanup on shutdown", () => {
+    it("clears the refresh timer on module destroy", async () => {
+      fetchSpy = jest.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(JSON.stringify({ access_token: "sp-token", expires_in: 3600 }), { status: 200 }),
+      );
+
+      await service.onModuleInit();
+      expect((service as any).spotifyRefreshTimer).not.toBeNull();
+
+      service.onModuleDestroy();
+      expect((service as any).spotifyRefreshTimer).toBeNull();
+    });
+
+    it("onModuleDestroy is idempotent", () => {
+      service.onModuleDestroy();
+      service.onModuleDestroy();
+      expect((service as any).spotifyRefreshTimer).toBeNull();
     });
   });
 });
