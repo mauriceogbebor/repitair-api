@@ -27,6 +27,8 @@ export class MusicController {
 
     let provider: string = "unknown";
     let lookupType: string = "unknown";
+    let originalUrl: string = body.link;
+    let normalizedUrl: string | null = null;
     let result: "success" | "error" = "success";
     let statusCode = 200;
     let errorCode: string | null = null;
@@ -35,6 +37,7 @@ export class MusicController {
       const prepared = await this.musicService.prepareLink(body.link, requestId, user.sub);
       provider = prepared.provider;
       lookupType = prepared.linkType;
+      normalizedUrl = prepared.normalizedUrl;
 
       if (prepared.linkType !== "track") {
         const collection = await this.musicService.listAlbumTracks(prepared.normalizedUrl, user.sub, requestId);
@@ -65,6 +68,8 @@ export class MusicController {
         requestId,
         provider,
         lookupType,
+        originalUrl,
+        normalizedUrl,
         coldStart: diagnostics.coldStart,
         tokenAgeMs: diagnostics.tokenAgeMs,
         lastTokenRefreshAgeMs: diagnostics.lastRefreshAgeMs,

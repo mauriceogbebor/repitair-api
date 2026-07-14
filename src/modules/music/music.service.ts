@@ -1454,10 +1454,12 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
 
     // Try user token first if available.
     let usedUserToken = false;
+    let userTokenAvailable = false;
     if (context.userId) {
       const userToken = await this.getUserSpotifyAccessToken(context.userId);
       if (userToken) {
         usedUserToken = true;
+        userTokenAvailable = true;
         const userResponse = await this.resilientFetch(
           url,
           { headers: { Authorization: `Bearer ${userToken}` } },
@@ -1473,8 +1475,9 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
     // Client-credentials path with 401 recovery.
     const response = await this.spotifyApiCall(url, context, "spotify-playlist-lookup");
 
-    if (response.status === 403 && context.userId && !usedUserToken) {
-      // Private playlist — try user token as last resort.
+    // Spotify returns 404 (not 403) for private playlists accessed via client credentials.
+    // Try the user’s OAuth token as a fallback for both 403 and 404.
+    if ((response.status === 403 || response.status === 404) && context.userId && !usedUserToken) {
       const userToken = await this.getUserSpotifyAccessToken(context.userId);
       if (userToken) {
         const retryResponse = await this.resilientFetch(
@@ -1489,6 +1492,23 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (!response.ok) {
+      this.logger.warn(
+        `Spotify playlist lookup failed: playlistId=${playlistId} status=${response.status} ` +
+        `userTokenAvailable=${userTokenAvailable} usedUserToken=${usedUserToken} ` +
+        `requestId=${context.requestId}`,
+      );
+      // If Spotify returned 404 and we had no user token to try, the playlist is likely
+      // private or personal. Provide an actionable message.
+      if (response.status === 404 && !usedUserToken) {
+        throw this.buildResolutionException(context, {
+          code: "PROVIDER_NOT_FOUND" as const,
+          message:
+            "We couldn’t find that playlist. It may be private — try sharing a public playlist, or link your Spotify account in settings.",
+          providerStatus: 404,
+          retriable: false,
+          status: 404,
+        });
+      }
       throw this.buildResolutionException(
         context,
         this.mapResponseToError(response, "We couldn’t load that Spotify playlist right now."),
