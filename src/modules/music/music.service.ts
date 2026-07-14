@@ -1,4 +1,4 @@
-import { Inject, Injectable, Optional } from "@nestjs/common";
+import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
 import * as jwt from "jsonwebtoken";
@@ -75,8 +75,18 @@ const FETCH_TIMEOUT_MS = 7_000;
 const FETCH_MAX_RETRIES = 2;
 const FETCH_BACKOFF_MS = 500;
 
+/** Refresh Spotify token this many ms before it actually expires. */
+const SPOTIFY_TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1_000;
+/** Minimum delay before a scheduled token refresh fires. */
+const SPOTIFY_TOKEN_REFRESH_MIN_DELAY_MS = 30_000;
+/** Delay before retrying a failed background token refresh. */
+const SPOTIFY_TOKEN_REFRESH_RETRY_MS = 60_000;
+/** Hard deadline for the entire parse-link → provider-lookup pipeline. */
+const TOTAL_PARSE_DEADLINE_MS = 18_000;
+
 @Injectable()
-export class MusicService {
+export class MusicService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(MusicService.name);
   private spotifyAccessToken: string | null = null;
   private spotifyTokenExpiry = 0;
   private appleMusicJwt: string | null = null;
@@ -86,6 +96,9 @@ export class MusicService {
   private pendingAppleMusicJwt: Promise<string | null> | null = null;
   private readonly pendingTrackLookups = new Map<string, Promise<ParsedTrack>>();
   private readonly pendingCollectionLookups = new Map<string, Promise<ParsedCollection>>();
+  private spotifyRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private initComplete = false;
+  private lastSpotifyTokenRefreshAt = 0;
 
   constructor(
     private readonly configService: ConfigService,
@@ -93,6 +106,242 @@ export class MusicService {
     private readonly usersRepo: Repository<User>,
     @Inject(REDIS_CLIENT) @Optional() private readonly redis: RedisClient | null,
   ) {}
+
+  /* ── Lifecycle ─────────────────────────────────────────────────────── */
+
+  async onModuleInit() {
+    // Pre-warm Spotify client-credentials token so the first user request
+    // does not pay the full token-acquisition cost.
+    try {
+      const token = await this.getSpotifyAccessToken();
+      if (token) {
+        this.logger.log("Spotify client token pre-warmed successfully");
+        this.scheduleSpotifyTokenRefresh();
+      } else {
+        this.logger.warn("Spotify client token pre-warm returned null — credentials may be missing");
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Spotify token pre-warm error: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
+    // Pre-generate Apple Music developer JWT (synchronous, but surfaces key errors at boot).
+    const applJwt = this.generateAppleMusicJwt();
+    if (applJwt) {
+      this.logger.log("Apple Music developer JWT pre-generated successfully");
+    } else {
+      this.logger.warn("Apple Music JWT generation failed — credentials may be missing or key is invalid");
+    }
+
+    this.initComplete = true;
+  }
+
+  onModuleDestroy() {
+    if (this.spotifyRefreshTimer) {
+      clearTimeout(this.spotifyRefreshTimer);
+      this.spotifyRefreshTimer = null;
+    }
+  }
+
+  /**
+   * Expose token diagnostics for production telemetry.
+   * No secrets are included — only timing and state metadata.
+   */
+  getTokenDiagnostics(provider: MusicProvider): {
+    coldStart: boolean;
+    tokenAgeMs: number | null;
+    lastRefreshAgeMs: number | null;
+  } {
+    const now = Date.now();
+    if (provider === "spotify") {
+      const tokenAgeMs = this.spotifyTokenExpiry > 0
+        ? now - (this.spotifyTokenExpiry - 3600_000) // approximate acquisition time
+        : null;
+      return {
+        coldStart: !this.initComplete,
+        lastRefreshAgeMs: this.lastSpotifyTokenRefreshAt > 0 ? now - this.lastSpotifyTokenRefreshAt : null,
+        tokenAgeMs,
+      };
+    }
+    if (provider === "apple-music") {
+      const tokenAgeMs = this.appleMusicJwtExpiry > 0
+        ? now - (this.appleMusicJwtExpiry - 180 * 24 * 60 * 60 * 1_000) // 180-day JWT
+        : null;
+      return {
+        coldStart: !this.initComplete,
+        lastRefreshAgeMs: null,
+        tokenAgeMs,
+      };
+    }
+    return { coldStart: !this.initComplete, lastRefreshAgeMs: null, tokenAgeMs: null };
+  }
+
+  /**
+   * Schedule a background refresh of the Spotify token before it expires.
+   * Uses the actual expiry from the token response rather than a hardcoded duration.
+   */
+  private scheduleSpotifyTokenRefresh() {
+    if (this.spotifyRefreshTimer) {
+      clearTimeout(this.spotifyRefreshTimer);
+    }
+
+    const msUntilExpiry = this.spotifyTokenExpiry - Date.now();
+    const refreshIn = Math.max(
+      msUntilExpiry - SPOTIFY_TOKEN_REFRESH_MARGIN_MS,
+      SPOTIFY_TOKEN_REFRESH_MIN_DELAY_MS,
+    );
+
+    this.spotifyRefreshTimer = setTimeout(async () => {
+      try {
+        // Force a fresh token by invalidating the cached one.
+        this.invalidateSpotifyToken();
+        const token = await this.getSpotifyAccessToken();
+        if (token) {
+          this.lastSpotifyTokenRefreshAt = Date.now();
+          this.logger.log("Spotify token background refresh succeeded");
+          this.scheduleSpotifyTokenRefresh();
+        } else {
+          this.logger.warn("Spotify token background refresh returned null — will retry");
+          this.spotifyRefreshTimer = setTimeout(
+            () => this.scheduleSpotifyTokenRefresh(),
+            SPOTIFY_TOKEN_REFRESH_RETRY_MS,
+          );
+          this.spotifyRefreshTimer?.unref?.();
+        }
+      } catch (error) {
+        this.logger.warn(
+          `Spotify token background refresh error: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        this.spotifyRefreshTimer = setTimeout(
+          () => this.scheduleSpotifyTokenRefresh(),
+          SPOTIFY_TOKEN_REFRESH_RETRY_MS,
+        );
+        this.spotifyRefreshTimer?.unref?.();
+      }
+    }, refreshIn);
+
+    this.spotifyRefreshTimer.unref();
+  }
+
+  /** Clear the cached Spotify token so the next call to getSpotifyAccessToken fetches fresh. */
+  private invalidateSpotifyToken() {
+    this.spotifyAccessToken = null;
+    this.spotifyTokenExpiry = 0;
+  }
+
+  /**
+   * Race a promise against a hard deadline.
+   * Used to guarantee we return before the mobile client times out.
+   */
+  private withDeadline<T>(promise: Promise<T>, deadlineMs: number, message: string): Promise<T> {
+    let timer: ReturnType<typeof setTimeout>;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        reject(
+          new UpstreamMusicError({
+            code: "PROVIDER_TIMEOUT",
+            httpStatus: 504,
+            message,
+            retriable: true,
+          }),
+        );
+      }, deadlineMs);
+      timer.unref();
+    });
+
+    return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
+  }
+
+  /**
+   * Execute a Spotify API call with automatic 401 recovery.
+   * If the provider returns 401, the cached token is invalidated, a fresh token
+   * is acquired, and the request is retried exactly once.
+   */
+  private async spotifyApiCall(
+    url: string,
+    context: PreparedMusicLink,
+    operation: string,
+  ): Promise<Response> {
+    let token = await this.getSpotifyAccessToken();
+    if (!token) {
+      throw this.buildResolutionException(context, {
+        code: "PROVIDER_AUTH_FAILURE",
+        message: "Spotify lookup is not configured right now.",
+        retriable: false,
+        status: 503,
+      });
+    }
+
+    const response = await this.resilientFetch(
+      url,
+      { headers: { Authorization: `Bearer ${token}` } },
+      { operation, provider: "spotify", requestId: context.requestId },
+    );
+
+    if (response.status === 401) {
+      this.logger.warn(`Spotify 401 on ${operation} — invalidating token and retrying once`);
+      this.invalidateSpotifyToken();
+      token = await this.getSpotifyAccessToken();
+      if (token) {
+        return this.resilientFetch(
+          url,
+          { headers: { Authorization: `Bearer ${token}` } },
+          { operation: `${operation}-auth-retry`, provider: "spotify", requestId: context.requestId, retries: 0 },
+        );
+      }
+    }
+
+    return response;
+  }
+
+  /**
+   * Execute an Apple Music API call with automatic 401 recovery.
+   * If the provider returns 401, the cached JWT is invalidated, a fresh JWT
+   * is generated, and the request is retried exactly once.
+   */
+  private appleMusicApiCall(
+    url: string,
+    context: PreparedMusicLink,
+    operation: string,
+    extraHeaders?: Record<string, string>,
+  ): Promise<Response> {
+    const token = this.generateAppleMusicJwt();
+    if (!token) {
+      throw this.buildResolutionException(context, {
+        code: "PROVIDER_AUTH_FAILURE",
+        message: "Apple Music lookup is not configured right now.",
+        retriable: false,
+        status: 503,
+      });
+    }
+
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${token}`,
+      ...extraHeaders,
+    };
+
+    return this.resilientFetch(url, { headers }, {
+      operation,
+      provider: "apple-music",
+      requestId: context.requestId,
+    }).then((response) => {
+      if (response.status === 401) {
+        this.logger.warn(`Apple Music 401 on ${operation} — regenerating JWT and retrying once`);
+        this.appleMusicJwt = null;
+        this.appleMusicJwtExpiry = 0;
+        const freshToken = this.generateAppleMusicJwt();
+        if (freshToken) {
+          return this.resilientFetch(
+            url,
+            { headers: { ...headers, Authorization: `Bearer ${freshToken}` } },
+            { operation: `${operation}-auth-retry`, provider: "apple-music", requestId: context.requestId, retries: 0 },
+          );
+        }
+      }
+      return response;
+    });
+  }
 
   detectLinkType(link: string): "track" | "album" | "playlist" {
     const normalized = link.toLowerCase();
@@ -237,13 +486,25 @@ export class MusicService {
   }
 
   async listAlbumTracks(link: string, userId?: string, requestId = "server"): Promise<ParsedCollection> {
-    const prepared = await this.prepareLink(link, requestId, userId);
-    return this.listPreparedCollection(prepared);
+    return this.withDeadline(
+      (async () => {
+        const prepared = await this.prepareLink(link, requestId, userId);
+        return this.listPreparedCollection(prepared);
+      })(),
+      TOTAL_PARSE_DEADLINE_MS,
+      `Collection lookup exceeded ${TOTAL_PARSE_DEADLINE_MS}ms deadline`,
+    );
   }
 
   async parseLink(link: string, requestId = "server"): Promise<ParsedTrack> {
-    const prepared = await this.prepareLink(link, requestId);
-    return this.parsePreparedTrack(prepared);
+    return this.withDeadline(
+      (async () => {
+        const prepared = await this.prepareLink(link, requestId);
+        return this.parsePreparedTrack(prepared);
+      })(),
+      TOTAL_PARSE_DEADLINE_MS,
+      `Track lookup exceeded ${TOTAL_PARSE_DEADLINE_MS}ms deadline`,
+    );
   }
 
   async search(
@@ -1098,28 +1359,10 @@ export class MusicService {
   }
 
   private async lookupSpotifyTrack(trackId: string, context: PreparedMusicLink): Promise<ParsedTrack | null> {
-    const token = await this.getSpotifyAccessToken();
-    if (!token) {
-      throw this.buildResolutionException(context, {
-        code: "PROVIDER_AUTH_FAILURE",
-        message: "Spotify lookup is not configured right now.",
-        retriable: false,
-        status: 503,
-      });
-    }
-
-    const response = await this.resilientFetch(
+    const response = await this.spotifyApiCall(
       `https://api.spotify.com/v1/tracks/${trackId}`,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      },
-      {
-        operation: "spotify-track-lookup",
-        provider: "spotify",
-        requestId: context.requestId,
-      },
+      context,
+      "spotify-track-lookup",
     );
 
     if (!response.ok) {
@@ -1141,29 +1384,11 @@ export class MusicService {
   }
 
   private async lookupAppleMusicTrack(trackId: string, context: PreparedMusicLink): Promise<ParsedTrack | null> {
-    const token = this.generateAppleMusicJwt();
-    if (!token) {
-      throw this.buildResolutionException(context, {
-        code: "PROVIDER_AUTH_FAILURE",
-        message: "Apple Music lookup is not configured right now.",
-        retriable: false,
-        status: 503,
-      });
-    }
-
     const storefront = context.storefront ?? "us";
-    const response = await this.resilientFetch(
+    const response = await this.appleMusicApiCall(
       `https://api.music.apple.com/v1/catalog/${storefront}/songs/${trackId}`,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      },
-      {
-        operation: "apple-track-lookup",
-        provider: "apple-music",
-        requestId: context.requestId,
-      },
+      context,
+      "apple-track-lookup",
     );
 
     if (!response.ok) {
@@ -1190,26 +1415,10 @@ export class MusicService {
   }
 
   private async listSpotifyAlbum(albumId: string, context: PreparedMusicLink): Promise<ParsedCollection | null> {
-    const token = await this.getSpotifyAccessToken();
-    if (!token) {
-      throw this.buildResolutionException(context, {
-        code: "PROVIDER_AUTH_FAILURE",
-        message: "Spotify lookup is not configured right now.",
-        retriable: false,
-        status: 503,
-      });
-    }
-
-    const response = await this.resilientFetch(
+    const response = await this.spotifyApiCall(
       `https://api.spotify.com/v1/albums/${albumId}`,
-      {
-        headers: { Authorization: `Bearer ${token}` },
-      },
-      {
-        operation: "spotify-album-lookup",
-        provider: "spotify",
-        requestId: context.requestId,
-      },
+      context,
+      "spotify-album-lookup",
     );
 
     if (!response.ok) {
@@ -1241,52 +1450,38 @@ export class MusicService {
   }
 
   private async listSpotifyPlaylist(playlistId: string, context: PreparedMusicLink): Promise<ParsedCollection | null> {
-    let token: string | null = null;
+    const url = `https://api.spotify.com/v1/playlists/${playlistId}`;
+
+    // Try user token first if available.
     let usedUserToken = false;
-
     if (context.userId) {
-      token = await this.getUserSpotifyAccessToken(context.userId);
-      usedUserToken = Boolean(token);
-    }
-    if (!token) {
-      token = await this.getSpotifyAccessToken();
-    }
-    if (!token) {
-      throw this.buildResolutionException(context, {
-        code: "PROVIDER_AUTH_FAILURE",
-        message: "Spotify lookup is not configured right now.",
-        retriable: false,
-        status: 503,
-      });
+      const userToken = await this.getUserSpotifyAccessToken(context.userId);
+      if (userToken) {
+        usedUserToken = true;
+        const userResponse = await this.resilientFetch(
+          url,
+          { headers: { Authorization: `Bearer ${userToken}` } },
+          { operation: "spotify-playlist-lookup-user-token", provider: "spotify", requestId: context.requestId },
+        );
+        if (userResponse.ok) {
+          return this.parseSpotifyPlaylistResponse(userResponse);
+        }
+        // Fall through to client-credentials if user token fails.
+      }
     }
 
-    const response = await this.resilientFetch(
-      `https://api.spotify.com/v1/playlists/${playlistId}`,
-      {
-        headers: { Authorization: `Bearer ${token}` },
-      },
-      {
-        operation: "spotify-playlist-lookup",
-        provider: "spotify",
-        requestId: context.requestId,
-      },
-    );
+    // Client-credentials path with 401 recovery.
+    const response = await this.spotifyApiCall(url, context, "spotify-playlist-lookup");
 
     if (response.status === 403 && context.userId && !usedUserToken) {
+      // Private playlist — try user token as last resort.
       const userToken = await this.getUserSpotifyAccessToken(context.userId);
       if (userToken) {
         const retryResponse = await this.resilientFetch(
-          `https://api.spotify.com/v1/playlists/${playlistId}`,
-          {
-            headers: { Authorization: `Bearer ${userToken}` },
-          },
-          {
-            operation: "spotify-playlist-lookup-user-token",
-            provider: "spotify",
-            requestId: context.requestId,
-          },
+          url,
+          { headers: { Authorization: `Bearer ${userToken}` } },
+          { operation: "spotify-playlist-lookup-user-token", provider: "spotify", requestId: context.requestId },
         );
-
         if (retryResponse.ok) {
           return this.parseSpotifyPlaylistResponse(retryResponse);
         }
@@ -1326,25 +1521,11 @@ export class MusicService {
   }
 
   private async listAppleMusicAlbum(albumId: string, context: PreparedMusicLink): Promise<ParsedCollection | null> {
-    const token = this.generateAppleMusicJwt();
-    if (!token) {
-      throw this.buildResolutionException(context, {
-        code: "PROVIDER_AUTH_FAILURE",
-        message: "Apple Music lookup is not configured right now.",
-        retriable: false,
-        status: 503,
-      });
-    }
-
     const storefront = context.storefront ?? "us";
-    const response = await this.resilientFetch(
+    const response = await this.appleMusicApiCall(
       `https://api.music.apple.com/v1/catalog/${storefront}/albums/${albumId}?include=tracks`,
-      { headers: { Authorization: `Bearer ${token}` } },
-      {
-        operation: "apple-album-lookup",
-        provider: "apple-music",
-        requestId: context.requestId,
-      },
+      context,
+      "apple-album-lookup",
     );
 
     if (!response.ok) {
@@ -1392,20 +1573,10 @@ export class MusicService {
   }
 
   private async listAppleMusicPlaylist(playlistId: string, context: PreparedMusicLink): Promise<ParsedCollection | null> {
-    const devToken = this.generateAppleMusicJwt();
-    if (!devToken) {
-      throw this.buildResolutionException(context, {
-        code: "PROVIDER_AUTH_FAILURE",
-        message: "Apple Music lookup is not configured right now.",
-        retriable: false,
-        status: 503,
-      });
-    }
-
     const storefront = context.storefront ?? "us";
     const isPersonal = playlistId.startsWith("pl.u-");
-    const headers: Record<string, string> = { Authorization: `Bearer ${devToken}` };
     let apiUrl: string;
+    let extraHeaders: Record<string, string> | undefined;
 
     if (isPersonal) {
       const userToken = context.userId ? await this.getUserAppleMusicToken(context.userId) : null;
@@ -1417,20 +1588,17 @@ export class MusicService {
           status: 403,
         });
       }
-      headers["Music-User-Token"] = userToken;
+      extraHeaders = { "Music-User-Token": userToken };
       apiUrl = `https://api.music.apple.com/v1/me/library/playlists/${playlistId}?include=tracks`;
     } else {
       apiUrl = `https://api.music.apple.com/v1/catalog/${storefront}/playlists/${playlistId}?include=tracks`;
     }
 
-    const response = await this.resilientFetch(
+    const response = await this.appleMusicApiCall(
       apiUrl,
-      { headers },
-      {
-        operation: "apple-playlist-lookup",
-        provider: "apple-music",
-        requestId: context.requestId,
-      },
+      context,
+      "apple-playlist-lookup",
+      extraHeaders,
     );
 
     if (!response.ok) {

@@ -77,7 +77,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         `[${request.method} ${request.url}] ${exception instanceof Error ? exception.message : String(exception)}`,
         exception instanceof Error ? exception.stack : undefined,
       );
-      // Never send internal error details to the client (unless we already set a user-facing message above t)
+      // Never send internal error details to the client (unless we already set a user-facing message above )
       if (status === HttpStatus.INTERNAL_SERVER_ERROR) {
         message = 'Internal server error';
       }
