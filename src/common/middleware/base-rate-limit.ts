@@ -1,6 +1,8 @@
 import { HttpException, HttpStatus, Logger, OnModuleDestroy } from "@nestjs/common";
 import { Request, Response, NextFunction } from "express";
 
+import { isRedisReady } from "../modules/redis.module";
+
 type RateLimitEntry = { count: number; resetAt: number };
 
 export type RateLimitConfig = {
@@ -31,6 +33,7 @@ export abstract class BaseRateLimiter implements OnModuleDestroy {
   private readonly store = new Map<string, RateLimitEntry>();
   private readonly cleanupInterval: NodeJS.Timeout;
   private readonly keyPrefix: string;
+  private hasLoggedRedisFailure = false;
 
   constructor(
     protected readonly config: RateLimitConfig,
@@ -56,7 +59,7 @@ export abstract class BaseRateLimiter implements OnModuleDestroy {
     const { windowMs, maxRequests, message, sendHeaders = true } = this.config;
 
     // Try Redis first
-    if (this.redis) {
+    if (isRedisReady(this.redis)) {
       try {
         const redisKey = this.keyPrefix + rawKey;
         const current = await this.redis.incr(redisKey);
@@ -66,6 +69,7 @@ export abstract class BaseRateLimiter implements OnModuleDestroy {
 
         const ttl = await this.redis.pttl(redisKey);
         const resetAt = Date.now() + Math.max(ttl, 0);
+        this.hasLoggedRedisFailure = false;
 
         if (current > maxRequests) {
           if (sendHeaders) this.setHeaders(res, maxRequests, 0, resetAt);
@@ -76,11 +80,14 @@ export abstract class BaseRateLimiter implements OnModuleDestroy {
         return next();
       } catch (err) {
         if (err instanceof HttpException) throw err;
-        this.logger.error(
-          `Redis rate-limit error, falling back to in-memory: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
+        if (!this.hasLoggedRedisFailure) {
+          this.logger.error(
+            `Redis rate-limit error, falling back to in-memory: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+          this.hasLoggedRedisFailure = true;
+        }
         // Fall through to in-memory
       }
     }

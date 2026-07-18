@@ -1,4 +1,3 @@
-import { ConfigService } from "@nestjs/config";
 import { TokenBlacklistService } from "./token-blacklist.service";
 
 describe("TokenBlacklistService", () => {
@@ -6,11 +5,11 @@ describe("TokenBlacklistService", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    const configService = { get: jest.fn().mockReturnValue(undefined) } as unknown as ConfigService;
-    service = new TokenBlacklistService(configService);
+    service = new TokenBlacklistService(null);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await service.onModuleDestroy();
     jest.useRealTimers();
   });
 
@@ -146,6 +145,41 @@ describe("TokenBlacklistService", () => {
       await service.add(token, largeExpiry);
 
       expect(await service.isBlacklisted(token)).toBe(true);
+    });
+  });
+
+  describe("Redis availability", () => {
+    it("uses the in-memory blacklist without calling a closed Redis client", async () => {
+      const redis = {
+        status: "end",
+        setex: jest.fn(),
+        exists: jest.fn(),
+      };
+      await service.onModuleDestroy();
+      service = new TokenBlacklistService(redis);
+
+      await service.add("closed.redis.token", Math.floor(Date.now() / 1000) + 60);
+
+      expect(await service.isBlacklisted("closed.redis.token")).toBe(true);
+      expect(redis.setex).not.toHaveBeenCalled();
+      expect(redis.exists).not.toHaveBeenCalled();
+    });
+
+    it("keeps a locally mirrored revocation when Redis goes offline", async () => {
+      const redis = {
+        status: "ready",
+        setex: jest.fn().mockResolvedValue("OK"),
+        exists: jest.fn().mockResolvedValue(0),
+      };
+      await service.onModuleDestroy();
+      service = new TokenBlacklistService(redis);
+
+      await service.add("mirrored.token", Math.floor(Date.now() / 1000) + 60);
+      redis.status = "reconnecting";
+
+      expect(await service.isBlacklisted("mirrored.token")).toBe(true);
+      expect(redis.setex).toHaveBeenCalledTimes(1);
+      expect(redis.exists).not.toHaveBeenCalled();
     });
   });
 });

@@ -4,13 +4,21 @@ import { ConfigService } from "@nestjs/config";
 /**
  * Injection token for the shared Redis client.
  * Inject with `@Inject(REDIS_CLIENT)`. The value is the ioredis instance
- * or `null` when Redis is unavailable (REDIS_URL not set, ioredis not
- * installed, or connection failed). Consumers must handle the `null` case
- * by falling back to in-memory caching.
+ * or `null` when Redis is not configured. A configured client can be in a
+ * reconnecting state, so consumers must also check `isRedisReady` before
+ * issuing commands and fall back to in-memory storage while it recovers.
  */
 export const REDIS_CLIENT = Symbol("REDIS_CLIENT");
 
 type RedisClient = any; // Lazy-loaded to avoid build-time dependency
+
+export function isRedisReady(client: RedisClient | null | undefined): boolean {
+  if (!client) return false;
+
+  // ioredis always exposes `status`. Allow status-less test doubles so callers
+  // can continue to use lightweight Redis mocks.
+  return client.status === undefined || client.status === "ready";
+}
 
 @Global()
 @Module({
@@ -46,7 +54,8 @@ type RedisClient = any; // Lazy-loaded to avoid build-time dependency
             enableOfflineQueue: false,
             lazyConnect: true,
             maxRetriesPerRequest: 1,
-            retryStrategy: () => null,
+            retryStrategy: (attempt: number) =>
+              Math.min(500 * 2 ** Math.min(Math.max(attempt - 1, 0), 6), 30_000),
           });
 
           client.on("error", (err: Error) => {
@@ -54,16 +63,10 @@ type RedisClient = any; // Lazy-loaded to avoid build-time dependency
               logger.error(`Redis connection error: ${err.message}`);
               hasLoggedFailure = true;
             }
-            try {
-              client?.disconnect();
-            } catch {}
-            // Note: consumers check for null on each operation via their own
-            // reference, but a disconnected client will throw on use — which
-            // their catch blocks already handle by falling back to in-memory.
           });
 
-          client.on("connect", () => {
-            logger.log("Redis connected");
+          client.on("ready", () => {
+            logger.log(hasLoggedFailure ? "Redis connection restored" : "Redis connected");
             hasLoggedFailure = false;
           });
 
@@ -72,9 +75,6 @@ type RedisClient = any; // Lazy-loaded to avoid build-time dependency
               logger.error(`Redis connection error: ${err.message}`);
               hasLoggedFailure = true;
             }
-            try {
-              client?.disconnect();
-            } catch {}
           });
         } catch (error) {
           logger.warn(

@@ -4,7 +4,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import * as jwt from "jsonwebtoken";
 import { Repository } from "typeorm";
 
-import { REDIS_CLIENT } from "../../common/modules/redis.module";
+import { isRedisReady, REDIS_CLIENT } from "../../common/modules/redis.module";
 import { User } from "../../entities";
 import {
   MusicErrorCode,
@@ -634,7 +634,7 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
 
   private async getCached<T>(prefix: string, key: string): Promise<T | null> {
     const fullKey = prefix + this.normalizeCacheKey(key);
-    if (this.redis) {
+    if (isRedisReady(this.redis)) {
       try {
         const raw = await this.redis.get(fullKey);
         if (raw) return JSON.parse(raw) as T;
@@ -655,7 +655,7 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
 
   private async setCache<T>(prefix: string, key: string, data: T, ttlSeconds: number): Promise<void> {
     const fullKey = prefix + this.normalizeCacheKey(key);
-    if (this.redis) {
+    if (isRedisReady(this.redis)) {
       try {
         await this.redis.setex(fullKey, ttlSeconds, JSON.stringify(data));
         return;
