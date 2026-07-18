@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger, Optional } from "@nestjs/common";
 
-import { REDIS_CLIENT } from "../modules/redis.module";
+import { isRedisReady, REDIS_CLIENT } from "../modules/redis.module";
 
 type RedisClient = any;
 
@@ -17,16 +17,17 @@ export class TokenBlacklistService {
   private readonly cleanupIntervalMs = 60 * 60 * 1000; // 1 hour
   private readonly keyPrefix = "token:blacklist:";
   private cleanupInterval: NodeJS.Timeout | null = null;
+  private hasLoggedRedisFailure = false;
 
   constructor(
     @Inject(REDIS_CLIENT) @Optional() private readonly redis: RedisClient | null,
   ) {
     if (this.redis) {
-      this.logger.log("Token blacklist using Redis");
+      this.logger.log("Token blacklist configured for Redis with in-memory fallback");
     } else {
       this.logger.log("Token blacklist using in-memory Map");
-      this.ensureCleanupInterval();
     }
+    this.ensureCleanupInterval();
   }
 
   /**
@@ -36,42 +37,47 @@ export class TokenBlacklistService {
   async add(token: string, expiresAt?: number): Promise<void> {
     const now = Math.floor(Date.now() / 1000);
     const expiry = expiresAt ?? now + 7 * 24 * 60 * 60;
-    const ttl = Math.max(1, expiry - now);
+    if (expiry <= now) {
+      this.blacklist.delete(token);
+      return;
+    }
 
-    if (this.redis) {
+    const ttl = expiry - now;
+
+    // Mirror revocations locally even when Redis is healthy. If Redis becomes
+    // unavailable later, this process must not temporarily accept a token it
+    // already revoked.
+    this.blacklist.set(token, expiry);
+
+    if (isRedisReady(this.redis)) {
       try {
         const key = this.keyPrefix + token;
         await this.redis.setex(key, ttl, "1");
-        return;
+        this.hasLoggedRedisFailure = false;
       } catch (error) {
-        this.logger.error(
-          `Failed to add token to Redis blacklist; falling back to in-memory: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
+        this.logRedisFailure("add token to", error);
       }
     }
-
-    this.ensureCleanupInterval();
-    this.blacklist.set(token, expiry);
   }
 
   async isBlacklisted(token: string): Promise<boolean> {
-    if (this.redis) {
+    const locallyBlacklisted = this.isLocallyBlacklisted(token);
+
+    if (isRedisReady(this.redis)) {
       try {
         const key = this.keyPrefix + token;
         const exists = await this.redis.exists(key);
-        return exists === 1;
+        this.hasLoggedRedisFailure = false;
+        return exists === 1 || locallyBlacklisted;
       } catch (error) {
-        this.logger.error(
-          `Failed to check Redis blacklist; falling back to in-memory: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-        // Fall through to in-memory check
+        this.logRedisFailure("check", error);
       }
     }
 
+    return locallyBlacklisted;
+  }
+
+  private isLocallyBlacklisted(token: string): boolean {
     const expiry = this.blacklist.get(token);
     if (!expiry) return false;
 
@@ -81,6 +87,17 @@ export class TokenBlacklistService {
     }
 
     return true;
+  }
+
+  private logRedisFailure(action: string, error: unknown): void {
+    if (this.hasLoggedRedisFailure) return;
+
+    this.logger.error(
+      `Failed to ${action} Redis blacklist; falling back to in-memory: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    this.hasLoggedRedisFailure = true;
   }
 
   private ensureCleanupInterval(): void {
