@@ -1,6 +1,7 @@
 import { Global, Logger, Module } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { JwtModule } from "@nestjs/jwt";
+import type { SignOptions } from "jsonwebtoken";
 
 /**
  * Global JWT module — single source of truth for signing secret and expiry.
@@ -32,7 +33,12 @@ import { JwtModule } from "@nestjs/jwt";
 
         return {
           secret: jwtSecret ?? "dev-secret-change-me",
-          signOptions: { expiresIn: "7d" },
+          signOptions: {
+            // Keep the legacy seven-day lifetime during mobile rollout. Once
+            // refresh-capable builds are broadly adopted this can be shortened
+            // through environment configuration without another code change.
+            expiresIn: (config.get<string>("JWT_ACCESS_EXPIRES_IN") ?? "7d") as SignOptions["expiresIn"],
+          },
         };
       },
     }),

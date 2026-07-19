@@ -4,6 +4,7 @@ import { Repository } from "typeorm";
 import { AdminAuditLog, PushToken, Repit, User } from "../../../entities";
 import { AdminAuditLogsService } from "../audit-logs/admin-audit-logs.service";
 import type { AdminRequestActor, AdminRequestContext } from "../admin.types";
+import { createCsv } from "../utils/csv";
 import { AdminListUsersQueryDto } from "./dto/admin-list-users-query.dto";
 import { AdminSuspendUserDto } from "./dto/admin-suspend-user.dto";
 import { AdminReactivateUserDto } from "./dto/admin-reactivate-user.dto";
@@ -11,6 +12,7 @@ import { AdminUpdateUserDto } from "./dto/admin-update-user.dto";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
+const EXPORT_LIMIT = 10_000;
 
 function normalizeDateInput(value?: string): Date | null {
   if (!value) return null;
@@ -77,20 +79,81 @@ export class AdminUsersService {
       total,
       page,
       pageSize,
-      records: rows.map((row) => ({
-        id: String(row.id),
-        fullName: String(row.full_name ?? ""),
-        email: String(row.email ?? ""),
-        country: String(row.country ?? ""),
-        createdAt: row.created_at,
-        lastLoginAt: row.last_login_at,
-        signupSource: row.signup_source ?? null,
-        status: Boolean(row.is_suspended) ? "suspended" : "active",
-        repitCount: Number(row.repit_count ?? 0),
-        connectedProviders: this.parseTextArray(row.connected_platforms),
-        pushTokenPresent: Number(row.push_token_count ?? 0) > 0,
-        lastPushTokenAt: row.last_push_token_at ?? null,
-      })),
+      records: rows.map((row) => this.serializeUserListRow(row)),
+    };
+  }
+
+  async exportUsers(
+    query: AdminListUsersQueryDto,
+    actor?: AdminRequestActor | null,
+    context?: AdminRequestContext | null,
+  ) {
+    const search = query.search?.trim() ?? "";
+    const signupFrom = normalizeDateInput(query.signupFrom);
+    const signupTo = normalizeDateInput(query.signupTo);
+    if ((query.signupFrom && !signupFrom) || (query.signupTo && !signupTo)) {
+      throw new BadRequestException("Invalid signup date filter");
+    }
+
+    const qb = this.userRepository
+      .createQueryBuilder("user")
+      .leftJoin("user.repits", "repit")
+      .leftJoin("user.pushTokens", "pushToken")
+      .select([
+        "user.id AS id",
+        "user.fullName AS full_name",
+        "user.email AS email",
+        "user.country AS country",
+        "user.createdAt AS created_at",
+        "user.lastLoginAt AS last_login_at",
+        "user.connectedPlatforms AS connected_platforms",
+        "user.isSuspended AS is_suspended",
+        "user.signupSource AS signup_source",
+      ])
+      .addSelect("COUNT(DISTINCT repit.id)", "repit_count")
+      .addSelect("COUNT(DISTINCT pushToken.id)", "push_token_count")
+      .addSelect("MAX(pushToken.updatedAt)", "last_push_token_at")
+      .groupBy("user.id");
+
+    this.applyUserFilters(qb, { search, status: query.status, signupFrom, signupTo });
+    this.applyUserSorting(qb, query.sortBy, query.sortOrder);
+    qb.limit(EXPORT_LIMIT + 1);
+
+    const rows = await qb.getRawMany<Record<string, unknown>>();
+    const truncated = rows.length > EXPORT_LIMIT;
+    const records = rows.slice(0, EXPORT_LIMIT).map((row) => this.serializeUserListRow(row));
+    const csv = createCsv(
+      ["User ID", "Full name", "Email", "Country", "Status", "Signed up", "Last login", "Signup source", "Repit count", "Connected providers", "Push notifications"],
+      records.map((record) => [
+        record.id,
+        record.fullName,
+        record.email,
+        record.country,
+        record.status,
+        record.createdAt,
+        record.lastLoginAt,
+        record.signupSource,
+        record.repitCount,
+        record.connectedProviders.join("; "),
+        record.pushTokenPresent ? "enabled" : "not registered",
+      ]),
+    );
+    const { page: _page, pageSize: _pageSize, ...filters } = query;
+
+    await this.auditLogsService.append({
+      action: "admin.users.exported",
+      actor,
+      context,
+      targetType: "user-export",
+      metadata: { filters, resultCount: records.length, truncated, limit: EXPORT_LIMIT },
+    });
+
+    return {
+      csv,
+      filename: `repitair-users-${new Date().toISOString().replace(/[:.]/g, "-")}.csv`,
+      resultCount: records.length,
+      truncated,
+      limit: EXPORT_LIMIT,
     };
   }
 
@@ -432,6 +495,23 @@ export class AdminUsersService {
       suspensionReason: user.suspensionReason ?? null,
       suspendedAt: user.suspendedAt?.toISOString?.() ?? null,
       lastLoginAt: user.lastLoginAt?.toISOString?.() ?? null,
+    };
+  }
+
+  private serializeUserListRow(row: Record<string, unknown>) {
+    return {
+      id: String(row.id),
+      fullName: String(row.full_name ?? ""),
+      email: String(row.email ?? ""),
+      country: String(row.country ?? ""),
+      createdAt: row.created_at,
+      lastLoginAt: row.last_login_at,
+      signupSource: row.signup_source ?? null,
+      status: Boolean(row.is_suspended) ? "suspended" : "active",
+      repitCount: Number(row.repit_count ?? 0),
+      connectedProviders: this.parseTextArray(row.connected_platforms),
+      pushTokenPresent: Number(row.push_token_count ?? 0) > 0,
+      lastPushTokenAt: row.last_push_token_at ?? null,
     };
   }
 

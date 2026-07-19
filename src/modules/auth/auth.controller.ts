@@ -6,6 +6,8 @@ import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { AuthService } from "./auth.service";
 import { ForgotPasswordDto } from "./dto/forgot-password.dto";
 import { LoginDto } from "./dto/login.dto";
+import { LogoutDto } from "./dto/logout.dto";
+import { RefreshSessionDto } from "./dto/refresh-session.dto";
 import { ResetPasswordDto } from "./dto/reset-password.dto";
 import { SignupDto } from "./dto/signup.dto";
 import { SocialAuthDto } from "./dto/social-auth.dto";
@@ -65,18 +67,23 @@ export class AuthController {
    */
   @Post("logout")
   @UseGuards(JwtAuthGuard)
-  logout(@CurrentUser() user: CurrentUserPayload) {
-    return this.authService.logout(user.token);
+  logout(@CurrentUser() user: CurrentUserPayload, @Body() body: LogoutDto) {
+    return this.authService.logout(user.token, body.refreshToken);
   }
 
   /**
-   * Refresh — exchange a still-valid access token for a new one.
-   * The old token is blacklisted to prevent reuse.
+   * Refresh — rotate a refresh session independently of access-token expiry.
    */
   @Post("refresh")
+  refresh(@Body() body: RefreshSessionDto) {
+    return this.authService.refresh(body.refreshToken);
+  }
+
+  /** Upgrade a pre-refresh-token mobile session without forcing a new login. */
+  @Post("upgrade-session")
   @UseGuards(JwtAuthGuard)
-  refresh(@CurrentUser() user: CurrentUserPayload) {
-    return this.authService.refresh(user.token, user.sub, user.email);
+  upgradeSession(@CurrentUser() user: CurrentUserPayload) {
+    return this.authService.upgradeSession(user.token, user.sub);
   }
 
   /**

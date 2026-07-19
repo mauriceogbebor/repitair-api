@@ -3,6 +3,7 @@ import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
 import * as bcrypt from "bcryptjs";
 import { Repository } from "typeorm";
+import { TokenBlacklistService } from "../../../common/services/token-blacklist.service";
 import { AdminUser } from "../../../entities";
 import { AdminAuditLogsService } from "../audit-logs/admin-audit-logs.service";
 import type { AdminRequestActor, AdminRequestContext } from "../admin.types";
@@ -19,6 +20,7 @@ export class AdminAuthService {
     private readonly configService: ConfigService,
     private readonly tokenService: AdminTokenService,
     private readonly auditLogsService: AdminAuditLogsService,
+    private readonly tokenBlacklistService: TokenBlacklistService,
   ) {}
 
   async login(dto: AdminLoginDto, context?: AdminRequestContext | null) {
@@ -115,12 +117,18 @@ export class AdminAuthService {
     return this.serializeAdmin(adminUser);
   }
 
-  async logout(actor: AdminRequestActor, context?: AdminRequestContext | null) {
+  async logout(
+    actor: AdminRequestActor,
+    accessToken: string,
+    expiresAt?: number,
+    context?: AdminRequestContext | null,
+  ) {
+    await this.tokenBlacklistService.add(accessToken, expiresAt);
     await this.auditLogsService.append({
       action: "admin.auth.logout",
       actor,
       context,
-      metadata: { message: "Admin logout recorded" },
+      metadata: { message: "Admin session revoked" },
     });
 
     return { success: true };

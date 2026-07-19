@@ -20,4 +20,6 @@ export type AdminRequestContext = {
 export type AdminRequest = Request & {
   adminUser?: AdminRequestActor;
   adminRequestContext?: AdminRequestContext;
+  adminSessionToken?: string;
+  adminSessionExpiresAt?: number;
 };

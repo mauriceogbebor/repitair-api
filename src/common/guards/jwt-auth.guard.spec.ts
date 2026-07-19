@@ -86,7 +86,7 @@ describe("JwtAuthGuard", () => {
       const mockContext = createMockContext({});
 
       await expect(jwtAuthGuard.canActivate(mockContext)).rejects.toThrow(
-        new UnauthorizedException("Missing or invalid Authorization header")
+        new UnauthorizedException({ errorCode: "SESSION_INVALID", message: "Missing or invalid Authorization header", retriable: false })
       );
       expect(jwtService.verify).not.toHaveBeenCalled();
     });
@@ -95,7 +95,7 @@ describe("JwtAuthGuard", () => {
       const mockContext = createMockContext({ authorization: null });
 
       await expect(jwtAuthGuard.canActivate(mockContext)).rejects.toThrow(
-        new UnauthorizedException("Missing or invalid Authorization header")
+        new UnauthorizedException({ errorCode: "SESSION_INVALID", message: "Missing or invalid Authorization header", retriable: false })
       );
     });
 
@@ -103,7 +103,7 @@ describe("JwtAuthGuard", () => {
       const mockContext = createMockContext({ authorization: undefined });
 
       await expect(jwtAuthGuard.canActivate(mockContext)).rejects.toThrow(
-        new UnauthorizedException("Missing or invalid Authorization header")
+        new UnauthorizedException({ errorCode: "SESSION_INVALID", message: "Missing or invalid Authorization header", retriable: false })
       );
     });
 
@@ -111,7 +111,7 @@ describe("JwtAuthGuard", () => {
       const mockContext = createMockContext({ authorization: mockValidToken });
 
       await expect(jwtAuthGuard.canActivate(mockContext)).rejects.toThrow(
-        new UnauthorizedException("Missing or invalid Authorization header")
+        new UnauthorizedException({ errorCode: "SESSION_INVALID", message: "Missing or invalid Authorization header", retriable: false })
       );
       expect(jwtService.verify).not.toHaveBeenCalled();
     });
@@ -120,16 +120,20 @@ describe("JwtAuthGuard", () => {
       const mockContext = createMockContext({ authorization: `Basic ${mockValidToken}` });
 
       await expect(jwtAuthGuard.canActivate(mockContext)).rejects.toThrow(
-        new UnauthorizedException("Missing or invalid Authorization header")
+        new UnauthorizedException({ errorCode: "SESSION_INVALID", message: "Missing or invalid Authorization header", retriable: false })
       );
     });
 
     it("should throw UnauthorizedException when token is expired", async () => {
       const mockContext = createMockContext({ authorization: `Bearer ${mockValidToken}` });
-      (jwtService.verify as jest.Mock).mockImplementation(() => { throw new Error("jwt expired"); });
+      (jwtService.verify as jest.Mock).mockImplementation(() => {
+        const error = new Error("jwt expired");
+        error.name = "TokenExpiredError";
+        throw error;
+      });
 
       await expect(jwtAuthGuard.canActivate(mockContext)).rejects.toThrow(
-        new UnauthorizedException("Invalid or expired token")
+        new UnauthorizedException({ errorCode: "ACCESS_TOKEN_EXPIRED", message: "Access token expired", retriable: true })
       );
     });
 
@@ -138,7 +142,7 @@ describe("JwtAuthGuard", () => {
       (jwtService.verify as jest.Mock).mockImplementation(() => { throw new Error("invalid signature"); });
 
       await expect(jwtAuthGuard.canActivate(mockContext)).rejects.toThrow(
-        new UnauthorizedException("Invalid or expired token")
+        new UnauthorizedException({ errorCode: "SESSION_INVALID", message: "Invalid access token", retriable: false })
       );
     });
 
@@ -147,7 +151,7 @@ describe("JwtAuthGuard", () => {
       (jwtService.verify as jest.Mock).mockImplementation(() => { throw new Error("jwt malformed"); });
 
       await expect(jwtAuthGuard.canActivate(mockContext)).rejects.toThrow(
-        new UnauthorizedException("Invalid or expired token")
+        new UnauthorizedException({ errorCode: "SESSION_INVALID", message: "Invalid access token", retriable: false })
       );
     });
 
@@ -168,7 +172,7 @@ describe("JwtAuthGuard", () => {
       (tokenBlacklist.isBlacklisted as jest.Mock).mockResolvedValueOnce(true);
 
       await expect(jwtAuthGuard.canActivate(mockContext)).rejects.toThrow(
-        new UnauthorizedException("Token has been revoked")
+        new UnauthorizedException({ errorCode: "SESSION_INVALID", message: "Token has been revoked", retriable: false })
       );
       expect(tokenBlacklist.isBlacklisted).toHaveBeenCalledWith("revoked-jti");
     });

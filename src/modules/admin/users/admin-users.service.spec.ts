@@ -82,4 +82,49 @@ describe("AdminUsersService", () => {
     );
     expect(result).toEqual({ id: user.id, status: "suspended" });
   });
+
+  it("exports all filtered rows, neutralizes formulas, and audits metadata", async () => {
+    const qb: any = {
+      leftJoin: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      addSelect: jest.fn().mockReturnThis(),
+      groupBy: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      getRawMany: jest.fn().mockResolvedValue([
+        {
+          id: "user-1",
+          full_name: "=HYPERLINK(\"bad\")",
+          email: "user@example.com",
+          country: "NG",
+          created_at: new Date("2026-01-01T00:00:00Z"),
+          last_login_at: null,
+          connected_platforms: ["spotify"],
+          is_suspended: false,
+          signup_source: "organic",
+          repit_count: 4,
+          push_token_count: 1,
+          last_push_token_at: null,
+        },
+      ]),
+    };
+    mockUserRepository.createQueryBuilder.mockReturnValue(qb);
+
+    const result = await service.exportUsers(
+      { status: "active", search: "user" },
+      { id: "admin-1", email: "admin@example.com" } as any,
+      null,
+    );
+
+    expect(qb.andWhere).toHaveBeenCalledWith("user.isSuspended = false");
+    expect(qb.limit).toHaveBeenCalledWith(10_001);
+    expect(result.csv).toContain("'=HYPERLINK");
+    expect(result.resultCount).toBe(1);
+    expect(result.truncated).toBe(false);
+    expect(mockAuditLogsService.append).toHaveBeenCalledWith(expect.objectContaining({
+      action: "admin.users.exported",
+      metadata: expect.objectContaining({ resultCount: 1, truncated: false, limit: 10_000 }),
+    }));
+  });
 });
