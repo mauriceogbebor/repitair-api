@@ -363,6 +363,59 @@ describe("MusicService", () => {
       expect(genSpy).toHaveBeenCalledTimes(2);
       genSpy.mockRestore();
     });
+
+    it("appleMusicApiCall regenerates once on provider 403 without touching user auth", async () => {
+      fetchSpy = jest.spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(new Response("Forbidden", { status: 403 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ data: [] }), { status: 200 }));
+      const genSpy = jest.spyOn(service as any, "generateAppleMusicJwt")
+        .mockReturnValueOnce("stale-jwt")
+        .mockReturnValueOnce("fresh-jwt");
+      const context = { ...makeContext(), provider: "apple-music" as const };
+
+      const response = await (service as any).appleMusicApiCall(
+        "https://api.music.apple.com/v1/catalog/us/playlists/pl.test",
+        context,
+        "apple-playlist-lookup",
+      );
+
+      expect(response.ok).toBe(true);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(genSpy).toHaveBeenCalledTimes(2);
+      genSpy.mockRestore();
+    });
+
+    it("does not retry Apple Music provider auth more than once", async () => {
+      fetchSpy = jest.spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(new Response("Forbidden", { status: 403 }))
+        .mockResolvedValueOnce(new Response("Still forbidden", { status: 403 }));
+      jest.spyOn(service as any, "generateAppleMusicJwt")
+        .mockReturnValueOnce("stale-jwt")
+        .mockReturnValueOnce("fresh-jwt");
+      const context = { ...makeContext(), provider: "apple-music" as const };
+
+      const response = await (service as any).appleMusicApiCall(
+        "https://api.music.apple.com/v1/catalog/us/playlists/pl.test",
+        context,
+        "apple-playlist-lookup",
+      );
+
+      expect(response.status).toBe(403);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it("maps provider 403 to a non-user-auth HTTP contract", () => {
+      const mapped = (service as any).mapResponseToError(
+        new Response("Forbidden", { status: 403 }),
+        "Apple Music failed",
+      );
+
+      expect(mapped).toEqual(expect.objectContaining({
+        code: "PROVIDER_AUTH_FAILURE",
+        providerStatus: 403,
+        status: 503,
+      }));
+    });
   });
 
   describe("concurrent requests — deduplication", () => {

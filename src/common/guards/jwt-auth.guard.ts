@@ -15,7 +15,11 @@ export class JwtAuthGuard implements CanActivate {
     const authHeader = request.headers.authorization;
 
     if (!authHeader?.startsWith("Bearer ")) {
-      throw new UnauthorizedException("Missing or invalid Authorization header");
+      throw new UnauthorizedException({
+        errorCode: "SESSION_INVALID",
+        message: "Missing or invalid Authorization header",
+        retriable: false,
+      });
     }
 
     const token = authHeader.slice(7);
@@ -26,7 +30,11 @@ export class JwtAuthGuard implements CanActivate {
       // Check blacklist using jti (compact) or full token (pre-jti backwards compat)
       const blacklistKey = payload.jti ?? token;
       if (await this.tokenBlacklist.isBlacklisted(blacklistKey)) {
-        throw new UnauthorizedException("Token has been revoked");
+        throw new UnauthorizedException({
+          errorCode: "SESSION_INVALID",
+          message: "Token has been revoked",
+          retriable: false,
+        });
       }
 
       request.user = {
@@ -37,7 +45,12 @@ export class JwtAuthGuard implements CanActivate {
       return true;
     } catch (err) {
       if (err instanceof UnauthorizedException) throw err;
-      throw new UnauthorizedException("Invalid or expired token");
+      const expired = err instanceof Error && err.name === "TokenExpiredError";
+      throw new UnauthorizedException({
+        errorCode: expired ? "ACCESS_TOKEN_EXPIRED" : "SESSION_INVALID",
+        message: expired ? "Access token expired" : "Invalid access token",
+        retriable: expired,
+      });
     }
   }
 }

@@ -14,7 +14,36 @@ function validateEnvironment(): void {
   if (isProduction) {
     if (!process.env.DATABASE_URL) errors.push("DATABASE_URL is required");
     if (!process.env.JWT_SECRET) errors.push("JWT_SECRET is required");
+    if (!process.env.JWT_REFRESH_SECRET) errors.push("JWT_REFRESH_SECRET is required");
     if (!process.env.ADMIN_JWT_SECRET) errors.push("ADMIN_JWT_SECRET is required");
+    if (!process.env.ADMIN_FRONTEND_ORIGIN) errors.push("ADMIN_FRONTEND_ORIGIN is required");
+    if (process.env.ADMIN_COOKIE_SECURE === "false") errors.push("ADMIN_COOKIE_SECURE cannot be false in production");
+
+    const sameSite = process.env.ADMIN_COOKIE_SAME_SITE;
+    if (!sameSite || !["lax", "strict", "none"].includes(sameSite)) {
+      errors.push("ADMIN_COOKIE_SAME_SITE must be one of: lax, strict, none");
+    }
+    if (sameSite === "none" && process.env.ADMIN_COOKIE_SECURE === "false") {
+      errors.push("ADMIN_COOKIE_SECURE must be true when ADMIN_COOKIE_SAME_SITE=none");
+    }
+
+    const cookiePath = process.env.ADMIN_COOKIE_PATH ?? "/api/admin";
+    if (!cookiePath.startsWith("/api/admin")) {
+      errors.push("ADMIN_COOKIE_PATH must be scoped to /api/admin in production");
+    }
+
+    try {
+      const adminOrigin = new URL(process.env.ADMIN_FRONTEND_ORIGIN ?? "");
+      if (adminOrigin.origin !== process.env.ADMIN_FRONTEND_ORIGIN || adminOrigin.protocol !== "https:") {
+        errors.push("ADMIN_FRONTEND_ORIGIN must be an HTTPS origin without a path in production");
+      }
+    } catch {
+      errors.push("ADMIN_FRONTEND_ORIGIN must be a valid URL origin");
+    }
+
+    if ((process.env.CORS_ORIGINS ?? "").split(",").some((origin) => origin.trim() === "*")) {
+      errors.push("CORS_ORIGINS cannot contain '*' when credentialed admin sessions are enabled");
+    }
 
     if (!process.env.UPLOAD_PROVIDER || process.env.UPLOAD_PROVIDER === "local") {
       errors.push("UPLOAD_PROVIDER must be 's3' in production (files are lost on redeploy with 'local')");
@@ -70,6 +99,10 @@ async function bootstrap() {
     ? process.env.CORS_ORIGINS.split(",").map((origin) => origin.trim()).filter(Boolean)
     : defaultCorsOrigins;
 
+  if (process.env.ADMIN_FRONTEND_ORIGIN && !corsOrigins.includes(process.env.ADMIN_FRONTEND_ORIGIN)) {
+    corsOrigins.push(process.env.ADMIN_FRONTEND_ORIGIN);
+  }
+
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     cors: {
       origin: (origin, callback) => {
@@ -86,6 +119,12 @@ async function bootstrap() {
         callback(new Error(`Origin ${origin} is not allowed by CORS`), false);
       },
       credentials: true,
+      exposedHeaders: [
+        "Content-Disposition",
+        "X-Export-Result-Count",
+        "X-Export-Limit",
+        "X-Export-Truncated",
+      ],
     },
   });
 

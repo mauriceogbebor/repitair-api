@@ -6,6 +6,8 @@ export type AdminAccessTokenPayload = {
   sub: string;
   email: string;
   tokenType: "admin-access";
+  exp?: number;
+  iat?: number;
 };
 
 export type AdminMfaTicketPayload = {

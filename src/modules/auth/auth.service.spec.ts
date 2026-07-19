@@ -12,6 +12,7 @@ describe("AuthService", () => {
   let authService: AuthService;
   let usersService: UsersService;
   let jwtService: JwtService;
+  let tokenBlacklist: TokenBlacklistService;
 
   const mockUser = {
     id: "user_1",
@@ -33,6 +34,7 @@ describe("AuthService", () => {
     const mockUsersService = {
       createUser: jest.fn(),
       findByEmail: jest.fn(),
+      findById: jest.fn(),
       validatePassword: jest.fn(),
       recordLogin: jest.fn(),
       setResetCode: jest.fn(),
@@ -59,6 +61,9 @@ describe("AuthService", () => {
     mockConfigService.get.mockImplementation((key: string) => {
       if (key === "GOOGLE_CLIENT_ID") return "google-client-id";
       if (key === "APPLE_CLIENT_ID") return "apple-client-id";
+      if (key === "JWT_REFRESH_SECRET") return "test-refresh-secret-that-is-long-enough";
+      if (key === "JWT_REFRESH_EXPIRES_IN") return "30d";
+      if (key === "NODE_ENV") return "test";
       return "mock-value";
     });
 
@@ -76,6 +81,7 @@ describe("AuthService", () => {
     authService = module.get<AuthService>(AuthService);
     usersService = module.get<UsersService>(UsersService);
     jwtService = module.get<JwtService>(JwtService);
+    tokenBlacklist = module.get<TokenBlacklistService>(TokenBlacklistService);
   });
 
   afterEach(() => {
@@ -106,8 +112,11 @@ describe("AuthService", () => {
       expect(jwtService.sign).toHaveBeenCalledWith(
         expect.objectContaining({ sub: mockUser.id, email: mockUser.email }),
       );
-      expect(result).toEqual({
+      expect(result).toEqual(expect.objectContaining({
         token: mockToken,
+        refreshToken: expect.any(String),
+        expiresAt: expect.any(Number),
+        refreshTokenExpiresAt: expect.any(Number),
         user: {
           id: mockUser.id,
           fullName: mockUser.fullName,
@@ -116,7 +125,7 @@ describe("AuthService", () => {
           connectedPlatforms: mockUser.connectedPlatforms,
           avatarUrl: null,
         },
-      });
+      }));
     });
 
     it("should set country to empty string when not provided", async () => {
@@ -182,8 +191,11 @@ describe("AuthService", () => {
       expect(jwtService.sign).toHaveBeenCalledWith(
         expect.objectContaining({ sub: mockUser.id, email: mockUser.email }),
       );
-      expect(result).toEqual({
+      expect(result).toEqual(expect.objectContaining({
         token: mockToken,
+        refreshToken: expect.any(String),
+        expiresAt: expect.any(Number),
+        refreshTokenExpiresAt: expect.any(Number),
         user: {
           id: mockUser.id,
           fullName: mockUser.fullName,
@@ -192,7 +204,7 @@ describe("AuthService", () => {
           connectedPlatforms: mockUser.connectedPlatforms,
           avatarUrl: null,
         },
-      });
+      }));
     });
 
     it("should throw UnauthorizedException for invalid email", async () => {
@@ -363,6 +375,66 @@ describe("AuthService", () => {
         const result = await authService.logout(token);
         expect(result).toEqual({ message: "Logged out successfully" });
       }
+    });
+  });
+
+  describe("refresh sessions", () => {
+    function mockVerifiedRefresh(overrides: Record<string, unknown> = {}) {
+      (jwtService.verify as jest.Mock).mockReturnValue({
+        sub: mockUser.id,
+        email: mockUser.email,
+        jti: "refresh-jti",
+        type: "refresh",
+        exp: Math.floor(Date.now() / 1000) + 3600,
+        ...overrides,
+      });
+      return "refresh-token";
+    }
+
+    it("rotates a valid refresh token and revokes the old token ID", async () => {
+      (usersService.findById as jest.Mock).mockResolvedValue(mockUser);
+      const token = mockVerifiedRefresh();
+
+      const result = await authService.refresh(token);
+
+      expect(tokenBlacklist.isBlacklisted).toHaveBeenCalledWith("refresh:refresh-jti");
+      expect(tokenBlacklist.add).toHaveBeenCalledWith("refresh:refresh-jti", expect.any(Number));
+      expect(result).toEqual(expect.objectContaining({
+        token: mockToken,
+        refreshToken: expect.any(String),
+        expiresAt: expect.any(Number),
+        refreshTokenExpiresAt: expect.any(Number),
+      }));
+      expect(result.refreshToken).not.toBe(token);
+    });
+
+    it("rejects an expired refresh token with an explicit reason", async () => {
+      const expiredError = new Error("jwt expired");
+      expiredError.name = "TokenExpiredError";
+      (jwtService.verify as jest.Mock).mockImplementation(() => { throw expiredError; });
+
+      await expect(authService.refresh("expired-refresh-token")).rejects.toMatchObject({
+        response: expect.objectContaining({ errorCode: "REFRESH_TOKEN_EXPIRED" }),
+      });
+    });
+
+    it("rejects a revoked refresh token", async () => {
+      (tokenBlacklist.isBlacklisted as jest.Mock).mockResolvedValueOnce(true);
+      const token = mockVerifiedRefresh();
+
+      await expect(authService.refresh(token)).rejects.toMatchObject({
+        response: expect.objectContaining({ errorCode: "REFRESH_TOKEN_REVOKED" }),
+      });
+      expect(usersService.findById).not.toHaveBeenCalled();
+    });
+
+    it("rejects refresh for a suspended account", async () => {
+      (usersService.findById as jest.Mock).mockResolvedValue({ ...mockUser, isSuspended: true });
+      const token = mockVerifiedRefresh();
+
+      await expect(authService.refresh(token)).rejects.toMatchObject({
+        response: expect.objectContaining({ errorCode: "ACCOUNT_DISABLED" }),
+      });
     });
   });
 

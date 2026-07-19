@@ -29,6 +29,7 @@ describe("AuthController", () => {
       resetPassword: jest.fn(),
       logout: jest.fn(),
       refresh: jest.fn(),
+      upgradeSession: jest.fn(),
       buildSpotifyAuthUrl: jest.fn(),
       handleSpotifyCallback: jest.fn(),
     };
@@ -344,9 +345,9 @@ describe("AuthController", () => {
 
       (authService.logout as jest.Mock).mockResolvedValue(response);
 
-      const result = await authController.logout(mockUser);
+      const result = await authController.logout(mockUser, {});
 
-      expect(authService.logout).toHaveBeenCalledWith(mockUser.token);
+      expect(authService.logout).toHaveBeenCalledWith(mockUser.token, undefined);
       expect(authService.logout).toHaveBeenCalledTimes(1);
       expect(result).toEqual(response);
     });
@@ -356,7 +357,7 @@ describe("AuthController", () => {
 
       (authService.logout as jest.Mock).mockResolvedValue(response);
 
-      const result = await authController.logout(mockUser);
+      const result = await authController.logout(mockUser, {});
 
       expect(result).toEqual(response);
     });
@@ -365,9 +366,35 @@ describe("AuthController", () => {
       const error = new Error("Logout failed");
       (authService.logout as jest.Mock).mockRejectedValue(error);
 
-      await expect(authController.logout(mockUser)).rejects.toThrow(
+      await expect(authController.logout(mockUser, {})).rejects.toThrow(
         "Logout failed"
       );
+    });
+  });
+
+  describe("POST /auth/refresh", () => {
+    it("rotates the body refresh token without requiring an access token", async () => {
+      const response = { token: "next-access", refreshToken: "next-refresh" };
+      (authService.refresh as jest.Mock).mockResolvedValue(response);
+
+      await expect(authController.refresh({ refreshToken: "refresh-token-with-sufficient-length" }))
+        .resolves.toEqual(response);
+      expect(authService.refresh).toHaveBeenCalledWith("refresh-token-with-sufficient-length");
+    });
+  });
+
+  describe("POST /auth/upgrade-session", () => {
+    it("upgrades a legacy access-only session", async () => {
+      const user = {
+        sub: "user_1",
+        email: "john@example.com",
+        token: "legacy-access-token",
+      };
+      const response = { token: "next-access", refreshToken: "next-refresh" };
+      (authService.upgradeSession as jest.Mock).mockResolvedValue(response);
+
+      await expect(authController.upgradeSession(user)).resolves.toEqual(response);
+      expect(authService.upgradeSession).toHaveBeenCalledWith(user.token, user.sub);
     });
   });
 

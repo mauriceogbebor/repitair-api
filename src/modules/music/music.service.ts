@@ -99,6 +99,8 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
   private spotifyRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   private initComplete = false;
   private lastSpotifyTokenRefreshAt = 0;
+  private appleMusicJwtIssuedAt = 0;
+  private lastAppleMusicTokenRefreshAt = 0;
 
   constructor(
     private readonly configService: ConfigService,
@@ -165,13 +167,12 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
       };
     }
     if (provider === "apple-music") {
-      const tokenAgeMs = this.appleMusicJwtExpiry > 0
-        ? now - (this.appleMusicJwtExpiry - 180 * 24 * 60 * 60 * 1_000) // 180-day JWT
-        : null;
       return {
         coldStart: !this.initComplete,
-        lastRefreshAgeMs: null,
-        tokenAgeMs,
+        lastRefreshAgeMs: this.lastAppleMusicTokenRefreshAt > 0
+          ? now - this.lastAppleMusicTokenRefreshAt
+          : null,
+        tokenAgeMs: this.appleMusicJwtIssuedAt > 0 ? now - this.appleMusicJwtIssuedAt : null,
       };
     }
     return { coldStart: !this.initComplete, lastRefreshAgeMs: null, tokenAgeMs: null };
@@ -296,8 +297,8 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Execute an Apple Music API call with automatic 401 recovery.
-   * If the provider returns 401, the cached JWT is invalidated, a fresh JWT
+   * Execute an Apple Music API call with automatic provider-auth recovery.
+   * If the provider returns 401/403, the cached JWT is invalidated, a fresh JWT
    * is generated, and the request is retried exactly once.
    */
   private appleMusicApiCall(
@@ -326,10 +327,9 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
       provider: "apple-music",
       requestId: context.requestId,
     }).then((response) => {
-      if (response.status === 401) {
-        this.logger.warn(`Apple Music 401 on ${operation} — regenerating JWT and retrying once`);
-        this.appleMusicJwt = null;
-        this.appleMusicJwtExpiry = 0;
+      if (response.status === 401 || response.status === 403) {
+        this.logger.warn(`Apple Music ${response.status} on ${operation} — regenerating developer JWT and retrying once`);
+        this.invalidateAppleMusicToken();
         const freshToken = this.generateAppleMusicJwt();
         if (freshToken) {
           return this.resilientFetch(
@@ -1305,10 +1305,18 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
 
       this.appleMusicJwt = token;
       this.appleMusicJwtExpiry = Date.now() + 179 * 24 * 60 * 60 * 1000;
+      this.appleMusicJwtIssuedAt = Date.now();
+      this.lastAppleMusicTokenRefreshAt = this.appleMusicJwtIssuedAt;
       return token;
     } catch {
       return null;
     }
+  }
+
+  private invalidateAppleMusicToken() {
+    this.appleMusicJwt = null;
+    this.appleMusicJwtExpiry = 0;
+    this.appleMusicJwtIssuedAt = 0;
   }
 
   private extractSpotifyTrackId(url: string) {
@@ -1605,7 +1613,7 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
           code: "PROVIDER_AUTH_FAILURE",
           message: "Connect Apple Music in Profile to use personal playlists.",
           retriable: false,
-          status: 403,
+          status: 409,
         });
       }
       extraHeaders = { "Music-User-Token": userToken };

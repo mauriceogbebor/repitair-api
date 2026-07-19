@@ -6,12 +6,14 @@ import { Template } from "../../../entities/template.entity";
 import { User } from "../../../entities/user.entity";
 import { AdminAuditLogsService } from "../audit-logs/admin-audit-logs.service";
 import type { AdminRequestActor, AdminRequestContext } from "../admin.types";
+import { createCsv } from "../utils/csv";
 import { AdminArchiveRepitDto } from "./dto/admin-archive-repit.dto";
 import { AdminFlagRepitDto } from "./dto/admin-flag-repit.dto";
 import { AdminListRepitsQueryDto } from "./dto/admin-list-repits-query.dto";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
+const EXPORT_LIMIT = 10_000;
 
 function normalizeDateInput(value?: string): Date | null {
   if (!value) return null;
@@ -118,6 +120,64 @@ export class AdminRepitsService {
       archivedAt: repit.archivedAt ?? null,
       deletedByAdminAt: repit.deletedByAdminAt ?? null,
       selectedSongs: repit.selectedSongs ?? [],
+    };
+  }
+
+  async exportRepits(
+    query: AdminListRepitsQueryDto,
+    actor?: AdminRequestActor | null,
+    context?: AdminRequestContext | null,
+  ) {
+    const search = query.search?.trim() ?? "";
+    const dateFrom = normalizeDateInput(query.dateFrom);
+    const dateTo = normalizeDateInput(query.dateTo);
+    if ((query.dateFrom && !dateFrom) || (query.dateTo && !dateTo)) {
+      throw new BadRequestException("Invalid repit date filter");
+    }
+
+    const qb = this.repitRepository
+      .createQueryBuilder("repit")
+      .leftJoinAndSelect("repit.user", "user")
+      .leftJoinAndSelect("repit.template", "template");
+    this.applyRepitFilters(qb, { search, ...query, dateFrom, dateTo });
+    this.applyRepitSorting(qb, query.sortBy, query.sortOrder);
+    qb.limit(EXPORT_LIMIT + 1);
+
+    const rows = await qb.getMany();
+    const truncated = rows.length > EXPORT_LIMIT;
+    const records = rows.slice(0, EXPORT_LIMIT);
+    const csv = createCsv(
+      ["Repit ID", "Title", "Artist", "Status", "Moderation status", "Template ID", "Template name", "User ID", "User name", "User email", "Created"],
+      records.map((repit) => [
+        repit.id,
+        repit.title,
+        repit.artist,
+        repit.status,
+        repit.moderationStatus,
+        repit.templateId,
+        repit.template?.name ?? repit.templateId,
+        repit.userId,
+        repit.user?.fullName ?? "Unknown user",
+        repit.user?.email ?? "",
+        repit.createdAt,
+      ]),
+    );
+    const { page: _page, pageSize: _pageSize, ...filters } = query;
+
+    await this.auditLogsService.append({
+      action: "admin.repits.exported",
+      actor,
+      context,
+      targetType: "repit-export",
+      metadata: { filters, resultCount: records.length, truncated, limit: EXPORT_LIMIT },
+    });
+
+    return {
+      csv,
+      filename: `repitair-repits-${new Date().toISOString().replace(/[:.]/g, "-")}.csv`,
+      resultCount: records.length,
+      truncated,
+      limit: EXPORT_LIMIT,
     };
   }
 

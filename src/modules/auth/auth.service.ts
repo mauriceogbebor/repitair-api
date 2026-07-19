@@ -7,7 +7,7 @@ import {
   ServiceUnavailableException,
   ForbiddenException,
 } from "@nestjs/common";
-import { JwtService } from "@nestjs/jwt";
+import { JwtService, type JwtSignOptions } from "@nestjs/jwt";
 import { ConfigService } from "@nestjs/config";
 import { createHmac, createPublicKey, randomBytes, randomUUID, timingSafeEqual } from "crypto";
 
@@ -54,19 +54,7 @@ export class AuthService {
       signupSource: "email",
     });
 
-    const token = this.signToken(user.id, user.email);
-
-    return {
-      token,
-      user: {
-        id: user.id,
-        fullName: user.fullName,
-        email: user.email,
-        country: user.country,
-        connectedPlatforms: user.connectedPlatforms,
-        avatarUrl: user.avatarUrl ?? null,
-      },
-    };
+    return this.issueSession(user);
   }
 
   async login(dto: LoginDto) {
@@ -83,19 +71,7 @@ export class AuthService {
     }
 
     await this.usersService.recordLogin(user.id);
-    const token = this.signToken(user.id, user.email);
-
-    return {
-      token,
-      user: {
-        id: user.id,
-        fullName: user.fullName,
-        email: user.email,
-        country: user.country,
-        connectedPlatforms: user.connectedPlatforms,
-        avatarUrl: user.avatarUrl ?? null,
-      },
-    };
+    return this.issueSession(user);
   }
 
   async socialAuth(dto: SocialAuthDto) {
@@ -127,19 +103,7 @@ export class AuthService {
     this.assertUserCanSignIn(user);
     await this.usersService.recordLogin(user.id);
 
-    const token = this.signToken(user.id, user.email);
-
-    return {
-      token,
-      user: {
-        id: user.id,
-        fullName: user.fullName,
-        email: user.email,
-        country: user.country,
-        connectedPlatforms: user.connectedPlatforms,
-        avatarUrl: user.avatarUrl ?? null,
-      },
-    };
+    return this.issueSession(user);
   }
 
   private deriveDisplayNameFromEmail(email: string): string {
@@ -276,7 +240,7 @@ export class AuthService {
     return { message: "Password has been reset successfully" };
   }
 
-  async logout(token: string) {
+  async logout(token: string, refreshToken?: string) {
     try {
       const decoded = this.jwtService.decode(token) as { exp?: number; jti?: string } | null;
       const key = decoded?.jti ?? token;
@@ -284,33 +248,53 @@ export class AuthService {
     } catch {
       await this.tokenBlacklist.add(token);
     }
+    if (refreshToken) {
+      await this.revokeRefreshToken(refreshToken);
+    }
     return { message: "Logged out successfully" };
   }
 
-  async refresh(currentToken: string, userId: string, email: string) {
+  async refresh(refreshToken: string) {
+    let payload: { sub: string; email: string; jti: string; type: string; exp?: number };
     try {
-      const decoded = this.jwtService.decode(currentToken) as { exp?: number; jti?: string } | null;
-      const key = decoded?.jti ?? currentToken;
-      await this.tokenBlacklist.add(key, decoded?.exp);
-    } catch {
-      await this.tokenBlacklist.add(currentToken);
+      payload = this.jwtService.verify(refreshToken, { secret: this.getRefreshSecret() }) as typeof payload;
+    } catch (error) {
+      const expired = error instanceof Error && error.name === "TokenExpiredError";
+      throw this.sessionUnauthorized(
+        expired ? "REFRESH_TOKEN_EXPIRED" : "REFRESH_TOKEN_INVALID",
+        expired ? "Your session has expired. Please sign in again." : "The refresh session is invalid.",
+      );
     }
 
-    const token = this.signToken(userId, email);
+    if (payload.type !== "refresh" || !payload.sub || !payload.jti) {
+      throw this.sessionUnauthorized("REFRESH_TOKEN_INVALID", "The refresh session is invalid.");
+    }
+
+    const blacklistKey = `refresh:${payload.jti}`;
+    if (await this.tokenBlacklist.isBlacklisted(blacklistKey)) {
+      throw this.sessionUnauthorized("REFRESH_TOKEN_REVOKED", "This session has been revoked.");
+    }
+
+    const user = await this.usersService.findById(payload.sub);
+    if (!user) {
+      throw this.sessionUnauthorized("SESSION_INVALID", "The user session no longer exists.");
+    }
+    if (user.isSuspended) {
+      throw this.sessionUnauthorized("ACCOUNT_DISABLED", "This account is unavailable.");
+    }
+
+    await this.tokenBlacklist.add(blacklistKey, payload.exp);
+    return this.issueSession(user);
+  }
+
+  async upgradeSession(currentToken: string, userId: string) {
     const user = await this.usersService.findById(userId);
-    return {
-      token,
-      user: user
-        ? {
-            id: user.id,
-            fullName: user.fullName,
-            email: user.email,
-            country: user.country,
-            connectedPlatforms: user.connectedPlatforms,
-            avatarUrl: user.avatarUrl ?? null,
-          }
-        : undefined,
-    };
+    if (!user) {
+      throw this.sessionUnauthorized("SESSION_INVALID", "The user session no longer exists.");
+    }
+    this.assertUserCanSignIn(user);
+    await this.revokeAccessToken(currentToken);
+    return this.issueSession(user);
   }
 
   async sendEmailVerification(userId: string, email: string) {
@@ -348,6 +332,67 @@ export class AuthService {
 
   private signToken(userId: string, email: string): string {
     return this.jwtService.sign({ sub: userId, email, jti: randomUUID() });
+  }
+
+  private issueSession(user: {
+    id: string;
+    fullName: string;
+    email: string;
+    country?: string;
+    connectedPlatforms: string[];
+    avatarUrl?: string | null;
+  }) {
+    const token = this.signToken(user.id, user.email);
+    const accessPayload = this.jwtService.decode(token) as { exp?: number } | null;
+    const refreshJti = randomUUID();
+    const refreshToken = this.jwtService.sign(
+      { sub: user.id, email: user.email, jti: refreshJti, type: "refresh" },
+      {
+        secret: this.getRefreshSecret(),
+        expiresIn: (this.configService.get<string>("JWT_REFRESH_EXPIRES_IN") ?? "30d") as JwtSignOptions["expiresIn"],
+      },
+    );
+    const refreshPayload = this.jwtService.decode(refreshToken) as { exp?: number } | null;
+
+    return {
+      token,
+      refreshToken,
+      expiresAt: accessPayload?.exp ? accessPayload.exp * 1000 : Date.now() + 7 * 24 * 60 * 60 * 1000,
+      refreshTokenExpiresAt: refreshPayload?.exp ? refreshPayload.exp * 1000 : Date.now() + 30 * 24 * 60 * 60 * 1000,
+      user: {
+        id: user.id,
+        fullName: user.fullName,
+        email: user.email,
+        country: user.country,
+        connectedPlatforms: user.connectedPlatforms,
+        avatarUrl: user.avatarUrl ?? null,
+      },
+    };
+  }
+
+  private getRefreshSecret(): string {
+    const configured = this.configService.get<string>("JWT_REFRESH_SECRET");
+    if (configured) return configured;
+    if ((this.configService.get<string>("NODE_ENV") ?? "development") !== "production") {
+      return `${this.configService.get<string>("JWT_SECRET") ?? "dev-secret-change-me"}:refresh`;
+    }
+    throw new Error("JWT_REFRESH_SECRET is required in production");
+  }
+
+  private sessionUnauthorized(errorCode: string, message: string) {
+    return new UnauthorizedException({ errorCode, message, retriable: false });
+  }
+
+  private async revokeAccessToken(token: string) {
+    const decoded = this.jwtService.decode(token) as { exp?: number; jti?: string } | null;
+    await this.tokenBlacklist.add(decoded?.jti ?? token, decoded?.exp);
+  }
+
+  private async revokeRefreshToken(token: string) {
+    const decoded = this.jwtService.decode(token) as { exp?: number; jti?: string } | null;
+    if (decoded?.jti) {
+      await this.tokenBlacklist.add(`refresh:${decoded.jti}`, decoded.exp);
+    }
   }
 
   private signOAuthState(userId: string): string {
