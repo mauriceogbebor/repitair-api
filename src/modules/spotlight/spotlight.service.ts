@@ -3,6 +3,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { LessThanOrEqual, MoreThanOrEqual, IsNull, Or, Repository } from "typeorm";
 
 import { Spotlight } from "../../entities/spotlight.entity";
+import { AnalyticsService, ANALYTICS_EVENTS } from "../analytics/analytics.service";
 import { CreateSpotlightDto } from "./dto/create-spotlight.dto";
 import { UpdateSpotlightDto } from "./dto/update-spotlight.dto";
 
@@ -11,6 +12,7 @@ export class SpotlightService {
   constructor(
     @InjectRepository(Spotlight)
     private readonly repo: Repository<Spotlight>,
+    private readonly analytics: AnalyticsService,
   ) {}
 
   async getActiveSpotlights() {
@@ -46,6 +48,7 @@ export class SpotlightService {
     if (result.affected === 0) {
       throw new NotFoundException("Spotlight not found");
     }
+    await this.analytics.track(ANALYTICS_EVENTS.SPOTLIGHT_VIEWED, { properties: { spotlightId: id }, source: "mobile" });
     return { ok: true as const };
   }
 

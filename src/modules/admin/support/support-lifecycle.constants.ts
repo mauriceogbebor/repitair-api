@@ -1,0 +1,36 @@
+/**
+ * Canonical support case status transition table — the BACKEND is authoritative
+ * for enforcement and is the single source of truth.
+ *
+ * A backend unit test (support-lifecycle.constants.spec.ts) asserts the exact
+ * contents of this map. repitair-admin/lib/support-lifecycle.ts keeps an
+ * identical copy for UI option shaping.
+ *
+ * NOTE: there is NO automated cross-repository parity check — the admin package
+ * currently has no test runner, so CI does not detect drift between this table
+ * and the admin mirror. Keeping them in step relies on code review and the
+ * matching literals. This is tracked as a LOW residual risk; the durable fix is
+ * a shared cross-application contract both projects consume. When you change a
+ * transition here, update the admin mirror by hand.
+ */
+export const SUPPORT_STATUS_TRANSITIONS: Record<string, string[]> = {
+  new: ["open", "assigned", "waiting_for_internal", "escalated"],
+  open: ["assigned", "waiting_for_customer", "waiting_for_internal", "escalated"],
+  assigned: ["open", "waiting_for_customer", "waiting_for_internal", "escalated"],
+  waiting_for_customer: ["open", "assigned", "waiting_for_internal", "escalated"],
+  waiting_for_internal: ["open", "assigned", "waiting_for_customer", "escalated"],
+  escalated: ["open", "assigned", "waiting_for_internal"],
+  reopened: ["open", "assigned", "waiting_for_customer", "waiting_for_internal", "escalated"],
+  resolved: ["closed"],
+  closed: [],
+};
+
+/** Ordinary destination states reachable from the given status. */
+export function supportStatusDestinations(status: string): string[] {
+  return SUPPORT_STATUS_TRANSITIONS[status] ?? [];
+}
+
+/** True when at least one ordinary status transition is available. */
+export function canChangeSupportStatus(status: string): boolean {
+  return supportStatusDestinations(status).length > 0;
+}

@@ -1,9 +1,40 @@
 import { Logger, ValidationPipe } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { NestExpressApplication } from "@nestjs/platform-express";
+import { DocumentBuilder, SwaggerModule } from "@nestjs/swagger";
 
 import { AppModule } from "./app.module";
 import { GlobalExceptionFilter } from "./common/filters/global-exception.filter";
+
+function setupSwagger(app: NestExpressApplication): void {
+  const isEnabled =
+    process.env.SWAGGER_ENABLED === "true" || process.env.NODE_ENV !== "production";
+
+  if (!isEnabled) return;
+
+  const config = new DocumentBuilder()
+    .setTitle("Repitair API")
+    .setDescription("Consumer and administration API documentation for Repitair.")
+    .setVersion("1.0")
+    .addBearerAuth(
+      { type: "http", scheme: "bearer", bearerFormat: "JWT" },
+      "user-access-token",
+    )
+    .addCookieAuth(
+      "ra_admin_session",
+      { type: "apiKey", in: "cookie" },
+      "admin-session",
+    )
+    .build();
+
+  const document = SwaggerModule.createDocument(app, config);
+  SwaggerModule.setup("docs", app, document, {
+    useGlobalPrefix: true,
+    swaggerOptions: { persistAuthorization: true },
+  });
+
+  new Logger("Swagger").log("Swagger UI available at /api/docs");
+}
 
 function validateEnvironment(): void {
   const log = new Logger("EnvironmentValidation");
@@ -17,6 +48,7 @@ function validateEnvironment(): void {
     if (!process.env.JWT_REFRESH_SECRET) errors.push("JWT_REFRESH_SECRET is required");
     if (!process.env.ADMIN_JWT_SECRET) errors.push("ADMIN_JWT_SECRET is required");
     if (!process.env.ADMIN_FRONTEND_ORIGIN) errors.push("ADMIN_FRONTEND_ORIGIN is required");
+    if (!process.env.PUBLIC_URL) errors.push("PUBLIC_URL is required");
     if (process.env.ADMIN_COOKIE_SECURE === "false") errors.push("ADMIN_COOKIE_SECURE cannot be false in production");
 
     const sameSite = process.env.ADMIN_COOKIE_SAME_SITE;
@@ -39,6 +71,16 @@ function validateEnvironment(): void {
       }
     } catch {
       errors.push("ADMIN_FRONTEND_ORIGIN must be a valid URL origin");
+    }
+
+    try {
+      const publicUrl = new URL(process.env.PUBLIC_URL ?? "");
+      const normalized = (process.env.PUBLIC_URL ?? "").replace(/\/+$/, "");
+      if (publicUrl.origin !== normalized || publicUrl.protocol !== "https:") {
+        errors.push("PUBLIC_URL must be an HTTPS origin without a path in production");
+      }
+    } catch {
+      errors.push("PUBLIC_URL must be a valid URL origin");
     }
 
     if ((process.env.CORS_ORIGINS ?? "").split(",").some((origin) => origin.trim() === "*")) {
@@ -149,6 +191,8 @@ async function bootstrap() {
   );
 
   app.useGlobalFilters(new GlobalExceptionFilter());
+
+  setupSwagger(app);
 
   await app.listen(process.env.PORT ? Number(process.env.PORT) : 4000);
 }

@@ -83,4 +83,8 @@ export class User {
 
   @Column({ type: "varchar", nullable: true })
   signupSource?: string | null;
+
+  /** Incrementing this invalidates every previously issued consumer access and refresh token. */
+  @Column({ type: "int", default: 0 })
+  sessionVersion!: number;
 }

@@ -3,6 +3,8 @@ import { JwtService } from "@nestjs/jwt";
 import { AuthController } from "./auth.controller";
 import { AuthService } from "./auth.service";
 import { TokenBlacklistService } from "../../common/services/token-blacklist.service";
+import { getRepositoryToken } from "@nestjs/typeorm";
+import { User } from "../../entities";
 
 describe("AuthController", () => {
   let authController: AuthController;
@@ -37,6 +39,10 @@ describe("AuthController", () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [AuthController],
       providers: [
+        {
+          provide: getRepositoryToken(User),
+          useValue: { findOne: jest.fn() },
+        },
         {
           provide: AuthService,
           useValue: mockAuthService,

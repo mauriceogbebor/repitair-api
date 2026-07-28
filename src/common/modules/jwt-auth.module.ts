@@ -1,7 +1,10 @@
 import { Global, Logger, Module } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { JwtModule } from "@nestjs/jwt";
+import { TypeOrmModule } from "@nestjs/typeorm";
 import type { SignOptions } from "jsonwebtoken";
+import { User } from "../../entities";
+import { JwtAuthGuard } from "../guards/jwt-auth.guard";
 
 /**
  * Global JWT module — single source of truth for signing secret and expiry.
@@ -10,6 +13,7 @@ import type { SignOptions } from "jsonwebtoken";
 @Global()
 @Module({
   imports: [
+    TypeOrmModule.forFeature([User]),
     JwtModule.registerAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => {
@@ -43,6 +47,7 @@ import type { SignOptions } from "jsonwebtoken";
       },
     }),
   ],
-  exports: [JwtModule],
+  providers: [JwtAuthGuard],
+  exports: [TypeOrmModule, JwtModule, JwtAuthGuard],
 })
 export class JwtAuthModule {}

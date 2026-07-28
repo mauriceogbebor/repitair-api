@@ -6,6 +6,7 @@ import * as bcrypt from "bcryptjs";
 import { createHash } from "node:crypto";
 import { UsersService } from "./users.service";
 import { UploadsService } from "../uploads/uploads.service";
+import { PrivacyService } from "../privacy/privacy.service";
 import { User } from "../../entities";
 
 /** Mirror the service's hash function for test setup */
@@ -29,6 +30,7 @@ describe("UsersService", () => {
     suspendedAt: null,
     lastLoginAt: null,
     signupSource: "email",
+    sessionVersion: 0,
     createdAt: new Date(),
     resetCode: undefined,
     resetCodeExpiresAt: undefined,
@@ -42,6 +44,10 @@ describe("UsersService", () => {
 
   const mockUploadsService = {
     deleteFile: jest.fn().mockResolvedValue(undefined),
+  };
+
+  const mockPrivacyService = {
+    recordAccountDeletion: jest.fn().mockResolvedValue(undefined),
   };
 
   const mockRepository = {
@@ -75,6 +81,10 @@ describe("UsersService", () => {
         {
           provide: UploadsService,
           useValue: mockUploadsService,
+        },
+        {
+          provide: PrivacyService,
+          useValue: mockPrivacyService,
         },
       ],
     }).compile();

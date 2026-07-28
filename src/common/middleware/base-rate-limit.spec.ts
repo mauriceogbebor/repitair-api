@@ -85,4 +85,17 @@ describe("BaseRateLimiter Redis availability", () => {
     expect(logError).toHaveBeenCalledTimes(1);
     limiter.onModuleDestroy();
   });
+
+  it("returns a controlled 429 rejection when the in-memory limit is exceeded", async () => {
+    const limiter = new TestRateLimiter(null);
+    const next = jest.fn();
+
+    for (let requestNumber = 0; requestNumber < 10; requestNumber += 1) {
+      await limiter.use(request, response(), next);
+    }
+
+    await expect(limiter.use(request, response(), next)).rejects.toMatchObject({ status: 429 });
+    expect(next).toHaveBeenCalledTimes(10);
+    limiter.onModuleDestroy();
+  });
 });

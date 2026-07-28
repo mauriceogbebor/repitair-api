@@ -5,8 +5,11 @@ export type SupportTicketStatus =
   | "open"
   | "assigned"
   | "waiting_for_customer"
+  | "waiting_for_internal"
+  | "escalated"
   | "resolved"
-  | "closed";
+  | "closed"
+  | "reopened";
 
 export type SupportTicketPriority = "low" | "medium" | "high" | "critical";
 
@@ -39,6 +42,10 @@ export class ContactSubmission {
   @Column({ type: "varchar", nullable: true })
   category?: string | null;
 
+  @Column({ type: "varchar", nullable: true }) subcategory?: string | null;
+  @Column({ type: "varchar", nullable: true }) issueType?: string | null;
+  @Column({ type: "varchar", nullable: true }) productArea?: string | null;
+
   @Column("text", { array: true, default: () => "'{}'" })
   tags!: string[];
 
@@ -57,8 +64,14 @@ export class ContactSubmission {
   @Column("text", { array: true, default: () => "'{}'" })
   relatedNotificationIds!: string[];
 
+  @Column({ type: "uuid", nullable: true }) relatedModerationReportId?: string | null;
+  @Column({ type: "varchar", nullable: true }) sourceReferenceType?: string | null;
+  @Column({ type: "varchar", nullable: true }) sourceReferenceId?: string | null;
+
   @Column({ type: "timestamptz", nullable: true })
   firstResponseDueAt?: Date | null;
+
+  @Column({ type: "timestamptz", nullable: true }) firstRespondedAt?: Date | null;
 
   @Column({ type: "timestamptz", nullable: true })
   resolutionDueAt?: Date | null;

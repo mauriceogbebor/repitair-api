@@ -3,11 +3,14 @@ import { UnauthorizedException, ExecutionContext } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { JwtAuthGuard } from "./jwt-auth.guard";
 import { TokenBlacklistService } from "../services/token-blacklist.service";
+import { getRepositoryToken } from "@nestjs/typeorm";
+import { User } from "../../entities";
 
 describe("JwtAuthGuard", () => {
   let jwtAuthGuard: JwtAuthGuard;
   let jwtService: JwtService;
   let tokenBlacklist: TokenBlacklistService;
+  let userRepository: { findOne: jest.Mock };
 
   const mockJwtPayload = {
     sub: "user_1",
@@ -31,14 +34,26 @@ describe("JwtAuthGuard", () => {
         add: jest.fn(),
       },
     };
+    const mockUserRepositoryProvider = {
+      provide: getRepositoryToken(User),
+      useValue: {
+        findOne: jest.fn(({ where }: { where: { id: string } }) => Promise.resolve({
+          id: where.id,
+          email: where.id === "user_123" ? "custom@example.com" : "john@example.com",
+          isSuspended: false,
+          sessionVersion: 0,
+        })),
+      },
+    };
 
     const module: TestingModule = await Test.createTestingModule({
-      providers: [JwtAuthGuard, mockJwtServiceProvider, mockTokenBlacklistProvider],
+      providers: [JwtAuthGuard, mockJwtServiceProvider, mockTokenBlacklistProvider, mockUserRepositoryProvider],
     }).compile();
 
     jwtAuthGuard = module.get<JwtAuthGuard>(JwtAuthGuard);
     jwtService = module.get<JwtService>(JwtService);
     tokenBlacklist = module.get<TokenBlacklistService>(TokenBlacklistService);
+    userRepository = module.get(getRepositoryToken(User));
   });
 
   afterEach(() => {
@@ -175,6 +190,21 @@ describe("JwtAuthGuard", () => {
         new UnauthorizedException({ errorCode: "SESSION_INVALID", message: "Token has been revoked", retriable: false })
       );
       expect(tokenBlacklist.isBlacklisted).toHaveBeenCalledWith("revoked-jti");
+    });
+
+    it("should reject a token issued before a consumer session revocation", async () => {
+      const mockContext = createMockContext({ authorization: `Bearer ${mockValidToken}` });
+      (jwtService.verify as jest.Mock).mockReturnValue({ ...mockJwtPayload, sessionVersion: 0 });
+      userRepository.findOne.mockResolvedValueOnce({
+        id: mockJwtPayload.sub,
+        email: mockJwtPayload.email,
+        isSuspended: false,
+        sessionVersion: 1,
+      });
+
+      await expect(jwtAuthGuard.canActivate(mockContext)).rejects.toThrow(
+        new UnauthorizedException({ errorCode: "SESSION_INVALID", message: "This session has been revoked", retriable: false }),
+      );
     });
   });
 });

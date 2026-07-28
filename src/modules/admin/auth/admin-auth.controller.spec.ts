@@ -52,6 +52,7 @@ describe("AdminAuthController", () => {
       "signed-session",
       1_800_000_000,
       request.adminRequestContext,
+      undefined,
     );
     expect(sessionService.clearSession).toHaveBeenCalledWith(response);
   });

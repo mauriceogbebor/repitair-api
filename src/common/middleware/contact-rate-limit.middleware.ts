@@ -23,7 +23,7 @@ export class ContactRateLimitMiddleware extends BaseRateLimiter implements NestM
     );
   }
 
-  use(req: Request, res: Response, next: NextFunction) {
-    void this.check(req, res, next);
+  use(req: Request, res: Response, next: NextFunction): Promise<void> {
+    return this.check(req, res, next);
   }
 }

@@ -10,7 +10,7 @@ import {
 } from "typeorm";
 import { AdminRole } from "./admin-role.entity";
 
-export type AdminUserStatus = "active" | "locked" | "disabled";
+export type AdminUserStatus = "active" | "locked" | "suspended" | "pending_invitation" | "inactive" | "disabled";
 
 @Entity("admin_users")
 @Unique(["email"])
@@ -45,8 +45,32 @@ export class AdminUser {
   @Column({ type: "timestamptz", nullable: true })
   lastLoginAt?: Date | null;
 
+  @Column({ type: "timestamptz", nullable: true })
+  lastActivityAt?: Date | null;
+
   @Column({ type: "varchar", nullable: true })
   lastLoginIp?: string | null;
+
+  @Column({ type: "timestamptz", nullable: true })
+  mfaEnrolledAt?: Date | null;
+
+  @Column({ default: false })
+  mfaResetRequired!: boolean;
+
+  @Column({ type: "timestamptz", nullable: true })
+  suspendedAt?: Date | null;
+
+  @Column({ type: "text", nullable: true })
+  suspensionReason?: string | null;
+
+  @Column({ type: "timestamptz", nullable: true })
+  inactiveAt?: Date | null;
+
+  @Column({ type: "timestamptz", nullable: true })
+  accessReviewDueAt?: Date | null;
+
+  @Column({ type: "timestamptz", nullable: true })
+  lastAccessReviewedAt?: Date | null;
 
   @ManyToMany(() => AdminRole, { eager: true })
   @JoinTable({

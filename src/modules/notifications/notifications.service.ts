@@ -136,4 +136,58 @@ export class NotificationsService {
     }
     return total;
   }
+
+  /**
+   * Dispatch a campaign to a set of users and return HONEST provider evidence:
+   * how many device tokens were targeted, how many the provider accepted, and
+   * how many it rejected. Callers must derive delivery status from these real
+   * numbers — never from an audience estimate.
+   */
+  async sendCampaign(
+    userIds: string[],
+    notification: { title: string; body: string; data?: Record<string, unknown> },
+  ): Promise<{
+    channelAvailable: boolean;
+    tokenCount: number;
+    accepted: number;
+    rejected: number;
+    errors: string[];
+  }> {
+    const result = { channelAvailable: true, tokenCount: 0, accepted: 0, rejected: 0, errors: [] as string[] };
+    if (userIds.length === 0) return result;
+
+    const tokens = await this.tokensRepo.find({ where: userIds.map((userId) => ({ userId })) });
+    const valid = tokens.filter((t) => Expo.isExpoPushToken(t.pushToken));
+    result.tokenCount = valid.length;
+    if (valid.length === 0) return result;
+
+    const messages: ExpoPushMessage[] = valid.map((t) => ({
+      to: t.pushToken,
+      sound: "default" as const,
+      title: notification.title,
+      body: notification.body,
+      data: notification.data,
+    }));
+
+    const chunks = this.expo.chunkPushNotifications(messages);
+    for (const chunk of chunks) {
+      try {
+        const tickets: ExpoPushTicket[] = await this.expo.sendPushNotificationsAsync(chunk);
+        for (const ticket of tickets) {
+          if (ticket.status === "ok") {
+            result.accepted++;
+          } else {
+            result.rejected++;
+            if (ticket.message) result.errors.push(ticket.message);
+          }
+        }
+      } catch (err) {
+        // Chunk-level failure: count every message in the chunk as rejected.
+        result.rejected += chunk.length;
+        result.errors.push((err as Error).message);
+        this.logger.error(`Failed to send campaign chunk: ${(err as Error).message}`);
+      }
+    }
+    return result;
+  }
 }

@@ -5,6 +5,7 @@ import type { AdminRequest } from "../admin.types";
 import { AdminAuthService } from "../auth/admin-auth.service";
 import { AdminSessionService } from "../auth/admin-session.service";
 import { AdminTokenService } from "../auth/admin-token.service";
+import { AdminSessionRegistryService } from "../iam/admin-session-registry.service";
 
 @Injectable()
 export class AdminJwtAuthGuard implements CanActivate {
@@ -13,6 +14,7 @@ export class AdminJwtAuthGuard implements CanActivate {
     private readonly adminAuthService: AdminAuthService,
     private readonly sessionService: AdminSessionService,
     private readonly tokenBlacklistService: TokenBlacklistService,
+    private readonly sessionRegistry: AdminSessionRegistryService,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -31,6 +33,7 @@ export class AdminJwtAuthGuard implements CanActivate {
       }
 
       const payload = this.tokenService.verifyAccessToken(token);
+      if (payload.sid) await this.sessionRegistry.validateAndTouch(payload.sid, payload.sub);
       const actor = await this.adminAuthService.resolveActor(payload.sub);
 
       if (!actor || actor.status !== "active") {
@@ -40,6 +43,7 @@ export class AdminJwtAuthGuard implements CanActivate {
       request.adminUser = actor;
       request.adminSessionToken = token;
       request.adminSessionExpiresAt = payload.exp;
+      request.adminSessionId = payload.sid;
       return true;
     } catch (error) {
       this.sessionService.clearSession(response);

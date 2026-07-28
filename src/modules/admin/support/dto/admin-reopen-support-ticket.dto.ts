@@ -1,7 +1,8 @@
-import { IsOptional, IsString } from "class-validator";
+import { IsString, MaxLength, MinLength } from "class-validator";
 
 export class AdminReopenSupportTicketDto {
-  @IsOptional()
   @IsString()
-  reason?: string;
+  @MinLength(3)
+  @MaxLength(1000)
+  reason!: string;
 }

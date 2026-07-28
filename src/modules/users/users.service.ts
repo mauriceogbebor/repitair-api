@@ -6,6 +6,7 @@ import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto
 
 import { User } from "../../entities";
 import { UploadsService } from "../uploads/uploads.service";
+import { PrivacyService } from "../privacy/privacy.service";
 
 export type { User as UserRecord };
 
@@ -28,6 +29,7 @@ const LEGACY_MISSING_USER_COLUMNS = [
   "suspendedAt",
   "lastLoginAt",
   "signupSource",
+  "sessionVersion",
 ];
 
 function isLegacyUserSchemaError(err: unknown): boolean {
@@ -45,6 +47,7 @@ export class UsersService {
     @InjectRepository(User)
     private readonly usersRepo: Repository<User>,
     private readonly uploadsService: UploadsService,
+    private readonly privacyService: PrivacyService,
   ) {}
 
   async findByEmail(email: string): Promise<User | null> {
@@ -375,6 +378,11 @@ export class UsersService {
       }
       this.tryDeleteCompositionAssets(repit.composition);
     }
+
+    // Record the deletion in the operational privacy queue BEFORE removing the
+    // row, so operators retain an auditable record (the request row has no FK to
+    // the user and survives deletion). Self-service deletion is already fulfilled.
+    await this.privacyService.recordAccountDeletion(userId, user.email, "self_service", "completed");
 
     const result = await this.usersRepo.delete({ id: userId });
     return (result.affected ?? 0) > 0;

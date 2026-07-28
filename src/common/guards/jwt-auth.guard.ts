@@ -1,6 +1,9 @@
 import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
+import { InjectRepository } from "@nestjs/typeorm";
+import { Repository } from "typeorm";
 
+import { User } from "../../entities";
 import { TokenBlacklistService } from "../services/token-blacklist.service";
 
 @Injectable()
@@ -8,6 +11,8 @@ export class JwtAuthGuard implements CanActivate {
   constructor(
     private readonly jwtService: JwtService,
     private readonly tokenBlacklist: TokenBlacklistService,
+    @InjectRepository(User)
+    private readonly userRepository: Repository<User>,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -37,9 +42,21 @@ export class JwtAuthGuard implements CanActivate {
         });
       }
 
+      const user = await this.userRepository.findOne({
+        where: { id: payload.sub },
+        select: { id: true, email: true, isSuspended: true, sessionVersion: true },
+      });
+      if (!user || user.isSuspended || (payload.sessionVersion ?? 0) !== (user.sessionVersion ?? 0)) {
+        throw new UnauthorizedException({
+          errorCode: user?.isSuspended ? "ACCOUNT_DISABLED" : "SESSION_INVALID",
+          message: user?.isSuspended ? "This account is unavailable" : "This session has been revoked",
+          retriable: false,
+        });
+      }
+
       request.user = {
         sub: payload.sub,
-        email: payload.email,
+        email: user.email,
         token, // expose raw token so controllers (e.g. logout) can blacklist it
       };
       return true;

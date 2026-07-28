@@ -115,7 +115,7 @@ describe("RepitsService", () => {
       const result = await service.listRepits("user_1");
 
       expect(repository.findAndCount).toHaveBeenCalledWith({
-        where: { userId: "user_1" },
+        where: expect.objectContaining({ userId: "user_1", moderationStatus: expect.any(Object) }),
         order: { createdAt: "DESC" },
         take: 50,
         skip: 0,
@@ -286,7 +286,7 @@ describe("RepitsService", () => {
       const result = await service.updateRepit("user_1", mockRepit.id, updateDto);
 
       expect(repository.findOne).toHaveBeenCalledWith({
-        where: { id: mockRepit.id, userId: "user_1" },
+        where: expect.objectContaining({ id: mockRepit.id, userId: "user_1", moderationStatus: expect.any(Object) }),
       });
       expect(result).toEqual(expect.objectContaining(updatedRepit));
     });
