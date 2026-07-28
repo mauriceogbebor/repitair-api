@@ -7,6 +7,10 @@ export type AdminRequestActor = {
   status: string;
   roleKeys: string[];
   permissionKeys: string[];
+  breakGlass?: {
+    grantId: string;
+    expiresAt: string;
+  } | null;
 };
 
 export type AdminRequestContext = {
@@ -22,4 +26,5 @@ export type AdminRequest = Request & {
   adminRequestContext?: AdminRequestContext;
   adminSessionToken?: string;
   adminSessionExpiresAt?: number;
+  adminSessionId?: string;
 };

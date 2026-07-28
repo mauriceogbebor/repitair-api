@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { Injectable, NotFoundException } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { Repit } from "../../../entities/repit.entity";
@@ -7,19 +7,15 @@ import { User } from "../../../entities/user.entity";
 import { AdminAuditLogsService } from "../audit-logs/admin-audit-logs.service";
 import type { AdminRequestActor, AdminRequestContext } from "../admin.types";
 import { createCsv } from "../utils/csv";
+import { resolveDateRange } from "../utils/date-range";
 import { AdminArchiveRepitDto } from "./dto/admin-archive-repit.dto";
 import { AdminFlagRepitDto } from "./dto/admin-flag-repit.dto";
 import { AdminListRepitsQueryDto } from "./dto/admin-list-repits-query.dto";
+import { AdminRepitModerationService } from "./admin-repit-moderation.service";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
 const EXPORT_LIMIT = 10_000;
-
-function normalizeDateInput(value?: string): Date | null {
-  if (!value) return null;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
 
 @Injectable()
 export class AdminRepitsService {
@@ -31,24 +27,21 @@ export class AdminRepitsService {
     @InjectRepository(Template)
     private readonly templateRepository: Repository<Template>,
     private readonly auditLogsService: AdminAuditLogsService,
+    private readonly moderationService: AdminRepitModerationService,
   ) {}
 
-  async listRepits(query: AdminListRepitsQueryDto) {
+  async listRepits(query: AdminListRepitsQueryDto, actor?: AdminRequestActor | null) {
     const page = Math.max(query.page ?? 1, 1);
     const pageSize = Math.min(query.pageSize ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
     const search = query.search?.trim() ?? "";
-    const dateFrom = normalizeDateInput(query.dateFrom);
-    const dateTo = normalizeDateInput(query.dateTo);
-
-    if ((query.dateFrom && !dateFrom) || (query.dateTo && !dateTo)) {
-      throw new BadRequestException("Invalid repit date filter");
-    }
+    const { start: dateFrom, endExclusive: dateToExclusive } = resolveDateRange(query.dateFrom, query.dateTo, "repit");
 
     const countQb = this.repitRepository
       .createQueryBuilder("repit")
       .leftJoin("repit.user", "user")
       .leftJoin("repit.template", "template");
-    this.applyRepitFilters(countQb, { search, ...query, dateFrom, dateTo });
+    const includePii = Boolean(actor?.permissionKeys?.includes("users.read_pii"));
+    this.applyRepitFilters(countQb, { search, ...query, dateFrom, dateToExclusive, includePii });
     const total = await countQb.getCount();
 
     const qb = this.repitRepository
@@ -56,7 +49,7 @@ export class AdminRepitsService {
       .leftJoinAndSelect("repit.user", "user")
       .leftJoinAndSelect("repit.template", "template");
 
-    this.applyRepitFilters(qb, { search, ...query, dateFrom, dateTo });
+    this.applyRepitFilters(qb, { search, ...query, dateFrom, dateToExclusive, includePii });
     this.applyRepitSorting(qb, query.sortBy, query.sortOrder);
     qb.offset((page - 1) * pageSize).limit(pageSize);
 
@@ -77,15 +70,15 @@ export class AdminRepitsService {
           name: repit.template?.name ?? repit.templateId,
         },
         user: repit.user
-          ? { id: repit.user.id, fullName: repit.user.fullName, email: repit.user.email }
-          : { id: repit.userId, fullName: "Unknown user", email: "" },
+          ? { id: repit.user.id, fullName: repit.user.fullName, email: includePii ? repit.user.email : null }
+          : { id: repit.userId, fullName: "Unknown user", email: null },
         backgroundPhotoUrl: repit.backgroundPhotoUrl ?? null,
         createdAt: repit.createdAt,
       })),
     };
   }
 
-  async getRepitDetail(repitId: string) {
+  async getRepitDetail(repitId: string, actor?: AdminRequestActor | null) {
     const repit = await this.repitRepository.findOne({
       where: { id: repitId },
       relations: { user: true, template: true },
@@ -111,7 +104,7 @@ export class AdminRepitsService {
         ? { id: repit.template.id, name: repit.template.name, style: repit.template.style }
         : { id: repit.templateId, name: repit.templateId, style: "unknown" },
       user: repit.user
-        ? { id: repit.user.id, fullName: repit.user.fullName, email: repit.user.email }
+        ? { id: repit.user.id, fullName: repit.user.fullName, email: actor?.permissionKeys?.includes("users.read_pii") ? repit.user.email : null }
         : null,
       backgroundPhotoUrl: repit.backgroundPhotoUrl ?? null,
       compositionSummary: this.buildCompositionSummary(repit),
@@ -129,17 +122,14 @@ export class AdminRepitsService {
     context?: AdminRequestContext | null,
   ) {
     const search = query.search?.trim() ?? "";
-    const dateFrom = normalizeDateInput(query.dateFrom);
-    const dateTo = normalizeDateInput(query.dateTo);
-    if ((query.dateFrom && !dateFrom) || (query.dateTo && !dateTo)) {
-      throw new BadRequestException("Invalid repit date filter");
-    }
+    const { start: dateFrom, endExclusive: dateToExclusive } = resolveDateRange(query.dateFrom, query.dateTo, "repit");
+    const includePii = Boolean(actor?.permissionKeys?.includes("users.read_pii"));
 
     const qb = this.repitRepository
       .createQueryBuilder("repit")
       .leftJoinAndSelect("repit.user", "user")
       .leftJoinAndSelect("repit.template", "template");
-    this.applyRepitFilters(qb, { search, ...query, dateFrom, dateTo });
+    this.applyRepitFilters(qb, { search, ...query, dateFrom, dateToExclusive, includePii });
     this.applyRepitSorting(qb, query.sortBy, query.sortOrder);
     qb.limit(EXPORT_LIMIT + 1);
 
@@ -158,7 +148,7 @@ export class AdminRepitsService {
         repit.template?.name ?? repit.templateId,
         repit.userId,
         repit.user?.fullName ?? "Unknown user",
-        repit.user?.email ?? "",
+        includePii ? repit.user?.email ?? "" : "",
         repit.createdAt,
       ]),
     );
@@ -187,24 +177,8 @@ export class AdminRepitsService {
     actor?: AdminRequestActor | null,
     context?: AdminRequestContext | null,
   ) {
-    const repit = await this.requireRepit(repitId);
-    const beforeState = this.buildRepitAuditSnapshot(repit);
-    repit.moderationStatus = "flagged";
-    repit.flagReason = dto.reason;
-    const saved = await this.repitRepository.save(repit);
-
-    await this.auditLogsService.append({
-      action: "admin.repits.flagged",
-      actor,
-      context,
-      targetType: "repit",
-      targetId: repit.id,
-      beforeState,
-      afterState: this.buildRepitAuditSnapshot(saved),
-      metadata: { reason: dto.reason },
-    });
-
-    return this.getRepitDetail(saved.id);
+    await this.moderationService.openReport(repitId, { reason: dto.reason }, actor, context);
+    return this.getRepitDetail(repitId, actor);
   }
 
   async archiveRepit(
@@ -213,47 +187,27 @@ export class AdminRepitsService {
     actor?: AdminRequestActor | null,
     context?: AdminRequestContext | null,
   ) {
-    const repit = await this.requireRepit(repitId);
-    const beforeState = this.buildRepitAuditSnapshot(repit);
-    repit.moderationStatus = "archived";
-    repit.archivedAt = new Date();
-    if (dto.reason) {
-      repit.flagReason = dto.reason;
-    }
-    const saved = await this.repitRepository.save(repit);
-
-    await this.auditLogsService.append({
-      action: "admin.repits.archived",
-      actor,
-      context,
-      targetType: "repit",
-      targetId: repit.id,
-      beforeState,
-      afterState: this.buildRepitAuditSnapshot(saved),
-      metadata: dto.reason ? { reason: dto.reason } : null,
-    });
-
-    return this.getRepitDetail(saved.id);
+    const report = await this.moderationService.openReport(repitId, { reason: dto.reason }, actor, context);
+    await this.moderationService.decide(repitId, {
+      reportId: report.id,
+      action: "archive",
+      reason: dto.reason,
+      policyKey: "content.other",
+      idempotencyKey: context?.requestId ? `legacy-archive-${context.requestId}` : undefined,
+    }, actor, context);
+    return this.getRepitDetail(repitId, actor);
   }
 
-  async deleteRepit(repitId: string, actor?: AdminRequestActor | null, context?: AdminRequestContext | null) {
-    const repit = await this.requireRepit(repitId);
-    const beforeState = this.buildRepitAuditSnapshot(repit);
-    repit.moderationStatus = "deleted";
-    repit.deletedByAdminAt = new Date();
-    const saved = await this.repitRepository.save(repit);
-
-    await this.auditLogsService.append({
-      action: "admin.repits.deleted",
-      actor,
-      context,
-      targetType: "repit",
-      targetId: repit.id,
-      beforeState,
-      afterState: this.buildRepitAuditSnapshot(saved),
-    });
-
-    return { success: true, repitId: saved.id };
+  async deleteRepit(repitId: string, dto: AdminFlagRepitDto, actor?: AdminRequestActor | null, context?: AdminRequestContext | null) {
+    const report = await this.moderationService.openReport(repitId, { reason: dto.reason }, actor, context);
+    await this.moderationService.decide(repitId, {
+      reportId: report.id,
+      action: "remove",
+      reason: dto.reason,
+      policyKey: "content.other",
+      idempotencyKey: context?.requestId ? `legacy-remove-${context.requestId}` : undefined,
+    }, actor, context);
+    return { success: true, repitId };
   }
 
   private async requireRepit(repitId: string) {
@@ -271,13 +225,17 @@ export class AdminRepitsService {
       userId?: string;
       templateId?: string;
       status?: string;
+      publicationStatus?: string;
+      includePii?: boolean;
       dateFrom?: Date | null;
-      dateTo?: Date | null;
+      dateToExclusive?: Date | null;
     },
   ) {
     if (filters.search) {
       qb.andWhere(
-        "(repit.id::text ILIKE :search OR repit.title ILIKE :search OR COALESCE(repit.artist, '') ILIKE :search OR user.email ILIKE :search OR user.fullName ILIKE :search OR template.name ILIKE :search)",
+        filters.includePii
+          ? "(repit.id::text ILIKE :search OR repit.title ILIKE :search OR COALESCE(repit.artist, '') ILIKE :search OR user.email ILIKE :search OR user.fullName ILIKE :search OR template.name ILIKE :search)"
+          : "(repit.id::text ILIKE :search OR repit.title ILIKE :search OR COALESCE(repit.artist, '') ILIKE :search OR user.fullName ILIKE :search OR template.name ILIKE :search)",
         { search: `%${filters.search}%` },
       );
     }
@@ -294,12 +252,16 @@ export class AdminRepitsService {
       qb.andWhere("repit.moderationStatus = :status", { status: filters.status });
     }
 
+    if (filters.publicationStatus) {
+      qb.andWhere("repit.status = :publicationStatus", { publicationStatus: filters.publicationStatus });
+    }
+
     if (filters.dateFrom) {
       qb.andWhere("repit.createdAt >= :dateFrom", { dateFrom: filters.dateFrom.toISOString() });
     }
 
-    if (filters.dateTo) {
-      qb.andWhere("repit.createdAt <= :dateTo", { dateTo: filters.dateTo.toISOString() });
+    if (filters.dateToExclusive) {
+      qb.andWhere("repit.createdAt < :dateToExclusive", { dateToExclusive: filters.dateToExclusive.toISOString() });
     }
   }
 
@@ -341,17 +303,4 @@ export class AdminRepitsService {
     };
   }
 
-  private buildRepitAuditSnapshot(repit: Repit) {
-    return {
-      id: repit.id,
-      title: repit.title,
-      status: repit.status,
-      moderationStatus: repit.moderationStatus,
-      flagReason: repit.flagReason ?? null,
-      archivedAt: repit.archivedAt?.toISOString?.() ?? null,
-      deletedByAdminAt: repit.deletedByAdminAt?.toISOString?.() ?? null,
-      templateId: repit.templateId,
-      userId: repit.userId,
-    };
-  }
 }

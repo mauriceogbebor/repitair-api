@@ -20,6 +20,12 @@ export class AdminAuthController {
     return this.adminAuthService.login(dto, request.adminRequestContext);
   }
 
+  @Post("mfa-enrollment")
+  @HttpCode(200)
+  async mfaEnrollment(@Body("ticket") ticket: string) {
+    return this.adminAuthService.getMfaEnrollment(ticket);
+  }
+
   @Post("verify-mfa")
   @HttpCode(200)
   async verifyMfa(
@@ -56,6 +62,7 @@ export class AdminAuthController {
         request.adminSessionToken!,
         request.adminSessionExpiresAt,
         request.adminRequestContext,
+        request.adminSessionId,
       );
       return { success: true };
     } finally {

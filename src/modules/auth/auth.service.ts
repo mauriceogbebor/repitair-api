@@ -255,7 +255,7 @@ export class AuthService {
   }
 
   async refresh(refreshToken: string) {
-    let payload: { sub: string; email: string; jti: string; type: string; exp?: number };
+    let payload: { sub: string; email: string; jti: string; type: string; sessionVersion?: number; exp?: number };
     try {
       payload = this.jwtService.verify(refreshToken, { secret: this.getRefreshSecret() }) as typeof payload;
     } catch (error) {
@@ -281,6 +281,9 @@ export class AuthService {
     }
     if (user.isSuspended) {
       throw this.sessionUnauthorized("ACCOUNT_DISABLED", "This account is unavailable.");
+    }
+    if ((payload.sessionVersion ?? 0) !== (user.sessionVersion ?? 0)) {
+      throw this.sessionUnauthorized("REFRESH_TOKEN_REVOKED", "This session has been revoked.");
     }
 
     await this.tokenBlacklist.add(blacklistKey, payload.exp);
@@ -330,8 +333,8 @@ export class AuthService {
     return { verified: true };
   }
 
-  private signToken(userId: string, email: string): string {
-    return this.jwtService.sign({ sub: userId, email, jti: randomUUID() });
+  private signToken(userId: string, email: string, sessionVersion: number): string {
+    return this.jwtService.sign({ sub: userId, email, sessionVersion, jti: randomUUID() });
   }
 
   private issueSession(user: {
@@ -341,12 +344,14 @@ export class AuthService {
     country?: string;
     connectedPlatforms: string[];
     avatarUrl?: string | null;
+    sessionVersion?: number;
   }) {
-    const token = this.signToken(user.id, user.email);
+    const sessionVersion = user.sessionVersion ?? 0;
+    const token = this.signToken(user.id, user.email, sessionVersion);
     const accessPayload = this.jwtService.decode(token) as { exp?: number } | null;
     const refreshJti = randomUUID();
     const refreshToken = this.jwtService.sign(
-      { sub: user.id, email: user.email, jti: refreshJti, type: "refresh" },
+      { sub: user.id, email: user.email, sessionVersion, jti: refreshJti, type: "refresh" },
       {
         secret: this.getRefreshSecret(),
         expiresIn: (this.configService.get<string>("JWT_REFRESH_EXPIRES_IN") ?? "30d") as JwtSignOptions["expiresIn"],

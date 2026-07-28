@@ -34,7 +34,7 @@ export class AdminSearchService {
       const users = await this.userRepository
         .createQueryBuilder("user")
         .select(["user.id", "user.fullName", "user.email", "user.isSuspended"])
-        .where("user.id::text ILIKE :search OR user.email ILIKE :search OR user.fullName ILIKE :search", {
+        .where("CAST(\"user\".\"id\" AS text) ILIKE :search OR user.email ILIKE :search OR user.fullName ILIKE :search", {
           search: `%${q}%`,
         })
         .orderBy("user.createdAt", "DESC")

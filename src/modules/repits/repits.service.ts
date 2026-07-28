@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { QueryFailedError, Repository } from "typeorm";
+import { In, Not, QueryFailedError, Repository } from "typeorm";
 
 import { Repit, Template } from "../../entities";
 import {
@@ -87,7 +87,9 @@ export class RepitsService {
 
   async getRepit(userId: string, id: string): Promise<Repit | null> {
     try {
-      const repit = await this.repitsRepo.findOne({ where: { id, userId } });
+      const repit = await this.repitsRepo.findOne({
+        where: { id, userId, moderationStatus: Not(In(["archived", "deleted"])) },
+      });
       return repit ? this.normalizeRepit(repit) : null;
     } catch (err) {
       if (isLegacyRepitSchemaError(err)) {
@@ -102,7 +104,7 @@ export class RepitsService {
     const skip = Math.max(options.offset ?? 0, 0);
     try {
       const [data, total] = await this.repitsRepo.findAndCount({
-        where: { userId },
+        where: { userId, moderationStatus: Not(In(["archived", "deleted"])) },
         order: { createdAt: "DESC" },
         take,
         skip,
@@ -183,7 +185,7 @@ export class RepitsService {
     try {
       // Scope the find by userId so we don't leak existence of other users' repits.
       existing = await this.repitsRepo.findOne({
-        where: { id, userId },
+        where: { id, userId, moderationStatus: Not(In(["archived", "deleted"])) },
       });
     } catch (err) {
       if (isLegacyRepitSchemaError(err)) {
@@ -361,6 +363,7 @@ export class RepitsService {
       ])
       .where("repit.id = :id", { id })
       .andWhere("repit.userId = :userId", { userId })
+      .andWhere("repit.moderationStatus NOT IN (:...hiddenStatuses)", { hiddenStatuses: ["archived", "deleted"] })
       .getOne();
   }
 
@@ -380,6 +383,7 @@ export class RepitsService {
         "repit.createdAt",
       ])
       .where("repit.userId = :userId", { userId })
+      .andWhere("repit.moderationStatus NOT IN (:...hiddenStatuses)", { hiddenStatuses: ["archived", "deleted"] })
       .orderBy("repit.createdAt", "DESC")
       .take(take)
       .skip(skip)

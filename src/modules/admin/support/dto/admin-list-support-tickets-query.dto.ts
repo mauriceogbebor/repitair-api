@@ -1,9 +1,9 @@
 import { Type } from "class-transformer";
 import { IsIn, IsInt, IsOptional, IsString, Max, Min } from "class-validator";
 
-const SUPPORT_STATUSES = ["new", "open", "assigned", "waiting_for_customer", "resolved", "closed"] as const;
+const SUPPORT_STATUSES = ["new", "open", "assigned", "waiting_for_customer", "waiting_for_internal", "escalated", "resolved", "closed", "reopened"] as const;
 const SUPPORT_PRIORITIES = ["low", "medium", "high", "critical"] as const;
-const SUPPORT_SORT_FIELDS = ["createdAt", "updatedAt", "priority", "status", "subject"] as const;
+const SUPPORT_SORT_FIELDS = ["createdAt", "updatedAt", "priority", "status", "subject", "sla"] as const;
 const SORT_ORDERS = ["asc", "desc"] as const;
 
 export class AdminListSupportTicketsQueryDto {
@@ -26,6 +26,18 @@ export class AdminListSupportTicketsQueryDto {
   @IsOptional()
   @IsString()
   assignedAdminUserId?: string;
+
+  @IsOptional() @IsIn(["assigned", "unassigned"] as const)
+  assignment?: "assigned" | "unassigned";
+
+  @IsOptional() @IsString()
+  source?: string;
+
+  @IsOptional() @IsIn(["active", "none"] as const)
+  escalation?: "active" | "none";
+
+  @IsOptional() @IsIn(["healthy", "due_soon", "breached", "paused"] as const)
+  slaState?: "healthy" | "due_soon" | "breached" | "paused";
 
   @IsOptional()
   @IsString()

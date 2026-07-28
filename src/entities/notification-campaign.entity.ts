@@ -1,6 +1,24 @@
 import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn, UpdateDateColumn } from "typeorm";
 
-export type AdminNotificationStatus = "draft" | "scheduled" | "sent" | "cancelled" | "failed";
+/**
+ * Honest delivery lifecycle. A campaign only advances to a "delivered" family
+ * state after the push provider has actually been invoked and returned tickets.
+ * "delivery_unavailable" is used when no delivery channel is wired for the
+ * campaign type (e.g. in-app/announcement) or no reachable device tokens exist —
+ * we never report delivery without provider evidence.
+ */
+export type AdminNotificationStatus =
+  | "draft"
+  | "scheduled"
+  | "queued"
+  | "processing"
+  | "sent_to_provider"
+  | "partially_delivered"
+  | "delivered"
+  | "sent" // legacy value retained for backward compatibility with existing rows
+  | "delivery_unavailable"
+  | "cancelled"
+  | "failed";
 
 export type AdminNotificationType =
   | "push"

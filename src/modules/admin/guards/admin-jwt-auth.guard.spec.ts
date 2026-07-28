@@ -3,6 +3,7 @@ import { TokenBlacklistService } from "../../../common/services/token-blacklist.
 import { AdminAuthService } from "../auth/admin-auth.service";
 import { AdminSessionService } from "../auth/admin-session.service";
 import { AdminTokenService } from "../auth/admin-token.service";
+import { AdminSessionRegistryService } from "../iam/admin-session-registry.service";
 import { AdminJwtAuthGuard } from "./admin-jwt-auth.guard";
 
 describe("AdminJwtAuthGuard", () => {
@@ -20,6 +21,7 @@ describe("AdminJwtAuthGuard", () => {
   };
   const sessionService = { getSessionToken: jest.fn(() => "cookie-token"), clearSession: jest.fn() };
   const blacklist = { isBlacklisted: jest.fn(() => false) };
+  const registry = { validateAndTouch: jest.fn() };
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -32,6 +34,7 @@ describe("AdminJwtAuthGuard", () => {
       authService as unknown as AdminAuthService,
       sessionService as unknown as AdminSessionService,
       blacklist as unknown as TokenBlacklistService,
+      registry as unknown as AdminSessionRegistryService,
     );
 
     await expect(guard.canActivate(context)).resolves.toBe(true);
@@ -46,9 +49,24 @@ describe("AdminJwtAuthGuard", () => {
       authService as unknown as AdminAuthService,
       sessionService as unknown as AdminSessionService,
       blacklist as unknown as TokenBlacklistService,
+      registry as unknown as AdminSessionRegistryService,
     );
 
     await expect(guard.canActivate(context)).rejects.toBeInstanceOf(UnauthorizedException);
     expect(sessionService.clearSession).toHaveBeenCalledWith(response);
+  });
+
+  it("validates a persisted session id before resolving the actor", async () => {
+    tokenService.verifyAccessToken.mockReturnValueOnce({ sub: "admin-1", sid: "session-1", exp: 1234 } as any);
+    const guard = new AdminJwtAuthGuard(
+      tokenService as unknown as AdminTokenService,
+      authService as unknown as AdminAuthService,
+      sessionService as unknown as AdminSessionService,
+      blacklist as unknown as TokenBlacklistService,
+      registry as unknown as AdminSessionRegistryService,
+    );
+    await expect(guard.canActivate(context)).resolves.toBe(true);
+    expect(registry.validateAndTouch).toHaveBeenCalledWith("session-1", "admin-1");
+    expect(request.adminSessionId).toBe("session-1");
   });
 });

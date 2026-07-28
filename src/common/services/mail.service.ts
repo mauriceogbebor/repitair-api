@@ -53,6 +53,39 @@ export class MailService {
     await this.send({ to, subject, html });
   }
 
+  async sendPrivacyExportReady(
+    to: string,
+    fullName: string,
+    downloadUrl: string,
+    expiresAt: Date,
+  ): Promise<void> {
+    if (!this.transporter) {
+      throw new Error("SMTP is required to deliver privacy data exports.");
+    }
+
+    const safeFullName = this.escapeHtml(fullName);
+    const safeDownloadUrl = this.escapeHtml(downloadUrl);
+    const safeExpiry = this.escapeHtml(expiresAt.toUTCString());
+    const html = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 520px; margin: 0 auto; padding: 32px;">
+        <h2 style="color: #111; margin-bottom: 8px;">Your Repitair data export is ready</h2>
+        <p style="color: #555; font-size: 15px;">Hi ${safeFullName},</p>
+        <p style="color: #555; font-size: 15px;">Your requested data export is available from the secure link below.</p>
+        <p style="margin: 24px 0;">
+          <a href="${safeDownloadUrl}" style="display: inline-block; border-radius: 10px; background: #004f71; color: #fff; padding: 12px 18px; text-decoration: none; font-weight: 600;">Download your data</a>
+        </p>
+        <p style="color: #888; font-size: 13px;">This link expires on ${safeExpiry}. Do not forward it. If you did not request this export, contact Repitair Support.</p>
+      </div>
+    `;
+
+    await this.send({
+      to,
+      subject: "Repitair — Your data export is ready",
+      html,
+      sensitive: true,
+    });
+  }
+
   /**
    * Generic send method for callers that need to customize sender/reply-to
    * (e.g. contact form forwarding where replyTo should be the visitor).
@@ -62,6 +95,7 @@ export class MailService {
     subject: string;
     html: string;
     replyTo?: string;
+    sensitive?: boolean;
   }): Promise<void> {
     await this.send(options);
   }
@@ -71,6 +105,7 @@ export class MailService {
     subject: string;
     html: string;
     replyTo?: string;
+    sensitive?: boolean;
   }): Promise<void> {
     const from = this.config.get<string>("SMTP_FROM") || "Repitair <noreply@repitair.com>";
 
@@ -83,15 +118,21 @@ export class MailService {
           html: options.html,
           replyTo: options.replyTo,
         });
-        this.logger.log(`Email sent to ${options.to}: ${options.subject}`);
+        if (options.sensitive) {
+          this.logger.log(`Sensitive email sent: ${options.subject}`);
+        } else {
+          this.logger.log(`Email sent to ${options.to}: ${options.subject}`);
+        }
       } catch (err) {
-        this.logger.error(`Failed to send email to ${options.to}: ${(err as Error).message}`);
+        const destination = options.sensitive ? "sensitive recipient" : options.to;
+        this.logger.error(`Failed to send email to ${destination}: ${(err as Error).message}`);
         throw err;
       }
     } else {
       // Dev fallback: log to console
       this.logger.warn(`[DEV EMAIL] To: ${options.to} | Subject: ${options.subject}`);
-      this.logger.debug(`[DEV EMAIL] Body:\n${options.html}`);
+      if (!options.sensitive) this.logger.debug(`[DEV EMAIL] Body:\n${options.html}`);
+      else this.logger.debug("[DEV EMAIL] Sensitive body omitted from logs");
     }
   }
 

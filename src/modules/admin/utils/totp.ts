@@ -1,4 +1,25 @@
-import { createHmac, timingSafeEqual } from "crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "crypto";
+
+function encodeBase32(buffer: Buffer): string {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  let bits = "";
+  for (const byte of buffer) bits += byte.toString(2).padStart(8, "0");
+  let output = "";
+  for (let index = 0; index < bits.length; index += 5) {
+    output += alphabet[Number.parseInt(bits.slice(index, index + 5).padEnd(5, "0"), 2)];
+  }
+  return output;
+}
+
+export function generateTotpSecret(): string {
+  return encodeBase32(randomBytes(20));
+}
+
+export function buildTotpUri(options: { secret: string; email: string; issuer?: string }): string {
+  const issuer = options.issuer ?? "Repitair Admin";
+  const label = `${issuer}:${options.email}`;
+  return `otpauth://totp/${encodeURIComponent(label)}?secret=${encodeURIComponent(options.secret)}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=30`;
+}
 
 function normalizeBase32(input: string): string {
   return input.toUpperCase().replace(/=+$/g, "").replace(/\s+/g, "");

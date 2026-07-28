@@ -3,7 +3,8 @@ import { IsIn, IsInt, IsOptional, IsString, Max, Min } from "class-validator";
 
 const REPIT_SORT_FIELDS = ["createdAt", "title", "status", "templateName", "userName"] as const;
 const SORT_ORDERS = ["asc", "desc"] as const;
-const REPIT_STATUSES = ["active", "flagged", "archived", "deleted"] as const;
+const REPIT_STATUSES = ["active", "reported", "flagged", "under_review", "archived", "deleted"] as const;
+const PUBLICATION_STATUSES = ["draft", "saved", "shared", "published"] as const;
 
 export class AdminListRepitsQueryDto {
   @IsOptional()
@@ -21,6 +22,10 @@ export class AdminListRepitsQueryDto {
   @IsOptional()
   @IsIn(REPIT_STATUSES)
   status?: (typeof REPIT_STATUSES)[number];
+
+  @IsOptional()
+  @IsIn(PUBLICATION_STATUSES)
+  publicationStatus?: (typeof PUBLICATION_STATUSES)[number];
 
   @IsOptional()
   @IsString()

@@ -15,18 +15,41 @@ import { MailModule } from "./common/services/mail.module";
 import { TokenBlacklistModule } from "./common/services/token-blacklist.module";
 import {
   AdminAuditLog,
+  AdminAccessReview,
+  AdminBreakGlassGrant,
+  AdminInvitation,
   AdminPermission,
   AdminRole,
   AdminUser,
+  AdminSession,
   ContactSubmission,
   NotificationCampaign,
+  FeatureFlag,
+  PlatformSetting,
+  AccountDeletionRequest,
+  PrivacyRequest,
+  PrivacyJob,
+  PrivacyEvent,
+  PlatformJob,
+  AnalyticsEvent,
   PushToken,
   Repit,
+  RepitModerationDecision,
+  RepitModerationNote,
+  RepitModerationReport,
   Spotlight,
   SupportTicketNote,
+  SupportTicketResponse,
+  SupportTicketEscalation,
+  SupportTicketResolution,
   Template,
   TemplateVersion,
   User,
+  UserOperationalNote,
+  UserRecoveryOperation,
+  UserRestriction,
+  MediaAsset,
+  MediaDerivative,
 } from "./entities";
 import { AdminModule } from "./modules/admin/admin.module";
 import { AuthModule } from "./modules/auth/auth.module";
@@ -34,7 +57,11 @@ import { ContactModule } from "./modules/contact/contact.module";
 import { HealthModule } from "./modules/health/health.module";
 import { ImagesModule } from "./modules/images/images.module";
 import { MusicModule } from "./modules/music/music.module";
+import { AnalyticsModule } from "./modules/analytics/analytics.module";
 import { NotificationsModule } from "./modules/notifications/notifications.module";
+import { PlatformModule } from "./modules/platform/platform.module";
+import { PlatformJobsModule } from "./modules/platform-jobs/platform-jobs.module";
+import { MediaProcessingModule } from "./modules/media/media-processing.module";
 import { RepitsModule } from "./modules/repits/repits.module";
 import { SpotlightModule } from "./modules/spotlight/spotlight.module";
 import { TemplatesModule } from "./modules/templates/templates.module";
@@ -58,6 +85,9 @@ import { UsersModule } from "./modules/users/users.module";
           entities: [
             User,
             Repit,
+            RepitModerationDecision,
+            RepitModerationNote,
+            RepitModerationReport,
             PushToken,
             Template,
             TemplateVersion,
@@ -67,10 +97,29 @@ import { UsersModule } from "./modules/users/users.module";
             AdminRole,
             AdminUser,
             AdminAuditLog,
+            AdminSession,
+            AdminInvitation,
+            AdminAccessReview,
+            AdminBreakGlassGrant,
             SupportTicketNote,
+            SupportTicketResponse,
+            SupportTicketEscalation,
+            SupportTicketResolution,
             NotificationCampaign,
+  FeatureFlag,
+  PlatformSetting,
+  AccountDeletionRequest,
+  PrivacyRequest,
+  PrivacyJob,
+  PrivacyEvent,
+  PlatformJob,
+  AnalyticsEvent,
+            UserOperationalNote,
+            UserRecoveryOperation,
+            UserRestriction,
+            MediaAsset,
+            MediaDerivative,
           ],
-          migrations: isProduction ? ["dist/migrations/*.js"] : ["src/migrations/*.ts"],
           synchronize: false,
           migrationsRun: false,
           logging: !isProduction,
@@ -90,7 +139,11 @@ import { UsersModule } from "./modules/users/users.module";
     TemplatesModule,
     RepitsModule,
     SpotlightModule,
+    AnalyticsModule,
     NotificationsModule,
+    PlatformModule,
+    PlatformJobsModule,
+    MediaProcessingModule,
     ContactModule,
     AdminModule,
   ],
@@ -102,7 +155,11 @@ export class AppModule implements NestModule {
 
     consumer
       .apply(AuthRateLimitMiddleware)
-      .forRoutes({ path: "auth/*", method: RequestMethod.ALL });
+      .forRoutes(
+        { path: "auth/*", method: RequestMethod.ALL },
+        { path: "admin/auth/*", method: RequestMethod.ALL },
+        { path: "admin/iam/invitations/*", method: RequestMethod.ALL },
+      );
 
     consumer
       .apply(VerifyCodeRateLimitMiddleware)

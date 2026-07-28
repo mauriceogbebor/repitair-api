@@ -5,6 +5,7 @@ import { JwtService } from "@nestjs/jwt";
 export type AdminAccessTokenPayload = {
   sub: string;
   email: string;
+  sid?: string;
   tokenType: "admin-access";
   exp?: number;
   iat?: number;

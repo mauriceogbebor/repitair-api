@@ -1,8 +1,8 @@
-import { IsOptional, IsString, MaxLength } from "class-validator";
+import { IsString, MaxLength, MinLength } from "class-validator";
 
 export class AdminArchiveRepitDto {
-  @IsOptional()
   @IsString()
+  @MinLength(3)
   @MaxLength(500)
-  reason?: string;
+  reason!: string;
 }

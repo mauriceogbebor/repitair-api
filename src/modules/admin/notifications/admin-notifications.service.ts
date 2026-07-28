@@ -2,7 +2,12 @@ import { BadRequestException, Injectable, NotFoundException } from "@nestjs/comm
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import { AdminAuditLog, NotificationCampaign, User } from "../../../entities";
+import { NotificationsService } from "../../notifications/notifications.service";
+import { AnalyticsService, ANALYTICS_EVENTS } from "../../analytics/analytics.service";
 import { AdminAuditLogsService } from "../audit-logs/admin-audit-logs.service";
+
+/** Hard cap on how many users a single campaign resolves for dispatch. */
+const MAX_CAMPAIGN_RECIPIENTS = 50_000;
 import type { AdminRequestActor, AdminRequestContext } from "../admin.types";
 import { AdminNotificationActionDto } from "./dto/admin-notification-action.dto";
 import { AdminNotificationScheduleDto } from "./dto/admin-notification-schedule.dto";
@@ -29,6 +34,8 @@ export class AdminNotificationsService {
     @InjectRepository(AdminAuditLog)
     private readonly auditLogRepository: Repository<AdminAuditLog>,
     private readonly auditLogsService: AdminAuditLogsService,
+    private readonly pushService: NotificationsService,
+    private readonly analytics: AnalyticsService,
   ) {}
 
   async listNotifications(query: AdminListNotificationsQueryDto) {
@@ -92,11 +99,16 @@ export class AdminNotificationsService {
       createdAt: notification.createdAt,
       updatedAt: notification.updatedAt,
       recipients: notification.recipientCount,
+      // Honest delivery view: figures come only from real provider evidence
+      // captured at send time. Metrics we do not instrument (open rate) are
+      // reported as null, never fabricated from recipient or click counts.
       deliverySummary: {
+        status: notification.status,
         delivered: notification.deliveredCount,
         failed: notification.failedCount,
         clicks: notification.clickCount,
-        openRate: notification.recipientCount > 0 ? Number(((notification.clickCount / notification.recipientCount) * 100).toFixed(2)) : null,
+        openRate: null,
+        provider: notification.deliverySummary ?? null,
       },
       preview: {
         title: notification.title,
@@ -176,15 +188,61 @@ export class AdminNotificationsService {
   async sendNotification(notificationId: string, dto: AdminNotificationActionDto, actor?: AdminRequestActor | null, context?: AdminRequestContext | null) {
     const notification = await this.requireNotification(notificationId);
     const beforeState = this.buildAuditSnapshot(notification);
-    notification.status = "sent";
-    notification.sentAt = new Date();
-    notification.cancelledAt = null;
-    notification.failedAt = null;
+    const processingStartedAt = new Date();
     notification.updatedByAdminUserId = actor?.id ?? null;
     notification.updatedByAdminEmail = actor?.email ?? null;
     notification.recipientCount = await this.estimateAudience(notification.audience, notification.audienceFilters ?? {});
-    notification.deliveredCount = notification.recipientCount;
-    notification.failedCount = 0;
+    notification.cancelledAt = null;
+    notification.failedAt = null;
+
+    // Only push campaigns have a wired delivery channel. In-app/announcement/etc.
+    // have no delivery infrastructure yet — report that honestly rather than
+    // claiming delivery.
+    if (notification.type !== "push") {
+      notification.status = "delivery_unavailable";
+      notification.deliveredCount = 0;
+      notification.failedCount = 0;
+      notification.deliverySummary = {
+        channel: notification.type,
+        channelAvailable: false,
+        reason: "Delivery infrastructure unavailable for this channel (only push is implemented).",
+        processedAt: processingStartedAt.toISOString(),
+      };
+    } else {
+      const userIds = await this.resolveAudienceUserIds(notification.audience, notification.audienceFilters ?? {});
+      const dispatch = await this.pushService.sendCampaign(userIds, {
+        title: notification.title,
+        body: notification.message,
+        data: notification.deepLink ? { deepLink: notification.deepLink } : undefined,
+      });
+
+      notification.sentAt = new Date();
+      notification.deliveredCount = dispatch.accepted;
+      notification.failedCount = dispatch.rejected;
+      notification.deliverySummary = {
+        channel: "push",
+        channelAvailable: dispatch.channelAvailable,
+        targetedUsers: userIds.length,
+        tokenCount: dispatch.tokenCount,
+        successfulDeliveries: dispatch.accepted,
+        failedDeliveries: dispatch.rejected,
+        providerErrors: dispatch.errors.slice(0, 20),
+        processingStartedAt: processingStartedAt.toISOString(),
+        processedAt: notification.sentAt.toISOString(),
+      };
+
+      if (dispatch.tokenCount === 0) {
+        // Provider was reachable but nobody in the audience has a device token.
+        notification.status = "delivery_unavailable";
+      } else if (dispatch.accepted === 0) {
+        notification.status = "failed";
+        notification.failedAt = notification.sentAt;
+      } else if (dispatch.rejected > 0) {
+        notification.status = "partially_delivered";
+      } else {
+        notification.status = "delivered";
+      }
+    }
     const saved = await this.notificationRepository.save(notification);
     await this.auditLogsService.append({
       action: "admin.notifications.sent",
@@ -196,6 +254,16 @@ export class AdminNotificationsService {
       afterState: this.buildAuditSnapshot(saved),
       metadata: dto.note?.trim() ? { note: dto.note.trim() } : null,
     });
+    // Honest analytics: record the send attempt, and a delivery event ONLY when
+    // the provider actually accepted at least one message.
+    await this.analytics.track(ANALYTICS_EVENTS.NOTIFICATION_SENT, {
+      properties: { notificationId: saved.id, status: saved.status, channel: saved.type },
+    });
+    if (saved.deliveredCount > 0) {
+      await this.analytics.track(ANALYTICS_EVENTS.NOTIFICATION_DELIVERED, {
+        properties: { notificationId: saved.id, delivered: saved.deliveredCount, failed: saved.failedCount },
+      });
+    }
     return this.getNotificationDetail(saved.id);
   }
 
@@ -363,6 +431,31 @@ export class AdminNotificationsService {
       failedCount: notification.failedCount,
       updatedAt: notification.updatedAt,
     };
+  }
+
+  /**
+   * Resolve an audience definition to concrete user IDs for real dispatch.
+   * Mirrors estimateAudience's predicates but returns IDs (capped) instead of a
+   * count, so delivery is driven by real recipients rather than an estimate.
+   */
+  private async resolveAudienceUserIds(audience: string, filters: Record<string, unknown>): Promise<string[]> {
+    if (audience === "specific_users") {
+      return Array.isArray(filters.userIds)
+        ? (filters.userIds as unknown[]).filter((id): id is string => typeof id === "string").slice(0, MAX_CAMPAIGN_RECIPIENTS)
+        : [];
+    }
+    const qb = this.userRepository.createQueryBuilder("user").select("user.id", "id").limit(MAX_CAMPAIGN_RECIPIENTS);
+    const threshold = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    if (audience === "active_users") {
+      qb.where("user.lastLoginAt >= :threshold", { threshold });
+    } else if (audience === "inactive_users") {
+      qb.where("user.lastLoginAt IS NULL OR user.lastLoginAt < :threshold", { threshold });
+    } else if (audience === "platform") {
+      const platform = typeof filters.platform === "string" ? filters.platform : "";
+      if (platform) qb.where(":platform = ANY(user.connectedPlatforms)", { platform });
+    }
+    const rows = await qb.getRawMany<{ id: string }>();
+    return rows.map((row) => row.id);
   }
 
   private async estimateAudience(audience: string, filters: Record<string, unknown>) {

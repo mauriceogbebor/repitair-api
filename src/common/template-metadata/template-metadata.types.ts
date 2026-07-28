@@ -48,6 +48,12 @@ export type TemplateCapabilities = {
   supportsDecorativeLayers?: boolean;
   supportsCrop?: boolean;
   maxPhotos?: number;
+  /**
+   * Declares that this template needs an isolated subject (transparent PNG) from
+   * the AI Media Processing Pipeline. Templates NEVER implement removal logic —
+   * they declare this and consume the processed derivative the backend selects.
+   */
+  requiresBackgroundRemoval?: boolean;
 };
 
 /* ── Template Design Tokens ─────────────────────────────────────── */

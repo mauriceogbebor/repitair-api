@@ -1,11 +1,13 @@
-import { IsOptional, IsString } from "class-validator";
+import { IsIn, IsOptional, IsString, IsUUID, MaxLength, MinLength, ValidateIf } from "class-validator";
 
 export class AdminAssignSupportTicketDto {
-  @IsOptional()
-  @IsString()
+  @IsIn(["assign", "claim", "release"] as const)
+  action!: "assign" | "claim" | "release";
+
+  @ValidateIf((dto: AdminAssignSupportTicketDto) => dto.action === "assign")
+  @IsUUID()
   adminUserId?: string;
 
-  @IsOptional()
-  @IsString()
-  adminEmail?: string;
+  @IsOptional() @IsString() @MinLength(3) @MaxLength(500)
+  reason?: string;
 }

@@ -56,5 +56,9 @@ describe("AdminSearchService", () => {
     });
 
     expect(result.groups.map((group) => group.entityType)).toEqual(["users", "repits"]);
+    expect(userRepository.createQueryBuilder.mock.results[0].value.where).toHaveBeenCalledWith(
+      expect.stringContaining('CAST("user"."id" AS text)'),
+      { search: "%rep%" },
+    );
   });
 });

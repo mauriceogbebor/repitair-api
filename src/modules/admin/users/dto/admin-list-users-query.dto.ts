@@ -4,6 +4,8 @@ import { IsIn, IsInt, IsOptional, IsString, Max, Min } from "class-validator";
 const USER_SORT_FIELDS = ["createdAt", "fullName", "email", "lastLoginAt", "repitCount"] as const;
 const SORT_ORDERS = ["asc", "desc"] as const;
 const USER_STATUSES = ["active", "suspended"] as const;
+const VERIFICATION_STATUSES = ["verified", "unverified"] as const;
+const RESTRICTION_STATUSES = ["active", "none"] as const;
 
 export class AdminListUsersQueryDto {
   @IsOptional()
@@ -13,6 +15,14 @@ export class AdminListUsersQueryDto {
   @IsOptional()
   @IsIn(USER_STATUSES)
   status?: (typeof USER_STATUSES)[number];
+
+  @IsOptional()
+  @IsIn(VERIFICATION_STATUSES)
+  verification?: (typeof VERIFICATION_STATUSES)[number];
+
+  @IsOptional()
+  @IsIn(RESTRICTION_STATUSES)
+  restriction?: (typeof RESTRICTION_STATUSES)[number];
 
   @IsOptional()
   @IsString()
