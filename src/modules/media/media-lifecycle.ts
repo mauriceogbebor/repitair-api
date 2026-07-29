@@ -7,7 +7,8 @@ export const MEDIA_TRANSITIONS: Record<MediaProcessingStatus, MediaProcessingSta
   processing: ["completed", "failed"],
   failed: ["retry_required", "cancelled"],
   retry_required: ["queued", "cancelled"],
-  completed: [],
+  // A completed row whose derivative object has disappeared is recoverable.
+  completed: ["retry_required"],
   cancelled: [],
 };
 

@@ -4,6 +4,8 @@ import { TypeOrmModule } from "@nestjs/typeorm";
 import { AnalyticsEvent } from "../../entities/analytics-event.entity";
 import { MediaAsset } from "../../entities/media-asset.entity";
 import { MediaDerivative } from "../../entities/media-derivative.entity";
+import { Template } from "../../entities/template.entity";
+import { Repit } from "../../entities/repit.entity";
 import { PlatformJobsModule } from "../platform-jobs/platform-jobs.module";
 import { UploadsModule } from "../uploads/uploads.module";
 import { BackgroundRemovalService } from "./background-removal.service";
@@ -22,7 +24,7 @@ import { BACKGROUND_REMOVAL_PROVIDER, createBackgroundRemovalProvider } from "./
  * request. The background-removal provider is selected by configuration.
  */
 @Module({
-  imports: [TypeOrmModule.forFeature([MediaAsset, MediaDerivative, AnalyticsEvent]), UploadsModule, PlatformJobsModule],
+  imports: [TypeOrmModule.forFeature([MediaAsset, MediaDerivative, AnalyticsEvent, Template, Repit]), UploadsModule, PlatformJobsModule],
   controllers: [MediaController],
   providers: [
     MediaProcessorRegistry,

@@ -26,6 +26,14 @@ export class MediaDerivative {
 
   @Column({ type: "uuid" }) assetId!: string;
 
+  /**
+   * sha256 of the SOURCE image this derivative was produced from. Combined with
+   * the version key it makes the cache content-addressed: identical source bytes
+   * processed at the same versions reuse the stored output with no new provider
+   * call, even across different assets/users.
+   */
+  @Column({ type: "varchar", nullable: true }) @Index() sourceChecksum?: string | null;
+
   @Column({ type: "varchar" }) kind!: MediaDerivativeKind;
 
   @Column({ type: "varchar" }) key!: string;

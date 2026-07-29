@@ -7,6 +7,7 @@ import { MediaAsset, MediaProcessingStatus } from "../../entities/media-asset.en
 import { MediaDerivative, MediaDerivativeKind } from "../../entities/media-derivative.entity";
 import { canTransitionMedia } from "./media-lifecycle";
 import { MediaStorageGateway } from "./media-storage.gateway";
+import { validateOriginalBytes } from "./media-image-validation";
 
 const ALLOWED_MIME = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"];
 const MAX_BYTES = 10 * 1024 * 1024;
@@ -14,8 +15,8 @@ const MAX_DIMENSION = 8000;
 
 export interface RegisterAssetInput {
   ownerUserId?: string | null;
+  /** Server-owned storage key (issued by the uploads endpoint). No client URL. */
   originalKey: string;
-  originalUrl: string;
   mimeType: string;
   width?: number | null;
   height?: number | null;
@@ -40,23 +41,28 @@ export class MediaAssetService {
   }
 
   /**
-   * Register an already-uploaded image as a processable asset. Reads the bytes
-   * once (cheap, non-AI) to compute the checksum that powers "process once"
-   * caching; the original is never modified.
+   * Register an already-uploaded image as a processable asset. The original is
+   * read BY ITS SERVER-OWNED KEY (never a client URL — this is the SSRF-safe
+   * path) which also confirms the object exists. The bytes are validated for
+   * real (magic bytes, dimensions, decompression-bomb ceiling), the checksum is
+   * computed for content-addressed caching, and the URL is derived server-side.
    */
   async registerFromUpload(input: RegisterAssetInput): Promise<MediaAsset> {
-    MediaAssetService.validateUpload(input);
-    const bytes = await this.storage.readBytes(input.originalUrl);
+    // Read the original by key. Throws NotFound if the upload does not exist.
+    const bytes = await this.storage.readByKey(input.originalKey);
     if (bytes.length > MAX_BYTES) throw new BadRequestException(`Image exceeds the ${MAX_BYTES / 1024 / 1024}MB limit`);
+    // Validate the ACTUAL bytes — not client-declared metadata.
+    const info = validateOriginalBytes(bytes, input.mimeType);
     const checksum = createHash("sha256").update(bytes).digest("hex");
     const asset = await this.assets.save(this.assets.create({
       ownerUserId: input.ownerUserId ?? null,
       originalKey: input.originalKey,
-      originalUrl: input.originalUrl,
-      mimeType: input.mimeType,
-      width: input.width ?? null,
-      height: input.height ?? null,
-      bytes: input.bytes ?? bytes.length,
+      // URL is derived from the trusted key, never accepted from the client.
+      originalUrl: this.storage.urlForKey(input.originalKey),
+      mimeType: info.mime,
+      width: info.width ?? input.width ?? null,
+      height: info.height ?? input.height ?? null,
+      bytes: bytes.length,
       checksum,
       processingStatus: "uploaded",
     }));
@@ -90,8 +96,22 @@ export class MediaAssetService {
     return this.derivatives.findOne({ where: { assetId, kind, providerVersion } });
   }
 
+  /**
+   * Content-addressed reuse: find ANY completed derivative produced from the same
+   * source bytes (checksum) at the same version key. This lets identical uploads
+   * — even from different assets/users — reuse the stored output with no new
+   * provider call. Returns the most recent match.
+   */
+  async findByContent(sourceChecksum: string, kind: MediaDerivativeKind, providerVersion: string): Promise<MediaDerivative | null> {
+    return this.derivatives.findOne({ where: { sourceChecksum, kind, providerVersion }, order: { createdAt: "DESC" } });
+  }
+
   saveDerivative(input: Partial<MediaDerivative>): Promise<MediaDerivative> {
     return this.derivatives.save(this.derivatives.create(input));
+  }
+
+  async removeDerivative(id: string): Promise<void> {
+    await this.derivatives.delete({ id });
   }
 
   listDerivatives(assetId: string): Promise<MediaDerivative[]> {

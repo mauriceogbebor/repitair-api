@@ -1,10 +1,16 @@
-import { ConflictException, ForbiddenException, Injectable, ServiceUnavailableException } from "@nestjs/common";
+import { ConflictException, ForbiddenException, Injectable, NotFoundException, ServiceUnavailableException } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
+import { DataSource, Repository } from "typeorm";
 import { MediaAsset } from "../../entities/media-asset.entity";
+import { MediaDerivative } from "../../entities/media-derivative.entity";
+import { Template } from "../../entities/template.entity";
+import { Repit } from "../../entities/repit.entity";
 import { PlatformJobsService } from "../platform-jobs/platform-jobs.service";
 import { MediaAssetService, RegisterAssetInput } from "./media-asset.service";
-import { isReprocessable } from "./media-lifecycle";
+import { canTransitionMedia, isReprocessable } from "./media-lifecycle";
+import { MediaStorageGateway } from "./media-storage.gateway";
+import { BackgroundRemovalService } from "./background-removal.service";
+import { templateRequiresBackgroundRemoval } from "./template-media-capability";
 
 export const MEDIA_BACKGROUND_REMOVE_JOB = "media.background_remove";
 
@@ -19,12 +25,19 @@ export class MediaProcessingService {
     private readonly assetService: MediaAssetService,
     private readonly platformJobs: PlatformJobsService,
     @InjectRepository(MediaAsset) private readonly assets: Repository<MediaAsset>,
+    @InjectRepository(Template) private readonly templates: Repository<Template>,
+    @InjectRepository(Repit) private readonly repits: Repository<Repit>,
+    private readonly storage: MediaStorageGateway,
+    private readonly backgroundRemoval: BackgroundRemovalService,
+    private readonly dataSource: DataSource,
   ) {}
 
   /** Ownership guard for consumer routes — an asset is only visible to its owner. */
   async assertOwnership(assetId: string, userId: string) {
     const asset = await this.assetService.requireAsset(assetId);
-    if (asset.ownerUserId && asset.ownerUserId !== userId) throw new ForbiddenException("You do not have access to this media asset");
+    if (!asset.ownerUserId || asset.ownerUserId !== userId) {
+      throw new ForbiddenException("You do not have access to this media asset");
+    }
     return asset;
   }
 
@@ -33,36 +46,77 @@ export class MediaProcessingService {
     return this.status(asset.id);
   }
 
-  /** Move the asset to `queued` and enqueue the background-removal job. */
-  async enqueueProcessing(assetId: string) {
-    const asset = await this.assetService.requireAsset(assetId);
-    if (!isReprocessable(asset.processingStatus)) {
-      if (asset.processingStatus === "completed") return this.status(assetId);
-      throw new ConflictException(`Media is ${asset.processingStatus} and cannot be (re)queued`);
+  async linkRepit(assetId: string, repitId: string, templateId: string, userId: string) {
+    const repit = await this.repits.findOne({ where: { id: repitId, userId, templateId } });
+    if (!repit) throw new NotFoundException("Repit not found");
+    if (repit.editorState?.mediaAssetId !== assetId) {
+      throw new ConflictException("Repit media does not match this asset");
     }
-    // uploaded → queued, or failed → retry_required → queued.
-    if (asset.processingStatus === "failed") await this.assetService.setStatus(assetId, "retry_required");
-    await this.assetService.setStatus(assetId, "queued", { lastError: null, processingStartedAt: null });
+    const job = await this.platformJobs.attachMediaCorrelation(assetId, { repitId, templateId });
+    await this.assetService.emit("media.repit_linked", {
+      assetId,
+      templateId,
+      repitId,
+      jobId: job?.id ?? null,
+    });
+    return { linked: true, assetId, templateId, repitId, jobId: job?.id ?? null };
+  }
 
-    const current = await this.assetService.requireAsset(assetId);
-    try {
-      await this.platformJobs.enqueue({
+  /**
+   * Atomically transition the asset to `queued` AND enqueue the job in ONE
+   * database transaction (P1-01). The asset row is locked (pessimistic write) so
+   * concurrent process requests serialise; the status change and the job insert
+   * commit together, so there is never a queued asset without a job or a job
+   * without a queued asset. Any failure rolls the whole thing back.
+   */
+  async enqueueProcessing(
+    assetId: string,
+    options: { templateId?: string; incrementRetry?: boolean } = {},
+  ) {
+    let jobId: string | null = null;
+    await this.dataSource.transaction(async (manager) => {
+      const repo = manager.getRepository(MediaAsset);
+      const asset = await repo.findOne({ where: { id: assetId }, lock: { mode: "pessimistic_write" } });
+      if (!asset) throw new ConflictException("Media asset not found");
+
+      if (!isReprocessable(asset.processingStatus)) {
+        // Completed → nothing to do (idempotent). Anything else in-flight → conflict.
+        if (asset.processingStatus === "completed") return;
+        throw new ConflictException(`Media is ${asset.processingStatus} and cannot be (re)queued`);
+      }
+
+      // uploaded → queued, or failed → retry_required → queued (validated transitions).
+      if (asset.processingStatus === "failed") {
+        if (!canTransitionMedia(asset.processingStatus, "retry_required")) throw new ConflictException("Illegal media transition");
+        asset.processingStatus = "retry_required";
+      }
+      if (!canTransitionMedia(asset.processingStatus, "queued")) throw new ConflictException(`Cannot queue media from ${asset.processingStatus}`);
+      if (options.incrementRetry) asset.retryCount += 1;
+      asset.processingStatus = "queued";
+      asset.lastError = null;
+      asset.processingStartedAt = null;
+      await repo.save(asset);
+
+      // Durable handoff inside the same transaction — rollback removes both.
+      const job = await this.platformJobs.enqueueWithManager(manager, {
         type: MEDIA_BACKGROUND_REMOVE_JOB,
         payload: { assetId },
-        idempotencyKey: `${MEDIA_BACKGROUND_REMOVE_JOB}:${assetId}:${current.retryCount}`,
-        metadata: { assetId },
+        idempotencyKey: `${MEDIA_BACKGROUND_REMOVE_JOB}:${assetId}:${asset.retryCount}`,
+        correlationId: options.templateId ? `template:${options.templateId}:asset:${assetId}` : `asset:${assetId}`,
+        metadata: { assetId, templateId: options.templateId ?? null },
       });
-    } catch {
-      await this.assets.update({ id: assetId }, { processingStatus: "failed", lastError: "Failed to enqueue processing job" });
+      jobId = job.id;
+    }).catch((err) => {
+      if (err instanceof ConflictException) throw err;
       throw new ServiceUnavailableException("Media processing is temporarily unavailable — the asset was not queued and can be retried.");
-    }
-    return this.status(assetId);
+    });
+    return { ...(await this.status(assetId)), jobId };
   }
 
   async retry(assetId: string) {
-    await this.assets.increment({ id: assetId }, "retryCount", 1);
-    await this.assetService.emit("media.retry", { assetId });
-    return this.enqueueProcessing(assetId);
+    const result = await this.enqueueProcessing(assetId, { incrementRetry: true });
+    await this.assetService.emit("media.retry", { assetId, jobId: result.jobId });
+    return result;
   }
 
   /**
@@ -71,24 +125,28 @@ export class MediaProcessingService {
    * fresh one when it has been bumped — never destroying the prior output.
    */
   async regenerate(assetId: string) {
-    const asset = await this.assetService.requireAsset(assetId);
-    if (asset.processingStatus === "processing" || asset.processingStatus === "queued") {
-      throw new ConflictException("Media is already being processed");
-    }
-    // Forced re-queue (bypasses the normal terminal-state guard) for regeneration.
-    await this.assets.update({ id: assetId }, { processingStatus: "queued", lastError: null, processingStartedAt: null });
-    const current = await this.assetService.requireAsset(assetId);
-    try {
-      await this.platformJobs.enqueue({
+    await this.dataSource.transaction(async (manager) => {
+      const repo = manager.getRepository(MediaAsset);
+      const asset = await repo.findOne({ where: { id: assetId }, lock: { mode: "pessimistic_write" } });
+      if (!asset) throw new ConflictException("Media asset not found");
+      if (asset.processingStatus === "processing" || asset.processingStatus === "queued") {
+        throw new ConflictException("Media is already being processed");
+      }
+      // Forced re-queue (bypasses the terminal-state guard) for regeneration.
+      asset.processingStatus = "queued";
+      asset.lastError = null;
+      asset.processingStartedAt = null;
+      await repo.save(asset);
+      await this.platformJobs.enqueueWithManager(manager, {
         type: MEDIA_BACKGROUND_REMOVE_JOB,
         payload: { assetId },
-        idempotencyKey: `${MEDIA_BACKGROUND_REMOVE_JOB}:regen:${assetId}:${current.retryCount}:${Date.now()}`,
+        idempotencyKey: `${MEDIA_BACKGROUND_REMOVE_JOB}:regen:${assetId}:${asset.retryCount}:${Date.now()}`,
         metadata: { assetId, regenerate: true },
       });
-    } catch {
-      await this.assets.update({ id: assetId }, { processingStatus: "failed", lastError: "Failed to enqueue regeneration job" });
+    }).catch((err) => {
+      if (err instanceof ConflictException) throw err;
       throw new ServiceUnavailableException("Media processing is temporarily unavailable — regeneration was not queued.");
-    }
+    });
     await this.assetService.emit("media.regenerated", { assetId });
     return this.status(assetId);
   }
@@ -102,23 +160,137 @@ export class MediaProcessingService {
    * It NEVER silently substitutes the original for a template that requires
    * isolation, and never reports `ready` while the AI step is unfinished.
    */
-  async resolveTemplateImage(assetId: string, requiresBackgroundRemoval: boolean, options: { autoStart?: boolean } = {}) {
+  async resolveTemplateImage(
+    assetId: string,
+    templateId: string,
+    options: { autoStart?: boolean; retryFailed?: boolean } = {},
+  ) {
+    const template = await this.templates.findOne({
+      where: { id: templateId, status: "published", isActive: true },
+    });
+    if (!template) throw new NotFoundException("Published template not found");
+
+    const requiresBackgroundRemoval = templateRequiresBackgroundRemoval(template.capabilities);
     const asset = await this.assetService.requireAsset(assetId);
     if (!requiresBackgroundRemoval) {
-      return { assetId, image: asset.originalUrl, source: "original" as const, ready: true, processingStatus: asset.processingStatus, error: null };
+      const response = {
+        status: "ready" as const,
+        requiresBackgroundRemoval: false,
+        imageSource: "original" as const,
+        imageUrl: asset.originalUrl,
+        assetId,
+        jobId: null,
+        processingStatus: asset.processingStatus,
+        statusUrl: `/media/assets/${assetId}`,
+      };
+      await this.assetService.emit("media.template_resolved", {
+        assetId, templateId, requiresBackgroundRemoval: false, imageSource: "original", status: "ready",
+      });
+      return response;
     }
 
-    const transparent = await this.assetService.findDerivative(asset.id, "transparent_png");
+    let current = asset;
+    let recoveredMissingDerivative = false;
+    let transparent = await this.assetService.findReusableDerivative(
+      asset.id,
+      "transparent_png",
+      this.backgroundRemoval.compatibilityVersion,
+    );
     if (asset.processingStatus === "completed" && transparent) {
-      return { assetId, image: transparent.url, source: "derivative" as const, ready: true, processingStatus: asset.processingStatus, error: null };
+      const derivativeExists = await this.storage.objectExists(transparent.key);
+      if (derivativeExists) {
+        const latestJob = await this.platformJobs.findLatestForMediaAsset(assetId);
+        const response = {
+          status: "ready" as const,
+          requiresBackgroundRemoval: true,
+          imageSource: "derivative" as const,
+          imageUrl: transparent.url,
+          assetId,
+          jobId: latestJob?.id ?? null,
+          processingStatus: asset.processingStatus,
+          statusUrl: `/media/assets/${assetId}`,
+        };
+        await this.assetService.emit("media.template_resolved", {
+          assetId, templateId, requiresBackgroundRemoval: true, imageSource: "derivative", status: "ready",
+          jobId: response.jobId,
+        });
+        return response;
+      }
+
+      // A DB row without its object is not ready. Remove the stale provenance
+      // row and move the asset into the ordinary retry path before re-queuing.
+      await this.dataSource.transaction(async (manager) => {
+        const repo = manager.getRepository(MediaAsset);
+        const locked = await repo.findOne({ where: { id: assetId }, lock: { mode: "pessimistic_write" } });
+        if (!locked) throw new NotFoundException("Media asset not found");
+        await manager.getRepository(MediaDerivative).delete({ id: transparent!.id, assetId });
+        if (locked.processingStatus === "completed") {
+          locked.processingStatus = "retry_required";
+          locked.lastError = "Processed media is being regenerated";
+          await repo.save(locked);
+        }
+      });
+      transparent = null;
+      current = await this.assetService.requireAsset(assetId);
+      recoveredMissingDerivative = true;
+    }
+
+    // Preserve older outputs for provenance, but never treat an incompatible
+    // provider/pipeline version as ready for a required-isolation template.
+    if (asset.processingStatus === "completed" && !transparent && !recoveredMissingDerivative) {
+      await this.dataSource.transaction(async (manager) => {
+        const repo = manager.getRepository(MediaAsset);
+        const locked = await repo.findOne({ where: { id: assetId }, lock: { mode: "pessimistic_write" } });
+        if (!locked) throw new NotFoundException("Media asset not found");
+        if (locked.processingStatus === "completed") {
+          locked.processingStatus = "retry_required";
+          locked.lastError = "Processed media is being updated";
+          await repo.save(locked);
+        }
+      });
+      current = await this.assetService.requireAsset(assetId);
+      recoveredMissingDerivative = true;
     }
 
     // Required but not ready: auto-start when idle, and report pending — never the original.
-    if ((options.autoStart ?? true) && isReprocessable(asset.processingStatus)) {
-      await this.enqueueProcessing(assetId).catch(() => undefined);
+    let jobId: string | null = null;
+    const canAutoStart = current.processingStatus === "uploaded"
+      || recoveredMissingDerivative
+      || (options.retryFailed === true && isReprocessable(current.processingStatus));
+    if ((options.autoStart ?? true) && canAutoStart) {
+      try {
+        const queued = await this.enqueueProcessing(assetId, {
+          templateId,
+          incrementRetry: current.processingStatus !== "uploaded",
+        });
+        jobId = queued.jobId;
+      } catch (error) {
+        // Concurrent resolves serialize on the asset lock. If another request
+        // already queued it, return that authoritative state instead of a 409.
+        if (!(error instanceof ConflictException)) throw error;
+      }
     }
     const refreshed = await this.assetService.requireAsset(assetId);
-    return { assetId, image: null, source: "pending" as const, ready: false, processingStatus: refreshed.processingStatus, error: refreshed.lastError ?? null };
+    const latestJob = jobId ? null : await this.platformJobs.findLatestForMediaAsset(assetId);
+    jobId ??= latestJob?.id ?? null;
+    const failed = ["failed", "retry_required", "cancelled"].includes(refreshed.processingStatus);
+    const response = {
+      status: failed ? "failed" as const : "processing" as const,
+      requiresBackgroundRemoval: true,
+      imageSource: "pending" as const,
+      imageUrl: null,
+      assetId,
+      jobId,
+      processingStatus: refreshed.processingStatus,
+      statusUrl: `/media/assets/${assetId}`,
+      errorCode: failed ? "SUBJECT_PREPARATION_FAILED" : null,
+      retryable: refreshed.processingStatus !== "cancelled",
+    };
+    await this.assetService.emit("media.template_resolved", {
+      assetId, templateId, requiresBackgroundRemoval: true, imageSource: "pending",
+      status: response.status, processingStatus: refreshed.processingStatus, jobId,
+    });
+    return response;
   }
 
   /**
@@ -140,6 +312,7 @@ export class MediaProcessingService {
   async detail(assetId: string) {
     const asset = await this.assetService.requireAsset(assetId);
     const derivatives = await this.assetService.listDerivatives(asset.id);
+    const latestJob = await this.platformJobs.findLatestForMediaAsset(asset.id);
     return {
       id: asset.id,
       ownerUserId: asset.ownerUserId ?? null,
@@ -151,6 +324,15 @@ export class MediaProcessingService {
       lastError: asset.lastError ?? null,
       processingStartedAt: asset.processingStartedAt ?? null,
       processingCompletedAt: asset.processingCompletedAt ?? null,
+      latestJob: latestJob ? {
+        id: latestJob.id,
+        status: latestJob.status,
+        templateId: typeof latestJob.metadata?.templateId === "string" ? latestJob.metadata.templateId : null,
+        repitId: typeof latestJob.metadata?.repitId === "string" ? latestJob.metadata.repitId : null,
+        correlationId: latestJob.correlationId ?? null,
+        attempts: latestJob.attempts,
+        createdAt: latestJob.createdAt,
+      } : null,
       derivatives: derivatives.map((d) => ({
         id: d.id, kind: d.kind, url: d.url, provider: d.provider, providerVersion: d.providerVersion,
         processorVersion: d.processorVersion, pipelineVersion: d.pipelineVersion,

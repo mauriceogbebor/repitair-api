@@ -5,6 +5,7 @@ import { MediaDerivative } from "../../entities/media-derivative.entity";
 import { MediaAssetService } from "./media-asset.service";
 import { MediaStorageGateway } from "./media-storage.gateway";
 import { MediaProcessor } from "./media-processor.registry";
+import { validateTransparentOutput } from "./media-image-validation";
 import { BACKGROUND_REMOVAL_PROVIDER, BackgroundRemovalProvider } from "./providers/background-removal.provider";
 
 /**
@@ -35,31 +36,66 @@ export class BackgroundRemovalService implements MediaProcessor {
     private readonly storage: MediaStorageGateway,
   ) {}
 
-  /** Effective version token = provider model version + pipeline version. */
-  private get versionKey(): string {
-    return `${this.provider.version}+pl${MEDIA_PIPELINE_VERSION}`;
+  /** Effective version token covers every compatibility input for this output. */
+  get compatibilityVersion(): string {
+    return `${this.provider.version}+pr${PROCESSOR_VERSION}+pl${MEDIA_PIPELINE_VERSION}+out-transparent_png`;
   }
 
   async process(asset: MediaAsset): Promise<MediaDerivative> {
-    const versionKey = this.versionKey;
+    const versionKey = this.compatibilityVersion;
 
+    // 1) Per-asset reuse (this asset already has a derivative at this version).
     const reusable = await this.assetService.findReusableDerivative(asset.id, "transparent_png", versionKey);
     if (reusable) {
-      await this.assetService.emit("media.cache_hit", {
-        assetId: asset.id, kind: "transparent_png", provider: this.provider.name,
-        providerVersion: this.provider.version, pipelineVersion: MEDIA_PIPELINE_VERSION,
-      });
-      return reusable;
+      if (await this.storage.objectExists(reusable.key)) {
+        await this.emitCacheHit(asset.id, "asset");
+        return reusable;
+      }
+      await this.assetService.removeDerivative(reusable.id);
     }
 
-    const source = await this.storage.readBytes(asset.originalUrl);
+    // 2) Content-addressed reuse: identical source bytes processed before (any
+    //    asset/user) at this version — reuse the stored output, no provider call.
+    if (asset.checksum) {
+      const contentMatch = await this.assetService.findByContent(asset.checksum, "transparent_png", versionKey);
+      if (contentMatch) {
+        if (await this.storage.objectExists(contentMatch.key)) {
+          const copy = await this.assetService.saveDerivative({
+            assetId: asset.id,
+            sourceChecksum: asset.checksum,
+            kind: "transparent_png",
+            key: contentMatch.key,
+            url: contentMatch.url,
+            mimeType: contentMatch.mimeType,
+            width: contentMatch.width ?? null,
+            height: contentMatch.height ?? null,
+            bytes: contentMatch.bytes ?? null,
+            checksum: contentMatch.checksum ?? null,
+            provider: contentMatch.provider,
+            providerVersion: versionKey,
+            processorVersion: PROCESSOR_VERSION,
+            pipelineVersion: MEDIA_PIPELINE_VERSION,
+            providerRequestId: contentMatch.providerRequestId ?? null,
+            processingDurationMs: 0,
+          });
+          await this.emitCacheHit(asset.id, "content");
+          return copy;
+        }
+        await this.assetService.removeDerivative(contentMatch.id);
+      }
+    }
+
+    // 3) Miss — call the provider, VALIDATE its output before persisting.
+    const source = await this.storage.readByKey(asset.originalKey);
     const startedAt = Date.now();
     const output = await this.provider.removeBackground({ buffer: source, mimeType: asset.mimeType });
+    validateTransparentOutput(output.buffer);
     const stored = await this.storage.storeDerivative(output.buffer, "image/png");
     const durationMs = Date.now() - startedAt;
 
     const derivative = await this.assetService.saveDerivative({
       assetId: asset.id,
+      sourceChecksum: asset.checksum ?? null,
       kind: "transparent_png",
       key: stored.key,
       url: stored.url,
@@ -83,5 +119,12 @@ export class BackgroundRemovalService implements MediaProcessor {
       creditsCharged: output.creditsCharged ?? null,
     });
     return derivative;
+  }
+
+  private emitCacheHit(assetId: string, scope: "asset" | "content"): Promise<void> {
+    return this.assetService.emit("media.cache_hit", {
+      assetId, scope, kind: "transparent_png", provider: this.provider.name,
+      providerVersion: this.provider.version, pipelineVersion: MEDIA_PIPELINE_VERSION,
+    });
   }
 }
