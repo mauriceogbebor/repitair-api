@@ -260,6 +260,26 @@ export class PlatformJobsService {
     return this.redact(await this.requireJob(id), true);
   }
 
+  /** Latest media job for operational correlation without exposing payload values. */
+  async findLatestForMediaAsset(assetId: string): Promise<PlatformJob | null> {
+    return this.jobs.createQueryBuilder("j")
+      .where("j.type = :type", { type: "media.background_remove" })
+      .andWhere("j.metadata ->> 'assetId' = :assetId", { assetId })
+      .orderBy("j.createdAt", "DESC")
+      .getOne();
+  }
+
+  async attachMediaCorrelation(
+    assetId: string,
+    correlation: { templateId: string; repitId: string },
+  ): Promise<PlatformJob | null> {
+    const job = await this.findLatestForMediaAsset(assetId);
+    if (!job) return null;
+    job.metadata = { ...(job.metadata ?? {}), ...correlation };
+    job.correlationId = `template:${correlation.templateId}:repit:${correlation.repitId}:asset:${assetId}`;
+    return this.jobs.save(job);
+  }
+
   async overview() {
     const rows = await this.jobs.find();
     const byStatus = (s: PlatformJobStatus) => rows.filter((r) => r.status === s).length;

@@ -54,6 +54,13 @@ export type TemplateCapabilities = {
    * they declare this and consume the processed derivative the backend selects.
    */
   requiresBackgroundRemoval?: boolean;
+  /**
+   * Declares that the template composition renders the photo as an isolated
+   * foreground subject over a template-owned background (not a full-bleed
+   * background). Prerequisite for requiresBackgroundRemoval — an operator cannot
+   * enable background removal on a template that does not declare it (guardrail).
+   */
+  supportsIsolatedSubject?: boolean;
 };
 
 /* ── Template Design Tokens ─────────────────────────────────────── */

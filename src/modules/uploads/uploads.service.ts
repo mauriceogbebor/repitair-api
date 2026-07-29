@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, InternalServerErrorException, Logger } from "@nestjs/common";
+import { BadRequestException, Injectable, InternalServerErrorException, Logger, NotFoundException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import * as fs from "fs";
 import * as path from "path";
@@ -172,6 +172,72 @@ export class UploadsService {
       throw new InternalServerErrorException(
         `Failed to upload file: ${(error as Error).message}`,
       );
+    }
+  }
+
+  /** Reject anything that isn't a plain, server-issued object key (uuid + ext). */
+  private assertSafeKey(key: string): string {
+    const sanitized = path.basename(key);
+    if (!key || sanitized !== key || key.includes("..") || key.includes("/") || key.includes("\\")) {
+      throw new BadRequestException("Invalid storage key");
+    }
+    return sanitized;
+  }
+
+  /**
+   * Read an already-stored object BY ITS SERVER-OWNED KEY. This is the only
+   * supported way for the platform to read originals — it never fetches an
+   * arbitrary/client-supplied URL, which eliminates the SSRF class entirely.
+   * Throws NotFound when the object does not exist (upload-existence check).
+   */
+  async readFile(key: string): Promise<Buffer> {
+    const safeKey = this.assertSafeKey(key);
+    if (this.uploadProvider === "s3") {
+      return this.readFromS3(safeKey);
+    }
+    const filepath = path.join(this.localUploadDir, safeKey);
+    if (!fs.existsSync(filepath)) {
+      throw new NotFoundException("Storage object not found");
+    }
+    return fs.promises.readFile(filepath);
+  }
+
+  /** Whether an object exists for this key (ownership/existence validation). */
+  async objectExists(key: string): Promise<boolean> {
+    try {
+      await this.readFile(key);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Reconstruct the canonical URL for a server-owned key. Used so the backend
+   * derives any URL it returns from a trusted key — never from client input.
+   * (For private buckets this is where a short-lived signed URL is minted.)
+   */
+  urlForKey(key: string): string {
+    const safeKey = this.assertSafeKey(key);
+    if (this.uploadProvider === "s3") {
+      return `https://${this.s3Bucket}.s3.${this.awsRegion}.amazonaws.com/${safeKey}`;
+    }
+    return `${this.baseUrl}/api/uploads/${safeKey}`;
+  }
+
+  private async readFromS3(key: string): Promise<Buffer> {
+    if (!this.s3Client) throw new InternalServerErrorException("S3 client not initialized");
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const s3Sdk = require("@aws-sdk/client-s3");
+    try {
+      const result = (await this.s3Client.send(new s3Sdk.GetObjectCommand({ Bucket: this.s3Bucket, Key: key }))) as {
+        Body?: { transformToByteArray?: () => Promise<Uint8Array> };
+      };
+      const body = result.Body;
+      if (!body?.transformToByteArray) throw new Error("empty S3 body");
+      return Buffer.from(await body.transformToByteArray());
+    } catch (error) {
+      throw new NotFoundException(`Storage object not found: ${(error as Error).message}`);
     }
   }
 

@@ -10,20 +10,23 @@ export function templateRequiresBackgroundRemoval(capabilities?: TemplateCapabil
   return Boolean(capabilities?.requiresBackgroundRemoval);
 }
 
+/** Does the composition declare an isolated foreground-subject treatment? */
+export function templateSupportsIsolatedSubject(capabilities?: TemplateCapabilities | null): boolean {
+  return Boolean(capabilities?.supportsIsolatedSubject);
+}
+
 /**
- * Reference classification of current templates (Workstream 18). Future templates
- * declare `requiresBackgroundRemoval` in their capabilities instead of embedding
- * processing logic; this map documents the V1 rollout intent.
+ * The isolation-capability invariant: a template may only require background
+ * removal if its composition declares it renders an isolated subject. This is
+ * the guardrail that prevents an operator enabling AI processing on a full-bleed
+ * template (which would incur provider cost with no design benefit). Returns an
+ * error message when inconsistent, or null when valid.
  */
-export const TEMPLATE_BACKGROUND_REMOVAL_CLASSIFICATION: Record<string, boolean> = {
-  "matcha-mood": false,
-  "echo-room": false,
-  "midnight-mood": false,
-  "air-wave": false,
-  "ice-girl": false,
-  "pink-replay": false,
-  // Future subject-isolation templates (declare true when introduced):
-  "floating-subject": true,
-  "split-portrait": true,
-  "layered-collage": true,
-};
+export function isolationCapabilityError(capabilities?: TemplateCapabilities | null): string | null {
+  const requires = templateRequiresBackgroundRemoval(capabilities);
+  const supports = templateSupportsIsolatedSubject(capabilities);
+  if (requires && !supports) {
+    return "requiresBackgroundRemoval can only be enabled when the composition declares supportsIsolatedSubject: true (an isolated foreground-subject composition). Certify the composition first.";
+  }
+  return null;
+}

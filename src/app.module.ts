@@ -55,7 +55,6 @@ import { AdminModule } from "./modules/admin/admin.module";
 import { AuthModule } from "./modules/auth/auth.module";
 import { ContactModule } from "./modules/contact/contact.module";
 import { HealthModule } from "./modules/health/health.module";
-import { ImagesModule } from "./modules/images/images.module";
 import { MusicModule } from "./modules/music/music.module";
 import { AnalyticsModule } from "./modules/analytics/analytics.module";
 import { NotificationsModule } from "./modules/notifications/notifications.module";
@@ -134,7 +133,6 @@ import { UsersModule } from "./modules/users/users.module";
     AuthModule,
     UsersModule,
     UploadsModule,
-    ImagesModule,
     MusicModule,
     TemplatesModule,
     RepitsModule,

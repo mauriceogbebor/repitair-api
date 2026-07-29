@@ -15,6 +15,8 @@ import { AdminTemplateActionDto } from "./dto/admin-template-action.dto";
 import { AdminTemplateRollbackDto } from "./dto/admin-template-rollback.dto";
 import { AdminUpdateTemplateDto } from "./dto/admin-update-template.dto";
 import { AdminUpsertTemplateDto } from "./dto/admin-upsert-template.dto";
+import { isolationCapabilityError } from "../../media/template-media-capability";
+import type { TemplateCapabilities } from "../../../common/template-metadata/template-metadata.types";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
@@ -33,6 +35,16 @@ export class AdminTemplatesService {
     private readonly repitRepository: Repository<Repit>,
     private readonly auditLogsService: AdminAuditLogsService,
   ) {}
+
+  /**
+   * Guardrail: a template may only require background removal if its composition
+   * declares an isolated-subject treatment. Prevents enabling AI processing on a
+   * full-bleed template (provider cost with no design benefit).
+   */
+  private assertIsolationConsistent(capabilities?: TemplateCapabilities | null): void {
+    const error = isolationCapabilityError(capabilities);
+    if (error) throw new BadRequestException(error);
+  }
 
   async listTemplates(query: AdminListTemplatesQueryDto) {
     const page = Math.max(query.page ?? 1, 1);
@@ -144,6 +156,7 @@ export class AdminTemplatesService {
       lastChangeSummary: dto.changeSummary ?? "Initial template creation",
     });
 
+    this.assertIsolationConsistent(template.capabilities);
     const saved = await this.templateRepository.save(template);
     await this.appendVersion(saved, "created", dto.changeSummary ?? "Initial template creation", actor);
     await this.auditLogsService.append({
@@ -198,6 +211,7 @@ export class AdminTemplatesService {
       lastChangeSummary: dto.changeSummary ?? "Template updated",
     });
 
+    this.assertIsolationConsistent(template.capabilities);
     const saved = await this.templateRepository.save(template);
     await this.appendVersion(saved, "updated", dto.changeSummary ?? "Template updated", actor);
     await this.auditLogsService.append({
@@ -216,6 +230,8 @@ export class AdminTemplatesService {
 
   async publishTemplate(templateId: string, dto: AdminTemplateActionDto, actor?: AdminRequestActor | null, context?: AdminRequestContext | null) {
     const template = await this.requireTemplate(templateId);
+    // A template cannot be PUBLISHED into an inconsistent isolation state either.
+    this.assertIsolationConsistent(template.capabilities);
     const beforeState = this.buildTemplateAuditSnapshot(template);
     template.status = "published";
     template.publishedAt = new Date();

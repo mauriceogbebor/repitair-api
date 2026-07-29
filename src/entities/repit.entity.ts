@@ -27,6 +27,12 @@ type RepitEditorState = {
   showDay?: boolean;
   customDate?: string | null;
   customTime?: string | null;
+  mediaAssetId?: string | null;
+  mediaOriginalPhotoUrl?: string | null;
+  processedPhotoUri?: string | null;
+  mediaProcessingStatus?: string | null;
+  mediaProcessingJobId?: string | null;
+  requiresBackgroundRemoval?: boolean;
   compositionEffects?: Record<string, unknown> | null;
   playerTransform?: RepitWidgetTransform | null;
   dateTimeTransform?: RepitWidgetTransform | null;
