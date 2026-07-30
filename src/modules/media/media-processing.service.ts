@@ -1,4 +1,4 @@
-import { ConflictException, ForbiddenException, Injectable, NotFoundException, ServiceUnavailableException } from "@nestjs/common";
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, ServiceUnavailableException } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { DataSource, Repository } from "typeorm";
 import { MediaAsset } from "../../entities/media-asset.entity";
@@ -10,9 +10,24 @@ import { MediaAssetService, RegisterAssetInput } from "./media-asset.service";
 import { canTransitionMedia, isReprocessable } from "./media-lifecycle";
 import { MediaStorageGateway } from "./media-storage.gateway";
 import { BackgroundRemovalService } from "./background-removal.service";
-import { templateRequiresBackgroundRemoval } from "./template-media-capability";
+import { isolationCapabilityError, templateRequiresBackgroundRemoval } from "./template-media-capability";
 
 export const MEDIA_BACKGROUND_REMOVE_JOB = "media.background_remove";
+export const REQUIRED_ISOLATION_SAVE_MESSAGE =
+  "This template requires a completed isolated-subject image before the Repit can be saved.";
+
+export type RequiredIsolationBinding = {
+  assetId: string;
+  derivativeUrl: string;
+};
+
+type RequiredIsolationSaveInput = {
+  userId: string;
+  template: Template;
+  editorState?: Record<string, unknown> | null;
+  composition?: Repit["composition"] | null;
+  backgroundPhotoUrl?: string | null;
+};
 
 /**
  * Public entry point for the media pipeline. Enqueuing NEVER runs AI work in the
@@ -60,6 +75,59 @@ export class MediaProcessingService {
       jobId: job?.id ?? null,
     });
     return { linked: true, assetId, templateId, repitId, jobId: job?.id ?? null };
+  }
+
+  /**
+   * Server-side save boundary for required-isolation templates. A client URI or
+   * capability boolean is never sufficient: ownership, lifecycle, compatible
+   * provenance, storage availability, and canonical composition use must agree.
+   */
+  async assertRequiredIsolationReady(
+    input: RequiredIsolationSaveInput,
+  ): Promise<RequiredIsolationBinding | null> {
+    if (!templateRequiresBackgroundRemoval(input.template.capabilities)) return null;
+    if (isolationCapabilityError(input.template.capabilities)) {
+      throw new ConflictException("Template isolation capability is inconsistent");
+    }
+
+    const assetId = typeof input.editorState?.mediaAssetId === "string"
+      ? input.editorState.mediaAssetId.trim()
+      : "";
+    if (!assetId) throw new BadRequestException(REQUIRED_ISOLATION_SAVE_MESSAGE);
+
+    const asset = await this.assertOwnership(assetId, input.userId);
+    if (asset.processingStatus !== "completed") {
+      throw new BadRequestException(REQUIRED_ISOLATION_SAVE_MESSAGE);
+    }
+
+    const derivative = await this.assetService.findReusableDerivative(
+      asset.id,
+      "transparent_png",
+      this.backgroundRemoval.compatibilityVersion,
+    );
+    if (!derivative || derivative.mimeType.toLowerCase() !== "image/png") {
+      throw new BadRequestException(REQUIRED_ISOLATION_SAVE_MESSAGE);
+    }
+    if (!(await this.storage.objectExists(derivative.key))) {
+      throw new BadRequestException(REQUIRED_ISOLATION_SAVE_MESSAGE);
+    }
+
+    const processedPhotoUri = typeof input.editorState?.processedPhotoUri === "string"
+      ? input.editorState.processedPhotoUri
+      : null;
+    const photoLayer = input.composition?.layers.find((layer) => layer.type === "photo");
+    const compositionPhotoUri = typeof photoLayer?.data?.uri === "string"
+      ? photoLayer.data.uri
+      : null;
+    if (
+      processedPhotoUri !== derivative.url
+      || input.backgroundPhotoUrl !== derivative.url
+      || compositionPhotoUri !== derivative.url
+    ) {
+      throw new BadRequestException(REQUIRED_ISOLATION_SAVE_MESSAGE);
+    }
+
+    return { assetId: asset.id, derivativeUrl: derivative.url };
   }
 
   /**

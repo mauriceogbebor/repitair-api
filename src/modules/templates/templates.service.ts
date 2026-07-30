@@ -20,7 +20,10 @@ export class TemplatesService {
   ) {}
 
   async findAll() {
-    const templates = await this.repo.find({ order: { sortOrder: "ASC" } });
+    const templates = await this.repo.find({
+      where: { status: "published", isActive: true },
+      order: { sortOrder: "ASC" },
+    });
     return templates.map((template) => this.serializeForPublic(this.normalizeTemplate(template)));
   }
 

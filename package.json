@@ -13,6 +13,7 @@
     "lint": "tsc --noEmit -p tsconfig.build.json",
     "composition:backfill": "sh ./tools/run-composition-backfill.sh",
     "composition:report": "sh ./tools/run-composition-report.sh",
+    "audioverse:provision:staging": "sh ./tools/run-audioverse-staging-provision.sh",
     "typeorm": "typeorm-ts-node-commonjs",
     "migration:generate": "npm run typeorm -- migration:generate -d src/data-source.ts",
     "migration:create": "npm run typeorm -- migration:create",
