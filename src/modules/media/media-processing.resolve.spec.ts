@@ -1,3 +1,4 @@
+import { BadRequestException } from "@nestjs/common";
 import { MediaProcessingService } from "./media-processing.service";
 import type { MediaAsset } from "../../entities/media-asset.entity";
 
@@ -200,5 +201,113 @@ describe("MediaProcessingService.resolveTemplateImage", () => {
     await expect(service.linkRepit("a1", "repit-1", "template-1", "user-1")).rejects.toThrow(
       "Repit media does not match this asset",
     );
+  });
+});
+
+describe("MediaProcessingService.assertRequiredIsolationReady", () => {
+  const derivativeUrl = "https://media.example/subject.png";
+  const template = {
+    id: "audioverse",
+    capabilities: { supportsIsolatedSubject: true, requiresBackgroundRemoval: true },
+  } as never;
+  const readyInput = {
+    userId: "user-1",
+    template,
+    editorState: { mediaAssetId: "a1", processedPhotoUri: derivativeUrl },
+    backgroundPhotoUrl: derivativeUrl,
+    composition: {
+      layers: [{ type: "photo", data: { uri: derivativeUrl } }],
+    } as never,
+  };
+
+  function makeReadyService(overrides: {
+    asset?: Record<string, unknown>;
+    derivative?: Record<string, unknown> | null;
+    objectExists?: boolean;
+  } = {}) {
+    const assetService = {
+      requireAsset: jest.fn().mockResolvedValue({
+        id: "a1",
+        ownerUserId: "user-1",
+        processingStatus: "completed",
+        ...overrides.asset,
+      }),
+      findReusableDerivative: jest.fn().mockResolvedValue(
+        overrides.derivative === null
+          ? null
+          : {
+              id: "d1",
+              key: "private/subject.png",
+              url: derivativeUrl,
+              mimeType: "image/png",
+              ...overrides.derivative,
+            },
+      ),
+      emit: jest.fn(),
+    };
+    const service = makeService(assetService, true);
+    const dependencies = service as unknown as { storage: { objectExists: jest.Mock } };
+    dependencies.storage.objectExists.mockResolvedValue(overrides.objectExists ?? true);
+    return { service, assetService };
+  }
+
+  it("accepts a completed owned compatible derivative used canonically", async () => {
+    const { service } = makeReadyService();
+
+    await expect(service.assertRequiredIsolationReady(readyInput as never)).resolves.toEqual({
+      assetId: "a1",
+      derivativeUrl,
+    });
+  });
+
+  it.each(["uploaded", "queued", "processing", "failed"])(
+    "rejects an Audioverse save while the asset is %s",
+    async (processingStatus) => {
+      const { service } = makeReadyService({ asset: { processingStatus } });
+      await expect(service.assertRequiredIsolationReady(readyInput as never)).rejects.toBeInstanceOf(BadRequestException);
+    },
+  );
+
+  it("rejects a missing media asset reference", async () => {
+    const { service } = makeReadyService();
+    await expect(service.assertRequiredIsolationReady({
+      ...readyInput,
+      editorState: { processedPhotoUri: derivativeUrl },
+    })).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it("rejects a media asset owned by another user", async () => {
+    const { service } = makeReadyService({ asset: { ownerUserId: "user-2" } });
+    await expect(service.assertRequiredIsolationReady(readyInput as never)).rejects.toThrow(
+      "You do not have access to this media asset",
+    );
+  });
+
+  it.each([
+    { name: "missing compatible derivative", overrides: { derivative: null } },
+    { name: "non-PNG derivative", overrides: { derivative: { mimeType: "image/jpeg" } } },
+    { name: "missing derivative object", overrides: { objectExists: false } },
+  ])("rejects $name", async ({ overrides }) => {
+    const { service } = makeReadyService(overrides);
+    await expect(service.assertRequiredIsolationReady(readyInput as never)).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it.each([
+    ["backgroundPhotoUrl", { backgroundPhotoUrl: "https://media.example/original.jpg" }],
+    ["processedPhotoUri", { editorState: { mediaAssetId: "a1", processedPhotoUri: "https://media.example/original.jpg" } }],
+    ["composition photo", { composition: { layers: [{ type: "photo", data: { uri: "https://media.example/original.jpg" } }] } }],
+  ])("rejects the original image in %s", async (_field, patch) => {
+    const { service } = makeReadyService();
+    await expect(service.assertRequiredIsolationReady({ ...readyInput, ...patch } as never))
+      .rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it("leaves standard-template saves unchanged", async () => {
+    const { service, assetService } = makeReadyService();
+    await expect(service.assertRequiredIsolationReady({
+      userId: "user-1",
+      template: { id: "matcha-mood", capabilities: { requiresBackgroundRemoval: false } } as never,
+    })).resolves.toBeNull();
+    expect(assetService.requireAsset).not.toHaveBeenCalled();
   });
 });

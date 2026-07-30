@@ -12,6 +12,10 @@ import {
 } from "../../common/composition/composition.utils";
 import type { CompositionCanvasMeta, RepitComposition } from "../../common/composition/composition.types";
 import { UploadsService } from "../uploads/uploads.service";
+import {
+  MediaProcessingService,
+  type RequiredIsolationBinding,
+} from "../media/media-processing.service";
 import { CreateRepitDto } from "./dto/create-repit.dto";
 import { UpdateRepitDto } from "./dto/update-repit.dto";
 
@@ -83,6 +87,7 @@ export class RepitsService {
     @InjectRepository(Template)
     private readonly templatesRepo: Repository<Template>,
     private readonly uploadsService: UploadsService,
+    private readonly mediaProcessingService: MediaProcessingService,
   ) {}
 
   async getRepit(userId: string, id: string): Promise<Repit | null> {
@@ -125,7 +130,9 @@ export class RepitsService {
 
   async createRepit(userId: string, body: CreateRepitDto) {
     // Validate templateId exists
-    const template = await this.templatesRepo.findOne({ where: { id: body.templateId } });
+    const template = await this.templatesRepo.findOne({
+      where: { id: body.templateId, status: "published", isActive: true },
+    });
     if (!template) {
       throw new BadRequestException(`Template "${body.templateId}" does not exist`);
     }
@@ -142,6 +149,13 @@ export class RepitsService {
         fallbackCanvasMeta: validatedCanvasMeta ?? fallbackCanvasMeta,
       })
       : null;
+    const mediaBinding = await this.mediaProcessingService.assertRequiredIsolationReady({
+      userId,
+      template,
+      editorState: body.editorState,
+      composition: validatedComposition,
+      backgroundPhotoUrl: body.backgroundPhotoUrl,
+    });
 
     const repit = this.repitsRepo.create({
       userId,
@@ -164,9 +178,10 @@ export class RepitsService {
 
     try {
       const saved = await this.repitsRepo.save(repit);
+      await this.linkRequiredIsolation(mediaBinding, saved.id, template.id, userId);
       return this.normalizeRepit(saved);
     } catch (err) {
-      if (isLegacyRepitSchemaError(err)) {
+      if (isLegacyRepitSchemaError(err) && !mediaBinding) {
         return this.createRepitLegacy(userId, body);
       }
       throw err;
@@ -174,13 +189,6 @@ export class RepitsService {
   }
 
   async updateRepit(userId: string, id: string, body: UpdateRepitDto) {
-    if (body.templateId) {
-      const template = await this.templatesRepo.findOne({ where: { id: body.templateId } });
-      if (!template) {
-        throw new BadRequestException(`Template "${body.templateId}" does not exist`);
-      }
-    }
-
     let existing: Repit | null;
     try {
       // Scope the find by userId so we don't leak existence of other users' repits.
@@ -199,6 +207,12 @@ export class RepitsService {
     }
 
     const effectiveTemplateId = body.templateId ?? existing.templateId;
+    const template = await this.templatesRepo.findOne({
+      where: { id: effectiveTemplateId, status: "published", isActive: true },
+    });
+    if (!template) {
+      throw new BadRequestException(`Template "${effectiveTemplateId}" does not exist`);
+    }
     const validatedCanvasMeta = body.canvasMeta !== undefined
       ? assertCanvasMeta(body.canvasMeta, "canvasMeta")
       : undefined;
@@ -210,6 +224,22 @@ export class RepitsService {
         fallbackCanvasMeta: validatedCanvasMeta ?? normalizeCanvasMeta(existing.canvasMeta, DEFAULT_CANVAS_META),
       })
       : undefined;
+    const effectiveComposition = validatedComposition !== undefined
+      ? validatedComposition
+      : existing.composition;
+    const effectiveEditorState = body.editorState !== undefined
+      ? body.editorState
+      : existing.editorState as Record<string, unknown> | null | undefined;
+    const effectiveBackgroundPhotoUrl = body.backgroundPhotoUrl !== undefined
+      ? body.backgroundPhotoUrl
+      : existing.backgroundPhotoUrl;
+    const mediaBinding = await this.mediaProcessingService.assertRequiredIsolationReady({
+      userId,
+      template,
+      editorState: effectiveEditorState,
+      composition: effectiveComposition,
+      backgroundPhotoUrl: effectiveBackgroundPhotoUrl,
+    });
 
     // If the photo is changing, schedule the old file for deletion.
     const oldPhoto = existing.backgroundPhotoUrl;
@@ -244,19 +274,31 @@ export class RepitsService {
     try {
       saved = await this.repitsRepo.save(updated);
     } catch (err) {
-      if (isLegacyRepitSchemaError(err)) {
+      if (isLegacyRepitSchemaError(err) && !mediaBinding) {
         return this.updateRepitLegacy(userId, id, body);
       }
       throw err;
     }
 
-    if (photoChanged && oldPhoto) {
+    await this.linkRequiredIsolation(mediaBinding, saved.id, template.id, userId);
+
+    if (photoChanged && oldPhoto && !mediaBinding) {
       // Fire-and-forget cleanup of the orphaned file. Failure here shouldn't
       // fail the update — the file will be caught by a periodic sweep instead.
       this.tryDeleteUpload(oldPhoto);
     }
 
     return this.normalizeRepit(saved);
+  }
+
+  private async linkRequiredIsolation(
+    binding: RequiredIsolationBinding | null,
+    repitId: string,
+    templateId: string,
+    userId: string,
+  ): Promise<void> {
+    if (!binding) return;
+    await this.mediaProcessingService.linkRepit(binding.assetId, repitId, templateId, userId);
   }
 
   async deleteRepit(userId: string, id: string): Promise<boolean> {

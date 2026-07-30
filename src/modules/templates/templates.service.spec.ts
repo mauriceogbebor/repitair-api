@@ -95,6 +95,7 @@ describe("TemplatesService", () => {
         height: 1778,
       }));
       expect(mockRepo.find).toHaveBeenCalledWith({
+        where: { status: "published", isActive: true },
         order: { sortOrder: "ASC" },
       });
     });
@@ -105,6 +106,17 @@ describe("TemplatesService", () => {
       const result = await service.findAll();
 
       expect(result).toEqual([]);
+    });
+
+    it("should query only published and active templates for the public listing", async () => {
+      mockRepo.find.mockResolvedValue([]);
+
+      await service.findAll();
+
+      expect(mockRepo.find).toHaveBeenCalledWith({
+        where: { status: "published", isActive: true },
+        order: { sortOrder: "ASC" },
+      });
     });
   });
 

@@ -5,6 +5,7 @@ import { Repository } from "typeorm";
 import { RepitsService } from "./repits.service";
 import { Repit, Template } from "../../entities";
 import { UploadsService } from "../uploads/uploads.service";
+import { MediaProcessingService } from "../media/media-processing.service";
 import { RepitPlatform } from "./dto/repit-presentation.dto";
 import { CreateRepitDto } from "./dto/create-repit.dto";
 
@@ -46,6 +47,11 @@ describe("RepitsService", () => {
   const mockUploadsService = {
     deleteFile: jest.fn().mockResolvedValue(undefined),
     uploadFile: jest.fn(),
+  };
+
+  const mockMediaProcessingService = {
+    assertRequiredIsolationReady: jest.fn().mockResolvedValue(null),
+    linkRepit: jest.fn().mockResolvedValue({ linked: true }),
   };
 
   const validCanvasMeta = {
@@ -99,6 +105,10 @@ describe("RepitsService", () => {
           provide: UploadsService,
           useValue: mockUploadsService,
         },
+        {
+          provide: MediaProcessingService,
+          useValue: mockMediaProcessingService,
+        },
       ],
     }).compile();
 
@@ -106,6 +116,13 @@ describe("RepitsService", () => {
     repository = module.get<Repository<Repit>>(getRepositoryToken(Repit));
 
     jest.clearAllMocks();
+    mockTemplatesRepo.findOne.mockResolvedValue({
+      id: "sunrise",
+      status: "published",
+      isActive: true,
+      capabilities: {},
+    });
+    mockMediaProcessingService.assertRequiredIsolationReady.mockResolvedValue(null);
   });
 
   describe("listRepits", () => {
@@ -182,7 +199,7 @@ describe("RepitsService", () => {
       const result = await service.createRepit("user_1", createDto);
 
       expect(mockTemplatesRepo.findOne).toHaveBeenCalledWith({
-        where: { id: "template_1" },
+        where: { id: "template_1", status: "published", isActive: true },
       });
       expect(repository.create).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -267,6 +284,50 @@ describe("RepitsService", () => {
         },
       })).rejects.toBeInstanceOf(BadRequestException);
     });
+
+    it("should enforce and link a completed isolation asset", async () => {
+      const createDto: CreateRepitDto = {
+        templateId: "audioverse",
+        backgroundPhotoUrl: "https://media.example/subject.png",
+        editorState: {
+          mediaAssetId: "asset-1",
+          processedPhotoUri: "https://media.example/subject.png",
+        },
+        composition: {
+          ...validComposition,
+          templateId: "audioverse",
+          layers: [{
+            ...validComposition.layers[0],
+            data: { uri: "https://media.example/subject.png" },
+          }],
+        },
+      };
+      const saved = { ...mockRepit, id: "repit-audioverse", templateId: "audioverse" };
+      mockTemplatesRepo.findOne.mockResolvedValue({
+        id: "audioverse",
+        status: "published",
+        isActive: true,
+        capabilities: { supportsIsolatedSubject: true, requiresBackgroundRemoval: true },
+      });
+      mockMediaProcessingService.assertRequiredIsolationReady.mockResolvedValue({
+        assetId: "asset-1",
+        derivativeUrl: "https://media.example/subject.png",
+      });
+      mockRepository.create.mockReturnValue(saved);
+      mockRepository.save.mockResolvedValue(saved);
+
+      await service.createRepit("user_1", createDto);
+
+      expect(mockMediaProcessingService.assertRequiredIsolationReady).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: "user_1", template: expect.objectContaining({ id: "audioverse" }) }),
+      );
+      expect(mockMediaProcessingService.linkRepit).toHaveBeenCalledWith(
+        "asset-1",
+        "repit-audioverse",
+        "audioverse",
+        "user_1",
+      );
+    });
   });
 
   describe("updateRepit", () => {
@@ -330,6 +391,41 @@ describe("RepitsService", () => {
           templateVersion: 3,
         }),
       }));
+    });
+
+    it("should not save an Audioverse update that replaces the derivative with the original", async () => {
+      const existing = {
+        ...mockRepit,
+        templateId: "audioverse",
+        backgroundPhotoUrl: "https://media.example/subject.png",
+        editorState: {
+          mediaAssetId: "asset-1",
+          processedPhotoUri: "https://media.example/subject.png",
+        },
+        composition: {
+          ...validComposition,
+          templateId: "audioverse",
+          layers: [{
+            ...validComposition.layers[0],
+            data: { uri: "https://media.example/subject.png" },
+          }],
+        },
+      };
+      mockRepository.findOne.mockResolvedValue(existing);
+      mockTemplatesRepo.findOne.mockResolvedValue({
+        id: "audioverse",
+        status: "published",
+        isActive: true,
+        capabilities: { supportsIsolatedSubject: true, requiresBackgroundRemoval: true },
+      });
+      mockMediaProcessingService.assertRequiredIsolationReady.mockRejectedValue(
+        new BadRequestException("This template requires a completed isolated-subject image before the Repit can be saved."),
+      );
+
+      await expect(service.updateRepit("user_1", mockRepit.id, {
+        backgroundPhotoUrl: "https://media.example/original.jpg",
+      })).rejects.toBeInstanceOf(BadRequestException);
+      expect(mockRepository.save).not.toHaveBeenCalled();
     });
 
     it("should return null if repit not found", async () => {
