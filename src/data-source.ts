@@ -97,7 +97,9 @@ export default new DataSource({
     MediaAsset,
     MediaDerivative,
   ],
-  migrations: [isCompiled ? 'dist/migrations/*.js' : 'src/migrations/*.ts'],
+  // Only timestamp-prefixed migration files are executable. Specs live beside
+  // migrations for reviewability but must never be imported by the TypeORM CLI.
+  migrations: [isCompiled ? 'dist/migrations/[0-9]*.js' : 'src/migrations/[0-9]*.ts'],
   synchronize: false,
   logging: true,
 });
