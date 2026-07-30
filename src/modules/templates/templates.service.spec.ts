@@ -118,6 +118,36 @@ describe("TemplatesService", () => {
         order: { sortOrder: "ASC" },
       });
     });
+
+    it("should return every published Release 1 template without capability filtering", async () => {
+      const ids = [
+        "audioverse",
+        "echo-room",
+        "matcha-mood",
+        "midnight-mood",
+        "sonic-orbit",
+        "soundscape",
+        "air-wave",
+        "ice-girl",
+        "minion",
+        "pink-replay",
+      ];
+      mockRepo.find.mockResolvedValue(ids.map((id, sortOrder) => ({
+        id,
+        name: id,
+        sortOrder,
+        status: "published",
+        isActive: true,
+        capabilities: id === "audioverse"
+          ? { supportsIsolatedSubject: true, requiresBackgroundRemoval: true }
+          : { supportsIsolatedSubject: false, requiresBackgroundRemoval: false },
+      })));
+
+      const result = await service.findAll();
+
+      expect(result.map((template) => template.id)).toEqual(ids);
+      expect(result).toHaveLength(10);
+    });
   });
 
   describe("updateComposition", () => {
