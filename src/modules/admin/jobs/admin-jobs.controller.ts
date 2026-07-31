@@ -30,6 +30,12 @@ export class AdminJobsController {
     return this.jobs.overview();
   }
 
+  @Get("worker-health")
+  @AdminPermissions("jobs.view")
+  workerHealth() {
+    return this.jobs.workerHealth();
+  }
+
   @Get()
   @AdminPermissions("jobs.view")
   list(

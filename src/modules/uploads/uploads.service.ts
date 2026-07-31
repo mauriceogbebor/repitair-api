@@ -33,6 +33,7 @@ export class UploadsService {
   private s3Bucket: string;
   private PutObjectCommand: S3CommandCtor | null = null;
   private DeleteObjectCommand: S3CommandCtor | null = null;
+  private HeadBucketCommand: S3CommandCtor | null = null;
   private localUploadDir: string;
 
   // Allowed MIME types for images (HEIC/HEIF for iOS camera uploads)
@@ -130,6 +131,7 @@ export class UploadsService {
     const s3Sdk = require("@aws-sdk/client-s3");
     this.PutObjectCommand = s3Sdk.PutObjectCommand;
     this.DeleteObjectCommand = s3Sdk.DeleteObjectCommand;
+    this.HeadBucketCommand = s3Sdk.HeadBucketCommand;
     this.s3Client = new s3Sdk.S3Client({
       region: awsRegion,
       credentials: { accessKeyId: awsAccessKeyId, secretAccessKey: awsSecretAccessKey },
@@ -210,6 +212,19 @@ export class UploadsService {
     } catch {
       return false;
     }
+  }
+
+  /** Non-mutating startup/readiness probe used by the standalone worker. */
+  async healthCheck(): Promise<{ provider: "local" | "s3"; connected: boolean }> {
+    if (this.uploadProvider === "s3") {
+      if (!this.s3Client || !this.HeadBucketCommand) {
+        return { provider: "s3", connected: false };
+      }
+      await this.s3Client.send(new this.HeadBucketCommand({ Bucket: this.s3Bucket }));
+      return { provider: "s3", connected: true };
+    }
+    await fs.promises.access(this.localUploadDir, fs.constants.R_OK | fs.constants.W_OK);
+    return { provider: "local", connected: true };
   }
 
   /**

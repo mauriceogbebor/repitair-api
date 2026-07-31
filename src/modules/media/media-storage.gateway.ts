@@ -23,6 +23,10 @@ export class MediaStorageGateway {
     return this.uploads.objectExists(key);
   }
 
+  healthCheck(): Promise<{ provider: "local" | "s3"; connected: boolean }> {
+    return this.uploads.healthCheck();
+  }
+
   /** Server-derived URL for a key (signed/preview URL for private buckets). */
   urlForKey(key: string): string {
     return this.uploads.urlForKey(key);

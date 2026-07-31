@@ -35,6 +35,8 @@ export { PrivacyJob } from "./privacy-job.entity";
 export { PrivacyEvent } from "./privacy-event.entity";
 export type { PlatformJobPriority, PlatformJobStatus } from "./platform-job.entity";
 export { PlatformJob } from "./platform-job.entity";
+export type { PlatformWorkerState } from "./platform-worker-heartbeat.entity";
+export { PlatformWorkerHeartbeat } from "./platform-worker-heartbeat.entity";
 export { AnalyticsEvent } from "./analytics-event.entity";
 export { UserOperationalNote } from "./user-operational-note.entity";
 export type { UserRecoveryOperationType } from "./user-recovery-operation.entity";

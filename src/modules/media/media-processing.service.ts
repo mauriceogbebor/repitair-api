@@ -3,6 +3,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { DataSource, Repository } from "typeorm";
 import { MediaAsset } from "../../entities/media-asset.entity";
 import { MediaDerivative } from "../../entities/media-derivative.entity";
+import type { PlatformJob } from "../../entities/platform-job.entity";
 import { Template } from "../../entities/template.entity";
 import { Repit } from "../../entities/repit.entity";
 import { PlatformJobsService } from "../platform-jobs/platform-jobs.service";
@@ -15,6 +16,7 @@ import { isolationCapabilityError, templateRequiresBackgroundRemoval } from "./t
 export const MEDIA_BACKGROUND_REMOVE_JOB = "media.background_remove";
 export const REQUIRED_ISOLATION_SAVE_MESSAGE =
   "This template requires a completed isolated-subject image before the Repit can be saved.";
+const MEDIA_QUEUE_DELAYED_MS = Number(process.env.MEDIA_QUEUE_DELAYED_MS) || 120_000;
 
 export type RequiredIsolationBinding = {
   assetId: string;
@@ -59,6 +61,30 @@ export class MediaProcessingService {
   async register(input: RegisterAssetInput) {
     const asset = await this.assetService.registerFromUpload(input);
     return this.status(asset.id);
+  }
+
+  private jobState(
+    processingStatus: MediaAsset["processingStatus"],
+    job: PlatformJob | null,
+    knownJobId?: string | null,
+  ) {
+    const jobId = knownJobId ?? job?.id ?? null;
+    const jobStatus = job?.status
+      ?? (jobId && processingStatus === "queued" ? "queued" : null);
+    const queuedAt = job?.queuedAt ?? job?.createdAt ?? null;
+    const queueDelayed = (
+      processingStatus === "queued"
+      && jobStatus === "queued"
+      && queuedAt != null
+      && Date.now() - new Date(queuedAt).getTime() >= MEDIA_QUEUE_DELAYED_MS
+    );
+    return {
+      jobId,
+      jobStatus,
+      queuedAt,
+      queueDelayed,
+      queueDelayThresholdMs: MEDIA_QUEUE_DELAYED_MS,
+    };
   }
 
   async linkRepit(assetId: string, repitId: string, templateId: string, userId: string) {
@@ -248,6 +274,10 @@ export class MediaProcessingService {
         imageUrl: asset.originalUrl,
         assetId,
         jobId: null,
+        jobStatus: null,
+        queuedAt: null,
+        queueDelayed: false,
+        queueDelayThresholdMs: MEDIA_QUEUE_DELAYED_MS,
         processingStatus: asset.processingStatus,
         statusUrl: `/media/assets/${assetId}`,
       };
@@ -268,13 +298,14 @@ export class MediaProcessingService {
       const derivativeExists = await this.storage.objectExists(transparent.key);
       if (derivativeExists) {
         const latestJob = await this.platformJobs.findLatestForMediaAsset(assetId);
+        const jobState = this.jobState(asset.processingStatus, latestJob);
         const response = {
           status: "ready" as const,
           requiresBackgroundRemoval: true,
           imageSource: "derivative" as const,
           imageUrl: transparent.url,
           assetId,
-          jobId: latestJob?.id ?? null,
+          ...jobState,
           processingStatus: asset.processingStatus,
           statusUrl: `/media/assets/${assetId}`,
         };
@@ -339,8 +370,8 @@ export class MediaProcessingService {
       }
     }
     const refreshed = await this.assetService.requireAsset(assetId);
-    const latestJob = jobId ? null : await this.platformJobs.findLatestForMediaAsset(assetId);
-    jobId ??= latestJob?.id ?? null;
+    const latestJob = await this.platformJobs.findLatestForMediaAsset(assetId);
+    const jobState = this.jobState(refreshed.processingStatus, latestJob, jobId);
     const failed = ["failed", "retry_required", "cancelled"].includes(refreshed.processingStatus);
     const response = {
       status: failed ? "failed" as const : "processing" as const,
@@ -348,7 +379,7 @@ export class MediaProcessingService {
       imageSource: "pending" as const,
       imageUrl: null,
       assetId,
-      jobId,
+      ...jobState,
       processingStatus: refreshed.processingStatus,
       statusUrl: `/media/assets/${assetId}`,
       errorCode: failed ? "SUBJECT_PREPARATION_FAILED" : null,
@@ -356,7 +387,7 @@ export class MediaProcessingService {
     };
     await this.assetService.emit("media.template_resolved", {
       assetId, templateId, requiresBackgroundRemoval: true, imageSource: "pending",
-      status: response.status, processingStatus: refreshed.processingStatus, jobId,
+      status: response.status, processingStatus: refreshed.processingStatus, jobId: response.jobId,
     });
     return response;
   }
@@ -368,12 +399,14 @@ export class MediaProcessingService {
   async status(assetId: string) {
     const asset = await this.assetService.requireAsset(assetId);
     const transparent = await this.assetService.findDerivative(asset.id, "transparent_png");
+    const latestJob = await this.platformJobs.findLatestForMediaAsset(asset.id);
     return {
       assetId: asset.id,
       originalImage: asset.originalUrl,
       processedImage: transparent?.url ?? null,
       processingStatus: asset.processingStatus,
       error: asset.lastError ?? null,
+      ...this.jobState(asset.processingStatus, latestJob),
     };
   }
 

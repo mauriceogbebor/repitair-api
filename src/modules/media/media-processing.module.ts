@@ -36,6 +36,6 @@ import { BACKGROUND_REMOVAL_PROVIDER, createBackgroundRemovalProvider } from "./
     MediaJobHandlers,
     { provide: BACKGROUND_REMOVAL_PROVIDER, useFactory: (config: ConfigService) => createBackgroundRemovalProvider(config), inject: [ConfigService] },
   ],
-  exports: [MediaProcessingService, MediaAssetService],
+  exports: [MediaProcessingService, MediaAssetService, MediaStorageGateway],
 })
 export class MediaProcessingModule {}

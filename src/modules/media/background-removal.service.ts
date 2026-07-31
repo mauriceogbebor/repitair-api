@@ -1,10 +1,10 @@
-import { Inject, Injectable } from "@nestjs/common";
+import { Inject, Injectable, Logger } from "@nestjs/common";
 import { createHash } from "node:crypto";
 import { MediaAsset } from "../../entities/media-asset.entity";
 import { MediaDerivative } from "../../entities/media-derivative.entity";
 import { MediaAssetService } from "./media-asset.service";
 import { MediaStorageGateway } from "./media-storage.gateway";
-import { MediaProcessor } from "./media-processor.registry";
+import { MediaProcessor, MediaProcessorContext } from "./media-processor.registry";
 import { validateTransparentOutput } from "./media-image-validation";
 import { BACKGROUND_REMOVAL_PROVIDER, BackgroundRemovalProvider } from "./providers/background-removal.provider";
 
@@ -26,6 +26,7 @@ const PROCESSOR_VERSION = 1;
  */
 @Injectable()
 export class BackgroundRemovalService implements MediaProcessor {
+  private readonly logger = new Logger(BackgroundRemovalService.name);
   readonly stage = "background_removal";
   readonly produces = "transparent_png" as const;
   readonly order = 10;
@@ -41,7 +42,11 @@ export class BackgroundRemovalService implements MediaProcessor {
     return `${this.provider.version}+pr${PROCESSOR_VERSION}+pl${MEDIA_PIPELINE_VERSION}+out-transparent_png`;
   }
 
-  async process(asset: MediaAsset): Promise<MediaDerivative> {
+  get providerName(): string {
+    return this.provider.name;
+  }
+
+  async process(asset: MediaAsset, context?: MediaProcessorContext): Promise<MediaDerivative> {
     const versionKey = this.compatibilityVersion;
 
     // 1) Per-asset reuse (this asset already has a derivative at this version).
@@ -88,6 +93,10 @@ export class BackgroundRemovalService implements MediaProcessor {
     // 3) Miss — call the provider, VALIDATE its output before persisting.
     const source = await this.storage.readByKey(asset.originalKey);
     const startedAt = Date.now();
+    this.logger.log(
+      `[WORKER] provider request started jobId=${context?.jobId ?? "unknown"}`
+      + ` assetId=${asset.id} provider=${this.provider.name}`,
+    );
     const output = await this.provider.removeBackground({ buffer: source, mimeType: asset.mimeType });
     validateTransparentOutput(output.buffer);
     const stored = await this.storage.storeDerivative(output.buffer, "image/png");
@@ -118,6 +127,12 @@ export class BackgroundRemovalService implements MediaProcessor {
       durationMs, providerRequestId: output.providerRequestId ?? null,
       creditsCharged: output.creditsCharged ?? null,
     });
+    this.logger.log(
+      `[WORKER] provider request completed jobId=${context?.jobId ?? "unknown"}`
+      + ` assetId=${asset.id} provider=${this.provider.name}`
+      + ` providerRequestId=${output.providerRequestId ?? "unavailable"}`
+      + ` durationMs=${durationMs}`,
+    );
     return derivative;
   }
 

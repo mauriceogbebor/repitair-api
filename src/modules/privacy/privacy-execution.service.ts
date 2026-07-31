@@ -42,6 +42,7 @@ export class PrivacyExecutionService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   onModuleInit(): void {
+    if (process.env.REPITAIR_PROCESS_ROLE === "worker") return;
     void this.purgeExpiredExportPackages();
     this.exportCleanupTimer = setInterval(
       () => void this.purgeExpiredExportPackages(),

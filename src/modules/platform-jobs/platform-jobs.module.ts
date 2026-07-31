@@ -1,6 +1,7 @@
 import { Global, Module } from "@nestjs/common";
 import { TypeOrmModule } from "@nestjs/typeorm";
 import { PlatformJob } from "../../entities/platform-job.entity";
+import { PlatformWorkerHeartbeat } from "../../entities/platform-worker-heartbeat.entity";
 import { PlatformModule } from "../platform/platform.module";
 import { PlatformJobsService } from "./platform-jobs.service";
 import { PlatformJobWorker } from "./platform-job.worker";
@@ -12,7 +13,7 @@ import { PlatformJobWorker } from "./platform-job.worker";
  */
 @Global()
 @Module({
-  imports: [PlatformModule, TypeOrmModule.forFeature([PlatformJob])],
+  imports: [PlatformModule, TypeOrmModule.forFeature([PlatformJob, PlatformWorkerHeartbeat])],
   providers: [PlatformJobsService, PlatformJobWorker],
   exports: [PlatformJobsService, PlatformJobWorker],
 })
