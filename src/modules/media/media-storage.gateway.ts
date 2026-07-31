@@ -27,9 +27,18 @@ export class MediaStorageGateway {
     return this.uploads.healthCheck();
   }
 
-  /** Server-derived URL for a key (signed/preview URL for private buckets). */
+  /** Server-derived canonical URL for a key (unsigned — for storage/provenance). */
   urlForKey(key: string): string {
     return this.uploads.urlForKey(key);
+  }
+
+  /**
+   * Short-lived URL a client can GET directly. For private S3 buckets this is a
+   * presigned URL, so the mobile client can load the image without the bucket
+   * ever being public. Use this for any URL returned to the client.
+   */
+  signedReadUrl(key: string): Promise<string> {
+    return this.uploads.signedReadUrl(key);
   }
 
   /** Store a processed derivative and return its {url, key}. */

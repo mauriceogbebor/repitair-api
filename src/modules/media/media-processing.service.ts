@@ -32,6 +32,27 @@ type RequiredIsolationSaveInput = {
 };
 
 /**
+ * Extract the server-owned storage key from a client-facing image URL. Works for
+ * both local URLs (`/api/uploads/<key>`) and S3 URLs — signed or unsigned —
+ * (`https://bucket.s3.region.amazonaws.com/<key>?X-Amz-...`). Comparing by key
+ * is signing-tolerant: the same object yields the same key regardless of the
+ * short-lived query params on a presigned URL.
+ */
+export function storageKeyFromUri(uri: string | null | undefined): string | null {
+  if (!uri || typeof uri !== "string") return null;
+  try {
+    const parsed = new URL(uri);
+    const uploadsPrefix = "/api/uploads/";
+    if (parsed.pathname.startsWith(uploadsPrefix)) {
+      return decodeURIComponent(parsed.pathname.slice(uploadsPrefix.length));
+    }
+    return decodeURIComponent(parsed.pathname.replace(/^\/+/, "")) || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Public entry point for the media pipeline. Enqueuing NEVER runs AI work in the
  * HTTP request — it transitions the asset to `queued` and hands execution to the
  * Platform Job System. The mobile contract is deliberately implementation-free.
@@ -145,15 +166,20 @@ export class MediaProcessingService {
     const compositionPhotoUri = typeof photoLayer?.data?.uri === "string"
       ? photoLayer.data.uri
       : null;
+    // Match by storage KEY, not by URL string. Client-facing URLs are now
+    // short-lived signed URLs (same object key, rotating query params), so a
+    // string compare against the stored derivative URL would never match.
+    const matchesDerivative = (uri: string | null | undefined) =>
+      storageKeyFromUri(uri) === derivative.key;
     if (
-      processedPhotoUri !== derivative.url
-      || input.backgroundPhotoUrl !== derivative.url
-      || compositionPhotoUri !== derivative.url
+      !matchesDerivative(processedPhotoUri)
+      || !matchesDerivative(input.backgroundPhotoUrl)
+      || !matchesDerivative(compositionPhotoUri)
     ) {
       throw new BadRequestException(REQUIRED_ISOLATION_SAVE_MESSAGE);
     }
 
-    return { assetId: asset.id, derivativeUrl: derivative.url };
+    return { assetId: asset.id, derivativeUrl: await this.storage.signedReadUrl(derivative.key) };
   }
 
   /**
@@ -271,7 +297,7 @@ export class MediaProcessingService {
         status: "ready" as const,
         requiresBackgroundRemoval: false,
         imageSource: "original" as const,
-        imageUrl: asset.originalUrl,
+        imageUrl: await this.storage.signedReadUrl(asset.originalKey),
         assetId,
         jobId: null,
         jobStatus: null,
@@ -303,7 +329,7 @@ export class MediaProcessingService {
           status: "ready" as const,
           requiresBackgroundRemoval: true,
           imageSource: "derivative" as const,
-          imageUrl: transparent.url,
+          imageUrl: await this.storage.signedReadUrl(transparent.key),
           assetId,
           ...jobState,
           processingStatus: asset.processingStatus,
@@ -400,10 +426,16 @@ export class MediaProcessingService {
     const asset = await this.assetService.requireAsset(assetId);
     const transparent = await this.assetService.findDerivative(asset.id, "transparent_png");
     const latestJob = await this.platformJobs.findLatestForMediaAsset(asset.id);
+    // Return short-lived signed URLs the client can load directly — a bare S3
+    // object URL 403s on a private bucket.
+    const [originalImage, processedImage] = await Promise.all([
+      this.storage.signedReadUrl(asset.originalKey),
+      transparent ? this.storage.signedReadUrl(transparent.key) : Promise.resolve(null),
+    ]);
     return {
       assetId: asset.id,
-      originalImage: asset.originalUrl,
-      processedImage: transparent?.url ?? null,
+      originalImage,
+      processedImage,
       processingStatus: asset.processingStatus,
       error: asset.lastError ?? null,
       ...this.jobState(asset.processingStatus, latestJob),
