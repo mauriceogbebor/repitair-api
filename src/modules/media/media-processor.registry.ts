@@ -2,6 +2,11 @@ import { Injectable } from "@nestjs/common";
 import type { MediaAsset } from "../../entities/media-asset.entity";
 import type { MediaDerivative, MediaDerivativeKind } from "../../entities/media-derivative.entity";
 
+export type MediaProcessorContext = {
+  jobId?: string | null;
+  correlationId?: string | null;
+};
+
 /**
  * A single, independently pluggable pipeline stage. Background removal is the
  * only stage today; enhancement, relighting, shadow generation, compression and
@@ -16,7 +21,7 @@ export interface MediaProcessor {
   /** Ordering hint — lower runs first. */
   readonly order: number;
   /** Produce (or reuse) the derivative for the asset. Owns its own caching. */
-  process(asset: MediaAsset): Promise<MediaDerivative>;
+  process(asset: MediaAsset, context?: MediaProcessorContext): Promise<MediaDerivative>;
 }
 
 /**

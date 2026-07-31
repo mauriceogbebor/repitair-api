@@ -2,6 +2,10 @@ import { BadRequestException, ForbiddenException, Injectable, Logger } from "@ne
 import { InjectRepository } from "@nestjs/typeorm";
 import { DataSource, EntityManager, Repository } from "typeorm";
 import { PlatformJob, PlatformJobPriority, PlatformJobStatus } from "../../entities/platform-job.entity";
+import {
+  PlatformWorkerHeartbeat,
+  PlatformWorkerState,
+} from "../../entities/platform-worker-heartbeat.entity";
 import { PlatformService } from "../platform/platform.service";
 import {
   classifyError,
@@ -25,6 +29,16 @@ export interface EnqueueInput {
 
 const ACTIVE_OR_DONE: PlatformJobStatus[] = ["created", "queued", "scheduled", "running", "retry_scheduled", "completed"];
 const CANCELLABLE_BEFORE_RUN: PlatformJobStatus[] = ["created", "queued", "scheduled", "retry_scheduled", "paused"];
+const WORKER_STALE_AFTER_MS = 45_000;
+
+type WorkerRegistration = {
+  workerId: string;
+  queues: string[];
+  environment?: string | null;
+  revision?: string | null;
+  provider?: string | null;
+  storageProvider?: string | null;
+};
 
 /**
  * The single shared execution layer. Domain modules interact only through this
@@ -39,6 +53,8 @@ export class PlatformJobsService {
 
   constructor(
     @InjectRepository(PlatformJob) private readonly jobs: Repository<PlatformJob>,
+    @InjectRepository(PlatformWorkerHeartbeat)
+    private readonly workerHeartbeats: Repository<PlatformWorkerHeartbeat>,
     private readonly dataSource: DataSource,
     private readonly platform: PlatformService,
   ) {}
@@ -238,6 +254,122 @@ export class PlatformJobsService {
     const job = await this.jobs.findOne({ where: { id } });
     if (!job) throw new BadRequestException("Job not found");
     return job;
+  }
+
+  // ── Durable worker presence and operational health ──────────────────────
+  async registerWorker(input: WorkerRegistration): Promise<void> {
+    const now = new Date();
+    const existing = await this.workerHeartbeats.findOne({ where: { id: input.workerId } });
+    await this.workerHeartbeats.save(this.workerHeartbeats.create({
+      ...(existing ?? {}),
+      id: input.workerId,
+      state: "running",
+      queues: input.queues,
+      environment: input.environment ?? null,
+      revision: input.revision ?? null,
+      provider: input.provider ?? null,
+      storageProvider: input.storageProvider ?? null,
+      currentJobId: null,
+      startedAt: now,
+      heartbeatAt: now,
+    }));
+  }
+
+  async heartbeatWorker(workerId: string): Promise<void> {
+    await this.workerHeartbeats.update({ id: workerId }, {
+      state: "running",
+      heartbeatAt: new Date(),
+    });
+  }
+
+  async markWorkerJobClaimed(workerId: string, job: PlatformJob): Promise<void> {
+    const now = new Date();
+    await this.workerHeartbeats.update({ id: workerId }, {
+      state: "running",
+      currentJobId: job.id,
+      lastClaimedJobId: job.id,
+      lastClaimedAt: now,
+      heartbeatAt: now,
+    });
+  }
+
+  async markWorkerJobCompleted(workerId: string, jobId: string): Promise<void> {
+    const now = new Date();
+    await this.workerHeartbeats.update({ id: workerId }, {
+      currentJobId: null,
+      lastCompletedJobId: jobId,
+      lastCompletedAt: now,
+      heartbeatAt: now,
+    });
+  }
+
+  async markWorkerJobFailed(workerId: string, jobId: string, errorCode?: string | null): Promise<void> {
+    const now = new Date();
+    await this.workerHeartbeats.update({ id: workerId }, {
+      currentJobId: null,
+      lastFailedJobId: jobId,
+      lastFailedAt: now,
+      lastErrorCode: errorCode ?? null,
+      heartbeatAt: now,
+    });
+  }
+
+  async markWorkerDraining(workerId: string): Promise<void> {
+    await this.workerHeartbeats.update({ id: workerId }, {
+      state: "draining" as PlatformWorkerState,
+      heartbeatAt: new Date(),
+    });
+  }
+
+  async workerHealth() {
+    const now = Date.now();
+    const workers = await this.workerHeartbeats.find({ order: { heartbeatAt: "DESC" } });
+    const activeWorkers = workers.filter((worker) => (
+      worker.state === "running"
+      && now - new Date(worker.heartbeatAt).getTime() <= WORKER_STALE_AFTER_MS
+    ));
+    const queuedCount = await this.jobs.count({ where: { status: "queued" } });
+    const runningCount = await this.jobs.count({ where: { status: "running" } });
+    const oldestQueued = await this.jobs.findOne({
+      where: { status: "queued" },
+      order: { queuedAt: "ASC", createdAt: "ASC" },
+    });
+    const oldestQueueAgeMs = oldestQueued
+      ? Math.max(0, now - new Date(oldestQueued.queuedAt ?? oldestQueued.createdAt).getTime())
+      : null;
+
+    return {
+      status: activeWorkers.length > 0
+        ? "healthy"
+        : queuedCount > 0
+          ? "critical"
+          : "warning",
+      activeWorkerCount: activeWorkers.length,
+      queuedCount,
+      runningCount,
+      oldestQueueAgeMs,
+      staleAfterMs: WORKER_STALE_AFTER_MS,
+      workers: workers.map((worker) => ({
+        id: worker.id,
+        state: worker.state,
+        alive: activeWorkers.some((active) => active.id === worker.id),
+        queues: worker.queues,
+        environment: worker.environment ?? null,
+        revision: worker.revision ?? null,
+        provider: worker.provider ?? null,
+        storageProvider: worker.storageProvider ?? null,
+        currentJobId: worker.currentJobId ?? null,
+        lastClaimedJobId: worker.lastClaimedJobId ?? null,
+        lastClaimedAt: worker.lastClaimedAt ?? null,
+        lastCompletedJobId: worker.lastCompletedJobId ?? null,
+        lastCompletedAt: worker.lastCompletedAt ?? null,
+        lastFailedJobId: worker.lastFailedJobId ?? null,
+        lastFailedAt: worker.lastFailedAt ?? null,
+        lastErrorCode: worker.lastErrorCode ?? null,
+        startedAt: worker.startedAt,
+        heartbeatAt: worker.heartbeatAt,
+      })),
+    };
   }
 
   // ── Reads for the admin Jobs module ──────────────────────────────────────

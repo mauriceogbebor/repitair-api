@@ -34,7 +34,10 @@ export class MediaJobHandlers implements OnModuleInit {
       await this.assetService.emit("media.processing_started", { assetId });
       await ctx.reportProgress(20, "removing background");
       try {
-        const derivatives = await this.pipeline.run(asset);
+        const derivatives = await this.pipeline.run(asset, {
+          jobId: ctx.job.id,
+          correlationId: ctx.job.correlationId ?? null,
+        });
         await this.assetService.setStatus(assetId, "completed", { processingCompletedAt: new Date(), lastError: null });
         await this.assetService.emit("media.processing_completed", { assetId, derivativeIds: derivatives.map((d) => d.id) });
         await ctx.reportProgress(100, "completed");

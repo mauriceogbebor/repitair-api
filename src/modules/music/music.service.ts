@@ -112,6 +112,7 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
   /* ── Lifecycle ─────────────────────────────────────────────────────── */
 
   async onModuleInit() {
+    if (process.env.REPITAIR_PROCESS_ROLE === "worker") return;
     // Pre-warm Spotify client-credentials token so the first user request
     // does not pay the full token-acquisition cost.
     try {

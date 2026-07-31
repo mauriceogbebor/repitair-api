@@ -20,7 +20,8 @@
     "migration:run": "npm run typeorm -- migration:run -d src/data-source.ts",
     "migration:revert": "npm run typeorm -- migration:revert -d src/data-source.ts",
     "migration:run:prod": "node node_modules/typeorm/cli.js migration:run -d dist/data-source.js",
-    "start:worker": "node dist/worker.js",
+    "start:worker": "npm run worker:prod",
+    "worker:prod": "node dist/worker.js",
     "worker:dev": "ts-node -r tsconfig-paths/register src/worker.ts"
   },
   "dependencies": {

@@ -21,6 +21,7 @@ export class AdminBootstrapService implements OnModuleInit {
   ) {}
 
   async onModuleInit(): Promise<void> {
+    if (process.env.REPITAIR_PROCESS_ROLE === "worker") return;
     await this.seedPermissions();
     await this.seedRoles();
     await this.ensureBootstrapAdmin();

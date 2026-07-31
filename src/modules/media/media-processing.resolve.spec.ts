@@ -106,7 +106,44 @@ describe("MediaProcessingService.resolveTemplateImage", () => {
     expect(result.imageUrl).toBeNull();
     expect(result.imageSource).toBe("pending");
     expect(result.status).toBe("processing");
+    expect(result.jobId).toBe("job-1");
+    expect(result.queueDelayed).toBe(false);
     expect(enqueueSpy).toHaveBeenCalledWith("a1", { templateId: "template-1", incrementRetry: false });
+  });
+
+  it("returns authoritative job proof and derives a delayed queued state from server time", async () => {
+    const queued = {
+      id: "a1",
+      originalUrl: "http://x/o.jpg",
+      processingStatus: "queued",
+      lastError: null,
+    } as MediaAsset;
+    const assetService = {
+      requireAsset: jest.fn().mockResolvedValue(queued),
+      findDerivative: jest.fn().mockResolvedValue(null),
+      findReusableDerivative: jest.fn().mockResolvedValue(null),
+      emit: jest.fn(),
+    };
+    const service = makeService(assetService, true);
+    const platformJobs = (service as unknown as {
+      platformJobs: { findLatestForMediaAsset: jest.Mock };
+    }).platformJobs;
+    platformJobs.findLatestForMediaAsset.mockResolvedValue({
+      id: "job-delayed",
+      status: "queued",
+      queuedAt: new Date(Date.now() - 180_000),
+      createdAt: new Date(Date.now() - 180_000),
+    });
+
+    const result = await service.status("a1");
+
+    expect(result).toEqual(expect.objectContaining({
+      jobId: "job-delayed",
+      jobStatus: "queued",
+      processingStatus: "queued",
+      queueDelayed: true,
+    }));
+    expect(result.queuedAt).toBeInstanceOf(Date);
   });
 
   it("does not silently retry a failed provider attempt during ordinary reconciliation", async () => {

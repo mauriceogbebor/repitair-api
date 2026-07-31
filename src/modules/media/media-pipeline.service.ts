@@ -2,7 +2,7 @@ import { Injectable, OnModuleInit } from "@nestjs/common";
 import { MediaAsset } from "../../entities/media-asset.entity";
 import { MediaDerivative } from "../../entities/media-derivative.entity";
 import { BackgroundRemovalService } from "./background-removal.service";
-import { MediaProcessorRegistry } from "./media-processor.registry";
+import { MediaProcessorContext, MediaProcessorRegistry } from "./media-processor.registry";
 
 /**
  * Runs the ordered chain of registered processors for an asset. V1 registers the
@@ -22,10 +22,10 @@ export class MediaPipelineService implements OnModuleInit {
   }
 
   /** Execute every registered stage in order and return the produced derivatives. */
-  async run(asset: MediaAsset): Promise<MediaDerivative[]> {
+  async run(asset: MediaAsset, context?: MediaProcessorContext): Promise<MediaDerivative[]> {
     const results: MediaDerivative[] = [];
     for (const stage of this.registry.ordered()) {
-      results.push(await stage.process(asset));
+      results.push(await stage.process(asset, context));
     }
     return results;
   }
