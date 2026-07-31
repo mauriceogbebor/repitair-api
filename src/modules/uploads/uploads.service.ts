@@ -34,7 +34,11 @@ export class UploadsService {
   private PutObjectCommand: S3CommandCtor | null = null;
   private DeleteObjectCommand: S3CommandCtor | null = null;
   private HeadBucketCommand: S3CommandCtor | null = null;
+  private GetObjectCommand: S3CommandCtor | null = null;
+  private getSignedUrlFn: ((client: S3ClientInstance, command: unknown, options: { expiresIn: number }) => Promise<string>) | null = null;
   private localUploadDir: string;
+  /** TTL for presigned read URLs handed to clients (seconds). */
+  private readonly signedUrlTtlSeconds: number;
 
   // Allowed MIME types for images (HEIC/HEIF for iOS camera uploads)
   private readonly ALLOWED_MIME_TYPES = [
@@ -56,6 +60,11 @@ export class UploadsService {
     this.uploadProvider = (this.configService.get<string>("UPLOAD_PROVIDER") ||
       "local") as "local" | "s3";
     this.awsRegion = this.configService.get<string>("AWS_REGION") || "us-east-1";
+    // Presigned read URLs are short-lived; the client fetches the image well
+    // within this window. Default 1h; override with MEDIA_SIGNED_URL_TTL_SECONDS.
+    this.signedUrlTtlSeconds = Number(
+      this.configService.get<string>("MEDIA_SIGNED_URL_TTL_SECONDS") || 3600,
+    ) || 3600;
 
     // ── Production safety: never silently use local storage ──
     const isProduction = this.configService.get<string>("NODE_ENV") === "production";
@@ -132,10 +141,16 @@ export class UploadsService {
     this.PutObjectCommand = s3Sdk.PutObjectCommand;
     this.DeleteObjectCommand = s3Sdk.DeleteObjectCommand;
     this.HeadBucketCommand = s3Sdk.HeadBucketCommand;
+    this.GetObjectCommand = s3Sdk.GetObjectCommand;
     this.s3Client = new s3Sdk.S3Client({
       region: awsRegion,
       credentials: { accessKeyId: awsAccessKeyId, secretAccessKey: awsSecretAccessKey },
     }) as S3ClientInstance;
+    // s3-request-presigner mints short-lived GET URLs so private buckets can be
+    // read by the mobile client without ever being made public.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const presigner = require("@aws-sdk/s3-request-presigner");
+    this.getSignedUrlFn = presigner.getSignedUrl;
   }
 
   /**
@@ -238,6 +253,24 @@ export class UploadsService {
       return `https://${this.s3Bucket}.s3.${this.awsRegion}.amazonaws.com/${safeKey}`;
     }
     return `${this.baseUrl}/api/uploads/${safeKey}`;
+  }
+
+  /**
+   * Mint a short-lived URL a client can GET directly. For S3 this is a
+   * presigned URL so the bucket can stay private (a plain object URL 403s on a
+   * private bucket). For local storage the served path is already reachable.
+   * Use this — not urlForKey — for any URL handed to the mobile client to load.
+   */
+  async signedReadUrl(key: string): Promise<string> {
+    const safeKey = this.assertSafeKey(key);
+    if (this.uploadProvider !== "s3") {
+      return `${this.baseUrl}/api/uploads/${safeKey}`;
+    }
+    if (!this.s3Client || !this.GetObjectCommand || !this.getSignedUrlFn) {
+      throw new InternalServerErrorException("S3 client not initialized for presigning");
+    }
+    const command = new this.GetObjectCommand({ Bucket: this.s3Bucket, Key: safeKey });
+    return this.getSignedUrlFn(this.s3Client, command, { expiresIn: this.signedUrlTtlSeconds });
   }
 
   private async readFromS3(key: string): Promise<Buffer> {

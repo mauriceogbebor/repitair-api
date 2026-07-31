@@ -23,7 +23,10 @@ function makeService(
     } : null),
   };
   const repits = { findOne: jest.fn() };
-  const storage = { objectExists: jest.fn().mockResolvedValue(true) };
+  const storage = {
+    objectExists: jest.fn().mockResolvedValue(true),
+    signedReadUrl: jest.fn((key: string) => Promise.resolve(`https://signed.example/${key}`)),
+  };
   const backgroundRemoval = { compatibilityVersion: "provider-v1+pr1+pl1+out-transparent_png" };
   const dataSource = { transaction: jest.fn() };
   return new MediaProcessingService(
@@ -69,12 +72,12 @@ describe("MediaProcessingService.resolveTemplateImage", () => {
   });
 
   it("uses the ORIGINAL for a template that does not require isolation", async () => {
-    const asset = { id: "a1", originalUrl: "http://x/o.jpg", processingStatus: "uploaded" } as MediaAsset;
+    const asset = { id: "a1", originalKey: "o.jpg", originalUrl: "http://x/o.jpg", processingStatus: "uploaded" } as MediaAsset;
     const assetService = { requireAsset: jest.fn().mockResolvedValue(asset), findReusableDerivative: jest.fn(), emit: jest.fn() };
     const service = makeService(assetService, false);
 
     const result = await service.resolveTemplateImage("a1", "template-1");
-    expect(result).toEqual(expect.objectContaining({ imageUrl: "http://x/o.jpg", imageSource: "original", status: "ready", requiresBackgroundRemoval: false }));
+    expect(result).toEqual(expect.objectContaining({ imageUrl: "https://signed.example/o.jpg", imageSource: "original", status: "ready", requiresBackgroundRemoval: false }));
     expect(assetService.findReusableDerivative).not.toHaveBeenCalled();
   });
 
@@ -88,7 +91,7 @@ describe("MediaProcessingService.resolveTemplateImage", () => {
     const service = makeService(assetService, true);
 
     const result = await service.resolveTemplateImage("a1", "template-1");
-    expect(result).toEqual(expect.objectContaining({ imageUrl: "http://x/t.png", imageSource: "derivative", status: "ready", requiresBackgroundRemoval: true }));
+    expect(result).toEqual(expect.objectContaining({ imageUrl: "https://signed.example/t.png", imageSource: "derivative", status: "ready", requiresBackgroundRemoval: true }));
   });
 
   it("NEVER substitutes the original when isolation is required but not ready — reports pending and auto-starts", async () => {
@@ -242,7 +245,9 @@ describe("MediaProcessingService.resolveTemplateImage", () => {
 });
 
 describe("MediaProcessingService.assertRequiredIsolationReady", () => {
-  const derivativeUrl = "https://media.example/subject.png";
+  // The client-facing URL's path is the storage key; reconciliation matches by
+  // key so it tolerates the rotating query params on a presigned URL.
+  const derivativeUrl = "https://media.example/private/subject.png";
   const template = {
     id: "audioverse",
     capabilities: { supportsIsolatedSubject: true, requiresBackgroundRemoval: true },
@@ -293,7 +298,7 @@ describe("MediaProcessingService.assertRequiredIsolationReady", () => {
 
     await expect(service.assertRequiredIsolationReady(readyInput as never)).resolves.toEqual({
       assetId: "a1",
-      derivativeUrl,
+      derivativeUrl: "https://signed.example/private/subject.png",
     });
   });
 
