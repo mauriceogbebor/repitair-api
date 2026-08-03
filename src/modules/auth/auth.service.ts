@@ -4,6 +4,7 @@ import {
   Logger,
   BadRequestException,
   NotFoundException,
+  Optional,
   ServiceUnavailableException,
   ForbiddenException,
 } from "@nestjs/common";
@@ -17,6 +18,7 @@ import { TokenBlacklistService } from "../../common/services/token-blacklist.ser
 import { LoginDto } from "./dto/login.dto";
 import { SignupDto } from "./dto/signup.dto";
 import { SocialAuthDto } from "./dto/social-auth.dto";
+import { MusicConnectionsService } from "../music/music-connections.service";
 
 @Injectable()
 export class AuthService {
@@ -29,6 +31,7 @@ export class AuthService {
     private readonly mailService: MailService,
     private readonly tokenBlacklist: TokenBlacklistService,
     private readonly configService: ConfigService,
+    @Optional() private readonly musicConnections?: MusicConnectionsService,
   ) {}
 
   private requireSecret(key: string): string {
@@ -425,7 +428,7 @@ export class AuthService {
     return Buffer.from(payload, "base64url").toString("utf8");
   }
 
-  buildAppleMusicAuthUrl(userId: string): string {
+  async buildAppleMusicAuthUrl(userId: string): Promise<string> {
     const teamId = this.configService.get<string>("APPLE_MUSIC_TEAM_ID");
     const keyId = this.configService.get<string>("APPLE_MUSIC_KEY_ID");
     const privateKeyStr = this.configService.get<string>("APPLE_MUSIC_PRIVATE_KEY");
@@ -436,11 +439,20 @@ export class AuthService {
       );
     }
 
-    const state = this.signOAuthState(userId);
+    const state = this.musicConnections
+      ? await this.musicConnections.createOAuthState(userId, "apple-music")
+      : this.signOAuthState(userId);
 
     const baseUrl = this.configService.get<string>("API_BASE_URL") || "http://localhost:3000";
     const params = new URLSearchParams({ state });
     return `${baseUrl}/auth/apple-music/authorize?${params.toString()}`;
+  }
+
+  async validateAppleMusicAuthorizationState(state: string): Promise<void> {
+    if (!this.musicConnections) {
+      throw new ServiceUnavailableException("Apple Music connection is not available right now.");
+    }
+    await this.musicConnections.validateOAuthState(state, "apple-music");
   }
 
   generateMusicKitDeveloperToken(): string | null {
@@ -476,14 +488,20 @@ export class AuthService {
   }
 
   async handleAppleMusicCallback(state: string, userToken: string): Promise<{ success: boolean; message: string }> {
-    const userId = this.verifyOAuthState(state);
+    const { userId } = this.musicConnections
+      ? await this.musicConnections.consumeOAuthState(state, "apple-music")
+      : { userId: this.verifyOAuthState(state) };
 
     if (!userToken?.trim()) {
       throw new BadRequestException("Apple Music user token is missing");
     }
 
     try {
-      await this.usersService.connectAppleMusic(userId, userToken);
+      if (this.musicConnections) {
+        await this.musicConnections.connectAppleMusic(userId, userToken);
+      } else {
+        await this.usersService.connectAppleMusic(userId, userToken);
+      }
     } catch (err) {
       if (err instanceof NotFoundException) {
         throw new BadRequestException("Invalid state parameter");
@@ -495,7 +513,7 @@ export class AuthService {
     return { success: true, message: "Apple Music account connected successfully" };
   }
 
-  buildSpotifyAuthUrl(userId: string): string {
+  async buildSpotifyAuthUrl(userId: string): Promise<string> {
     const clientId = this.configService.get<string>("SPOTIFY_CLIENT_ID");
     const redirectUri = this.configService.get<string>("SPOTIFY_REDIRECT_URI");
 
@@ -505,7 +523,14 @@ export class AuthService {
       );
     }
 
-    const state = this.signOAuthState(userId);
+    const codeVerifier = randomBytes(64).toString("base64url");
+    const codeChallenge = require("crypto")
+      .createHash("sha256")
+      .update(codeVerifier)
+      .digest("base64url");
+    const state = this.musicConnections
+      ? await this.musicConnections.createOAuthState(userId, "spotify", codeVerifier)
+      : this.signOAuthState(userId);
     const scopes = [
       "user-read-recently-played",
       "user-read-currently-playing",
@@ -520,6 +545,8 @@ export class AuthService {
       redirect_uri: redirectUri,
       scope: scopes.join(" "),
       state,
+      code_challenge_method: "S256",
+      code_challenge: codeChallenge,
     });
 
     return `https://accounts.spotify.com/authorize?${params.toString()}`;
@@ -530,46 +557,61 @@ export class AuthService {
     const clientSecret = this.configService.get<string>("SPOTIFY_CLIENT_SECRET");
     const redirectUri = this.configService.get<string>("SPOTIFY_REDIRECT_URI");
 
-    if (!clientId || !clientSecret || !redirectUri) {
+    if (!clientId || !redirectUri) {
       throw new ServiceUnavailableException(
-        "Spotify OAuth is not available. SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, and SPOTIFY_REDIRECT_URI must be configured.",
+        "Spotify OAuth is not available. SPOTIFY_CLIENT_ID and SPOTIFY_REDIRECT_URI must be configured.",
       );
     }
 
-    const userId = this.verifyOAuthState(state);
+    const oauthState = this.musicConnections
+      ? await this.musicConnections.consumeOAuthState(state, "spotify")
+      : { userId: this.verifyOAuthState(state), codeVerifier: null };
+
+    const headers: Record<string, string> = {
+      "Content-Type": "application/x-www-form-urlencoded",
+    };
+    if (clientSecret) {
+      headers.Authorization = `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`;
+    }
 
     const tokenResponse = await fetch("https://accounts.spotify.com/api/token", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`,
-      },
+      headers,
+      signal: AbortSignal.timeout(12_000),
       body: new URLSearchParams({
         grant_type: "authorization_code",
         code,
         redirect_uri: redirectUri,
+        client_id: clientId,
+        ...(oauthState.codeVerifier ? { code_verifier: oauthState.codeVerifier } : {}),
       }).toString(),
     });
 
     if (!tokenResponse.ok) {
-      const error = await tokenResponse.json();
-      this.logger.error(`Spotify token exchange failed: ${JSON.stringify(error)}`);
+      this.logger.error(`Spotify token exchange failed with status ${tokenResponse.status}`);
       throw new BadRequestException("Failed to exchange authorization code for tokens");
     }
 
     const tokenData = (await tokenResponse.json()) as {
       access_token: string;
-      refresh_token: string;
+      refresh_token?: string;
       expires_in: number;
+      scope?: string;
     };
 
     try {
-      await this.usersService.connectSpotify(userId, tokenData.refresh_token);
+      if (this.musicConnections) {
+        await this.musicConnections.connectSpotify(oauthState.userId, tokenData);
+      } else if (tokenData.refresh_token) {
+        await this.usersService.connectSpotify(oauthState.userId, tokenData.refresh_token);
+      } else {
+        throw new BadRequestException("Spotify did not return a refresh token.");
+      }
     } catch (err) {
       if (err instanceof NotFoundException) {
         throw new BadRequestException("Invalid state parameter");
       }
-      this.logger.error(`Failed to save Spotify refresh token for user ${userId}: ${(err as Error).message}`);
+      this.logger.error(`Failed to save Spotify authorization for user ${oauthState.userId}: ${(err as Error).message}`);
       throw new BadRequestException("Failed to connect Spotify account");
     }
 

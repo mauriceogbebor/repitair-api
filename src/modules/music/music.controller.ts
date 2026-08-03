@@ -1,10 +1,30 @@
-import { Body, Controller, Get, Logger, Post, Query, Res, UseGuards } from "@nestjs/common";
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Logger,
+  Param,
+  Post,
+  Query,
+  Res,
+  UseGuards,
+} from "@nestjs/common";
 import { randomUUID } from "crypto";
 import { Response } from "express";
 
 import { CurrentUser, CurrentUserPayload } from "../../common/decorators/current-user.decorator";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { MusicResolutionException, UpstreamMusicError } from "./music.errors";
+import {
+  CreateMusicCollectionDto,
+  MusicLibraryQueryDto,
+  PlaylistTracksQueryDto,
+  RecordPlaylistImportDto,
+} from "./dto/music-library.dto";
+import { MusicConnectionsService } from "./music-connections.service";
+import { MusicLibraryService } from "./music-library.service";
 import { ParseLinkDto } from "./dto/parse-link.dto";
 import { MusicService } from "./music.service";
 
@@ -13,7 +33,18 @@ import { MusicService } from "./music.service";
 export class MusicController {
   private readonly logger = new Logger(MusicController.name);
 
-  constructor(private musicService: MusicService) {}
+  constructor(
+    private musicService: MusicService,
+    private readonly connections: MusicConnectionsService,
+    private readonly library: MusicLibraryService,
+  ) {}
+
+  private provider(value: string): "spotify" | "apple-music" {
+    if (value !== "spotify" && value !== "apple-music") {
+      throw new BadRequestException("Provider must be spotify or apple-music.");
+    }
+    return value;
+  }
 
   @Post("parse-link")
   async parseLink(
@@ -98,5 +129,63 @@ export class MusicController {
   @Get("recent")
   getRecentSongs(@CurrentUser() user: CurrentUserPayload) {
     return this.musicService.getRecentSongs(user.sub);
+  }
+
+  @Get("connections")
+  connectionsList(@CurrentUser() user: CurrentUserPayload) {
+    return this.connections.listConnections(user.sub);
+  }
+
+  @Delete("connections/:provider")
+  async disconnect(
+    @Param("provider") provider: string,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    await this.connections.disconnect(user.sub, this.provider(provider));
+    return { success: true };
+  }
+
+  @Get("playlists")
+  playlists(
+    @Query() query: MusicLibraryQueryDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.library.listPlaylists(user.sub, query);
+  }
+
+  @Get("playlists/:provider/:playlistId/tracks")
+  playlistTracks(
+    @Param("provider") provider: string,
+    @Param("playlistId") playlistId: string,
+    @Query() query: PlaylistTracksQueryDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.library.listPlaylistTracks(
+      user.sub,
+      this.provider(provider),
+      playlistId,
+      query,
+    );
+  }
+
+  @Post("collections")
+  createCollection(
+    @Body() body: CreateMusicCollectionDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.library.createCollection(user.sub, body);
+  }
+
+  @Post("imports")
+  recordImport(
+    @Body() body: RecordPlaylistImportDto,
+    @CurrentUser() user: CurrentUserPayload,
+  ) {
+    return this.library.recordPlaylistImport(user.sub, body);
+  }
+
+  @Get("collections")
+  collections(@CurrentUser() user: CurrentUserPayload) {
+    return this.library.listCollections(user.sub);
   }
 }

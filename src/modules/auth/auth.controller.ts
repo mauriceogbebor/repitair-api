@@ -111,8 +111,8 @@ export class AuthController {
    */
   @Get("spotify/redirect")
   @UseGuards(JwtAuthGuard)
-  spotifyRedirect(@CurrentUser() user: CurrentUserPayload) {
-    const url = this.authService.buildSpotifyAuthUrl(user.sub);
+  async spotifyRedirect(@CurrentUser() user: CurrentUserPayload) {
+    const url = await this.authService.buildSpotifyAuthUrl(user.sub);
     return { url };
   }
 
@@ -176,8 +176,8 @@ export class AuthController {
    */
   @Get("apple-music/redirect")
   @UseGuards(JwtAuthGuard)
-  appleMusicRedirect(@CurrentUser() user: CurrentUserPayload) {
-    const url = this.authService.buildAppleMusicAuthUrl(user.sub);
+  async appleMusicRedirect(@CurrentUser() user: CurrentUserPayload) {
+    const url = await this.authService.buildAppleMusicAuthUrl(user.sub);
     return { url };
   }
 
@@ -186,10 +186,20 @@ export class AuthController {
    * Apple Music access. On success, posts back to the callback endpoint.
    */
   @Get("apple-music/authorize")
-  appleMusicAuthorize(
+  async appleMusicAuthorize(
     @Query("state") state: string,
     @Res() res: Response,
   ) {
+    try {
+      await this.authService.validateAppleMusicAuthorizationState(state);
+    } catch {
+      return res.redirect(
+        this.buildAppleMusicAppRedirect(
+          "error",
+          "This Apple Music connection link is invalid or expired.",
+        ),
+      );
+    }
     const developerToken = this.authService.generateMusicKitDeveloperToken();
 
     if (!developerToken || !state) {
@@ -283,8 +293,16 @@ export class AuthController {
           throw new Error('Authorization was cancelled.');
         }
 
-        // Redirect to callback with the state
-        window.location.href = CALLBACK_URL + '?state=' + encodeURIComponent(STATE) + '&userToken=' + encodeURIComponent(userToken);
+        const callback = await fetch(CALLBACK_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ state: STATE, userToken }),
+        });
+        const result = await callback.json();
+        if (!callback.ok || !result.redirectUrl) {
+          throw new Error(result.message || 'Authorization failed. Please try again.');
+        }
+        window.location.replace(result.redirectUrl);
       } catch (err) {
         btn.disabled = false;
         btn.textContent = 'Try Again';
@@ -304,25 +322,20 @@ export class AuthController {
    * Called after the user authorizes on the MusicKit JS page.
    * Marks the user as connected and redirects to the mobile app.
    */
-  @Get("apple-music/callback")
+  @Post("apple-music/callback")
   async appleMusicCallback(
-    @Query("state") state?: string,
-    @Query("userToken") userToken?: string,
-    @Query("error") error?: string,
-    @Res() res?: Response,
+    @Body() body: { state?: string; userToken?: string; error?: string },
   ) {
+    const { state, userToken, error } = body;
     if (error || !state || !userToken) {
-      const redirectUrl = this.buildAppleMusicAppRedirect(
-        "error",
-        "Could not connect Apple Music. Please try again.",
-      );
-      return res!.redirect(redirectUrl);
+      return {
+        redirectUrl: this.buildAppleMusicAppRedirect("error", "Could not connect Apple Music. Please try again."),
+      };
     }
 
     try {
       await this.authService.handleAppleMusicCallback(state, userToken);
-      const redirectUrl = this.buildAppleMusicAppRedirect("success");
-      return res!.redirect(redirectUrl);
+      return { redirectUrl: this.buildAppleMusicAppRedirect("success") };
     } catch (err) {
       const message =
         err instanceof Error && err.message.includes("not available")
@@ -330,8 +343,7 @@ export class AuthController {
           : err instanceof Error && err.message.includes("Invalid state")
             ? "This Apple Music connection link is invalid or expired."
             : "Could not connect Apple Music. Please try again.";
-      const redirectUrl = this.buildAppleMusicAppRedirect("error", message);
-      return res!.redirect(redirectUrl);
+      return { redirectUrl: this.buildAppleMusicAppRedirect("error", message) };
     }
   }
 }
