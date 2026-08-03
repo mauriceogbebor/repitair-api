@@ -14,6 +14,7 @@ import {
   MusicResolutionException,
   UpstreamMusicError,
 } from "./music.errors";
+import { MusicConnectionsService } from "./music-connections.service";
 
 type RedisClient = any;
 
@@ -107,6 +108,7 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
     @InjectRepository(User)
     private readonly usersRepo: Repository<User>,
     @Inject(REDIS_CLIENT) @Optional() private readonly redis: RedisClient | null,
+    @Optional() private readonly musicConnections?: MusicConnectionsService,
   ) {}
 
   /* ── Lifecycle ─────────────────────────────────────────────────────── */
@@ -302,7 +304,7 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
    * If the provider returns 401/403, the cached JWT is invalidated, a fresh JWT
    * is generated, and the request is retried exactly once.
    */
-  private appleMusicApiCall(
+  private async appleMusicApiCall(
     url: string,
     context: PreparedMusicLink,
     operation: string,
@@ -323,25 +325,27 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
       ...extraHeaders,
     };
 
-    return this.resilientFetch(url, { headers }, {
+    let response = await this.resilientFetch(url, { headers }, {
       operation,
       provider: "apple-music",
       requestId: context.requestId,
-    }).then((response) => {
-      if (response.status === 401 || response.status === 403) {
-        this.logger.warn(`Apple Music ${response.status} on ${operation} — regenerating developer JWT and retrying once`);
-        this.invalidateAppleMusicToken();
-        const freshToken = this.generateAppleMusicJwt();
-        if (freshToken) {
-          return this.resilientFetch(
-            url,
-            { headers: { ...headers, Authorization: `Bearer ${freshToken}` } },
-            { operation: `${operation}-auth-retry`, provider: "apple-music", requestId: context.requestId, retries: 0 },
-          );
-        }
-      }
-      return response;
     });
+    if (response.status === 401 || response.status === 403) {
+      this.logger.warn(`Apple Music ${response.status} on ${operation} — regenerating developer JWT and retrying once`);
+      this.invalidateAppleMusicToken();
+      const freshToken = this.generateAppleMusicJwt();
+      if (freshToken) {
+        response = await this.resilientFetch(
+          url,
+          { headers: { ...headers, Authorization: `Bearer ${freshToken}` } },
+          { operation: `${operation}-auth-retry`, provider: "apple-music", requestId: context.requestId, retries: 0 },
+        );
+      }
+    }
+    if (response.status === 401 && extraHeaders?.["Music-User-Token"] && context.userId && this.musicConnections) {
+      await this.musicConnections.requireReauthorization(context.userId, "apple-music");
+    }
+    return response;
   }
 
   detectLinkType(link: string): "track" | "album" | "playlist" {
@@ -1043,7 +1047,10 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
       });
     }
 
-    const cached = await this.getCached<ParsedCollection>(COLLECTION_CACHE_PREFIX, prepared.normalizedUrl);
+    const collectionLookupKey = prepared.linkType === "playlist" && prepared.userId
+      ? `user:${prepared.userId}:${prepared.normalizedUrl}`
+      : `public:${prepared.normalizedUrl}`;
+    const cached = await this.getCached<ParsedCollection>(COLLECTION_CACHE_PREFIX, collectionLookupKey);
     if (cached) {
       this.logLookup("log", "Music collection cache hit", prepared, {
         responseType: cached.type,
@@ -1052,7 +1059,7 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
       return cached;
     }
 
-    return this.dedupeLookup(this.pendingCollectionLookups, prepared.normalizedUrl, async () => {
+    return this.dedupeLookup(this.pendingCollectionLookups, collectionLookupKey, async () => {
       const startedAt = Date.now();
       try {
         let result: ParsedCollection | null = null;
@@ -1116,7 +1123,7 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
           });
         }
 
-        await this.setCache(COLLECTION_CACHE_PREFIX, prepared.normalizedUrl, result, COLLECTION_CACHE_TTL_SECONDS);
+        await this.setCache(COLLECTION_CACHE_PREFIX, collectionLookupKey, result, COLLECTION_CACHE_TTL_SECONDS);
         this.logLookup("log", "Music collection lookup succeeded", prepared, {
           durationMs: Date.now() - startedAt,
           responseType: result.type,
@@ -1207,6 +1214,13 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async getUserSpotifyAccessToken(userId: string): Promise<string | null> {
+    if (this.musicConnections) {
+      try {
+        return await this.musicConnections.spotifyAccessToken(userId);
+      } catch {
+        return null;
+      }
+    }
     const clientId = this.configService.get<string>("SPOTIFY_CLIENT_ID");
     const clientSecret = this.configService.get<string>("SPOTIFY_CLIENT_SECRET");
 
@@ -1267,6 +1281,13 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
   }
 
   async getUserAppleMusicToken(userId: string): Promise<string | null> {
+    if (this.musicConnections) {
+      try {
+        return await this.musicConnections.appleMusicUserToken(userId);
+      } catch {
+        return null;
+      }
+    }
     const user = await this.usersRepo
       .createQueryBuilder("user")
       .addSelect("user.appleMusicUserToken")
@@ -1464,6 +1485,7 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
     // Try user token first if available.
     let usedUserToken = false;
     let userTokenAvailable = false;
+    let userTokenStatus: number | null = null;
     if (context.userId) {
       const userToken = await this.getUserSpotifyAccessToken(context.userId);
       if (userToken) {
@@ -1474,8 +1496,12 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
           { headers: { Authorization: `Bearer ${userToken}` } },
           { operation: "spotify-playlist-lookup-user-token", provider: "spotify", requestId: context.requestId },
         );
+        userTokenStatus = userResponse.status;
         if (userResponse.ok) {
           return this.parseSpotifyPlaylistResponse(userResponse);
+        }
+        if (userResponse.status === 401 && this.musicConnections) {
+          await this.musicConnections.requireReauthorization(context.userId, "spotify");
         }
         // Fall through to client-credentials if user token fails.
       }
@@ -1508,11 +1534,10 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
       );
       // If Spotify returned 404 and we had no user token to try, the playlist is likely
       // private or personal. Provide an actionable message.
-      if (response.status === 404 && !usedUserToken) {
+      if (response.status === 404 || userTokenStatus === 404) {
         throw this.buildResolutionException(context, {
           code: "PROVIDER_NOT_FOUND" as const,
-          message:
-            "We couldn’t find that playlist. It may be private — try sharing a public playlist, or link your Spotify account in settings.",
+          message: "This playlist is private. Connect the account that owns it or ask the owner to share it through Repitair.",
           providerStatus: 404,
           retriable: false,
           status: 404,
@@ -1603,7 +1628,7 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
 
   private async listAppleMusicPlaylist(playlistId: string, context: PreparedMusicLink): Promise<ParsedCollection | null> {
     const storefront = context.storefront ?? "us";
-    const isPersonal = playlistId.startsWith("pl.u-");
+    const isPersonal = playlistId.startsWith("pl.u-") || playlistId.startsWith("p.");
     let apiUrl: string;
     let extraHeaders: Record<string, string> | undefined;
 
@@ -1618,7 +1643,19 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
         });
       }
       extraHeaders = { "Music-User-Token": userToken };
-      apiUrl = `https://api.music.apple.com/v1/me/library/playlists/${playlistId}?include=tracks`;
+      const libraryId = playlistId.startsWith("p.")
+        ? playlistId
+        : await this.findAppleLibraryPlaylistId(playlistId, context, extraHeaders);
+      if (!libraryId) {
+        throw this.buildResolutionException(context, {
+          code: "PROVIDER_NOT_FOUND",
+          message: "This playlist is private. Connect the account that owns it or ask the owner to share it through Repitair.",
+          providerStatus: 404,
+          retriable: false,
+          status: 404,
+        });
+      }
+      apiUrl = `https://api.music.apple.com/v1/me/library/playlists/${encodeURIComponent(libraryId)}?include=tracks`;
     } else {
       apiUrl = `https://api.music.apple.com/v1/catalog/${storefront}/playlists/${playlistId}?include=tracks`;
     }
@@ -1671,6 +1708,33 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
         })),
       type: "playlist",
     };
+  }
+
+  private async findAppleLibraryPlaylistId(
+    globalId: string,
+    context: PreparedMusicLink,
+    headers: Record<string, string>,
+  ): Promise<string | null> {
+    let offset = 0;
+    do {
+      const response = await this.appleMusicApiCall(
+        `https://api.music.apple.com/v1/me/library/playlists?limit=100&offset=${offset}`,
+        context,
+        "apple-library-playlist-resolution",
+        headers,
+      );
+      if (!response.ok) return null;
+      const payload = await response.json() as {
+        data?: Array<{ id: string; attributes?: { playParams?: { globalId?: string } } }>;
+        next?: string;
+      };
+      const match = payload.data?.find((entry) => entry.attributes?.playParams?.globalId === globalId);
+      if (match) return match.id;
+      const count = payload.data?.length ?? 0;
+      offset += count;
+      if (!payload.next || count === 0 || offset >= 500) break;
+    } while (true);
+    return null;
   }
 
   private async searchAppleMusic(query: string, storefront = "us"): Promise<ParsedTrack[]> {

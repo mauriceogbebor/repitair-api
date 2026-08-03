@@ -51,6 +51,10 @@ import {
   UserRestriction,
   MediaAsset,
   MediaDerivative,
+  MusicCollection,
+  MusicConnection,
+  MusicOAuthState,
+  MusicPlaylistImport,
 } from "./entities";
 import { AdminModule } from "./modules/admin/admin.module";
 import { AuthModule } from "./modules/auth/auth.module";
@@ -120,6 +124,10 @@ import { UsersModule } from "./modules/users/users.module";
             UserRestriction,
             MediaAsset,
             MediaDerivative,
+            MusicCollection,
+            MusicConnection,
+            MusicOAuthState,
+            MusicPlaylistImport,
           ],
           synchronize: false,
           migrationsRun: false,
