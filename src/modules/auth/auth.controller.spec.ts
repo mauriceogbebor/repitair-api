@@ -34,6 +34,9 @@ describe("AuthController", () => {
       upgradeSession: jest.fn(),
       buildSpotifyAuthUrl: jest.fn(),
       handleSpotifyCallback: jest.fn(),
+      validateAppleMusicAuthorizationState: jest.fn(),
+      generateMusicKitDeveloperToken: jest.fn(),
+      handleAppleMusicCallback: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -436,6 +439,29 @@ describe("AuthController", () => {
       expect(result).toEqual({
         url: "repitair://spotify-connected?status=error&message=Could+not+connect+Spotify.+Please+try+again.",
       });
+    });
+  });
+
+  describe("GET /auth/apple-music/authorize", () => {
+    it("posts the Music User Token to a callback that preserves the mounted API prefix", async () => {
+      (authService.validateAppleMusicAuthorizationState as jest.Mock).mockResolvedValue(undefined);
+      (authService.generateMusicKitDeveloperToken as jest.Mock).mockReturnValue("developer-token");
+      const send = jest.fn();
+      const response = {
+        redirect: jest.fn(),
+        type: jest.fn().mockReturnThis(),
+        send,
+      };
+
+      await authController.appleMusicAuthorize("oauth-state", response as never);
+
+      expect(response.type).toHaveBeenCalledWith("text/html");
+      expect(send).toHaveBeenCalledTimes(1);
+      const html = send.mock.calls[0][0] as string;
+      expect(html).toContain(
+        "const CALLBACK_URL = new URL('callback', window.location.href).toString();",
+      );
+      expect(html).not.toContain("window.location.origin + '/auth/apple-music/callback'");
     });
   });
 });

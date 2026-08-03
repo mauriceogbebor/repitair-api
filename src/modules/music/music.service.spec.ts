@@ -404,6 +404,36 @@ describe("MusicService", () => {
       expect(fetchSpy).toHaveBeenCalledTimes(2);
     });
 
+    it("requires reconnect when a personal Apple Music request remains unauthorized", async () => {
+      const connections = {
+        requireReauthorization: jest.fn().mockResolvedValue(undefined),
+      };
+      const connectedService = new MusicService(
+        mockConfig as never,
+        mockUsersRepo as never,
+        null,
+        connections as never,
+      );
+      fetchSpy = jest.spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(new Response("Unauthorized", { status: 401 }))
+        .mockResolvedValueOnce(new Response("Still unauthorized", { status: 401 }));
+      jest.spyOn(connectedService as any, "generateAppleMusicJwt")
+        .mockReturnValueOnce("stale-jwt")
+        .mockReturnValueOnce("fresh-jwt");
+      const context = { ...makeContext(), provider: "apple-music" as const, userId: "user-1" };
+
+      const response = await (connectedService as any).appleMusicApiCall(
+        "https://api.music.apple.com/v1/me/library/playlists/p.test",
+        context,
+        "apple-personal-playlist-lookup",
+        { "Music-User-Token": "user-token" },
+      );
+
+      expect(response.status).toBe(401);
+      expect(connections.requireReauthorization).toHaveBeenCalledWith("user-1", "apple-music");
+      connectedService.onModuleDestroy();
+    });
+
     it("maps provider 403 to a non-user-auth HTTP contract", () => {
       const mapped = (service as any).mapResponseToError(
         new Response("Forbidden", { status: 403 }),

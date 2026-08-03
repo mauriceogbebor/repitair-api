@@ -40,6 +40,10 @@ import {
   UserRestriction,
   MediaAsset,
   MediaDerivative,
+  MusicCollection,
+  MusicConnection,
+  MusicOAuthState,
+  MusicPlaylistImport,
 } from './entities';
 
 dotenvConfig();
@@ -98,6 +102,10 @@ export default new DataSource({
     UserRestriction,
     MediaAsset,
     MediaDerivative,
+    MusicCollection,
+    MusicConnection,
+    MusicOAuthState,
+    MusicPlaylistImport,
   ],
   // Only timestamp-prefixed migration files are executable. Specs live beside
   // migrations for reviewability but must never be imported by the TypeORM CLI.

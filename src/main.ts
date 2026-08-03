@@ -49,6 +49,16 @@ function validateEnvironment(): void {
     if (!process.env.ADMIN_JWT_SECRET) errors.push("ADMIN_JWT_SECRET is required");
     if (!process.env.ADMIN_FRONTEND_ORIGIN) errors.push("ADMIN_FRONTEND_ORIGIN is required");
     if (!process.env.PUBLIC_URL) errors.push("PUBLIC_URL is required");
+    if (!process.env.MUSIC_TOKEN_ENCRYPTION_KEY) {
+      errors.push("MUSIC_TOKEN_ENCRYPTION_KEY is required for encrypted music-provider authorization");
+    } else {
+      const musicTokenKey = process.env.MUSIC_TOKEN_ENCRYPTION_KEY.trim();
+      const isHexKey = /^[0-9a-f]{64}$/i.test(musicTokenKey);
+      const isBase64Key = !isHexKey && Buffer.from(musicTokenKey, "base64").length === 32;
+      if (!isHexKey && !isBase64Key) {
+        errors.push("MUSIC_TOKEN_ENCRYPTION_KEY must be 32 bytes encoded as base64 or 64 hex characters");
+      }
+    }
     if (process.env.ADMIN_COOKIE_SECURE === "false") errors.push("ADMIN_COOKIE_SECURE cannot be false in production");
 
     const sameSite = process.env.ADMIN_COOKIE_SAME_SITE;
@@ -101,8 +111,8 @@ function validateEnvironment(): void {
     }
   }
 
-  if (!process.env.SPOTIFY_CLIENT_ID || !process.env.SPOTIFY_CLIENT_SECRET) {
-    warnings.push("Spotify credentials missing (SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET) — Spotify song lookup will fail");
+  if (!process.env.SPOTIFY_CLIENT_ID) {
+    warnings.push("Spotify credentials missing (SPOTIFY_CLIENT_ID) — Spotify song lookup and account connection will fail");
   }
   if (!process.env.APPLE_MUSIC_TEAM_ID || !process.env.APPLE_MUSIC_KEY_ID || !process.env.APPLE_MUSIC_PRIVATE_KEY) {
     warnings.push("Apple Music credentials missing (APPLE_MUSIC_TEAM_ID, APPLE_MUSIC_KEY_ID, APPLE_MUSIC_PRIVATE_KEY) — Apple Music lookup will fail");
