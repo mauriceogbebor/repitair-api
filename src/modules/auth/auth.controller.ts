@@ -271,7 +271,7 @@ export class AuthController {
   <script>
     const STATE = ${JSON.stringify(state)};
     const DEV_TOKEN = ${JSON.stringify(developerToken)};
-    const CALLBACK_URL = window.location.origin + '/auth/apple-music/callback';
+    const CALLBACK_URL = new URL('callback', window.location.href).toString();
 
     async function authorize() {
       const btn = document.getElementById('authBtn');
