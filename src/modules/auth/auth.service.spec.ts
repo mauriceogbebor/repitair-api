@@ -2,8 +2,8 @@ import { Test, TestingModule } from "@nestjs/testing";
 import { ServiceUnavailableException, UnauthorizedException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { JwtService } from "@nestjs/jwt";
-import { generateKeyPairSync } from "crypto";
 import { AuthService } from "./auth.service";
+import { AppleIdentityService } from "./apple-identity.service";
 import { UsersService } from "../users/users.service";
 import { MailService } from "../../common/services/mail.service";
 import { TokenBlacklistService } from "../../common/services/token-blacklist.service";
@@ -13,6 +13,7 @@ describe("AuthService", () => {
   let usersService: UsersService;
   let jwtService: JwtService;
   let tokenBlacklist: TokenBlacklistService;
+  let appleIdentity: { verifyIdentityToken: jest.Mock };
 
   const mockUser = {
     id: "user_1",
@@ -58,6 +59,10 @@ describe("AuthService", () => {
       isBlacklisted: jest.fn().mockReturnValue(false),
     };
 
+    const mockAppleIdentity = {
+      verifyIdentityToken: jest.fn(),
+    };
+
     mockConfigService.get.mockImplementation((key: string) => {
       if (key === "GOOGLE_CLIENT_ID") return "google-client-id";
       if (key === "APPLE_CLIENT_ID") return "apple-client-id";
@@ -75,6 +80,7 @@ describe("AuthService", () => {
         { provide: MailService, useValue: mockMailService },
         { provide: TokenBlacklistService, useValue: mockTokenBlacklist },
         { provide: ConfigService, useValue: mockConfigService },
+        { provide: AppleIdentityService, useValue: mockAppleIdentity },
       ],
     }).compile();
 
@@ -82,6 +88,7 @@ describe("AuthService", () => {
     usersService = module.get<UsersService>(UsersService);
     jwtService = module.get<JwtService>(JwtService);
     tokenBlacklist = module.get<TokenBlacklistService>(TokenBlacklistService);
+    appleIdentity = module.get(AppleIdentityService);
   });
 
   afterEach(() => {
@@ -463,61 +470,60 @@ describe("AuthService", () => {
       }
     });
 
-    it("should fail closed when APPLE_CLIENT_ID is missing", async () => {
-      mockConfigService.get.mockImplementation((key: string) => {
-        if (key === "APPLE_CLIENT_ID") return undefined;
-        return "mock-value";
-      });
-
-      await expect((authService as any).verifyAppleIdToken("apple-token")).rejects.toThrow(
+    it("propagates ServiceUnavailableException from the Apple verifier (fail closed)", async () => {
+      appleIdentity.verifyIdentityToken.mockRejectedValue(
         new ServiceUnavailableException(
           "Apple Sign In is not available. APPLE_CLIENT_ID must be configured.",
         ),
       );
+
+      await expect(
+        (authService as any).verifyAppleIdToken("apple-token"),
+      ).rejects.toThrow(ServiceUnavailableException);
     });
 
-    it("should verify Apple tokens against the configured audience", async () => {
-      const { publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
-      const jwk = publicKey.export({ format: "jwk" }) as JsonWebKey & {
-        e: string;
-        kty: string;
-        n: string;
-      };
-
-      const fetchMock = jest.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          keys: [
-            {
-              kid: "apple-key",
-              kty: jwk.kty,
-              use: "sig",
-              n: jwk.n,
-              e: jwk.e,
-            },
-          ],
-        }),
+    it("delegates Apple verification to AppleIdentityService — never the symmetric JwtService", async () => {
+      appleIdentity.verifyIdentityToken.mockResolvedValue({
+        email: "john@example.com",
+        sub: "apple-sub-1",
       });
-      const originalFetch = global.fetch;
-      global.fetch = fetchMock as typeof fetch;
-      (jwtService.verify as jest.Mock).mockReturnValue({ email: "john@example.com" });
 
-      const header = Buffer.from(
-        JSON.stringify({ kid: "apple-key", alg: "RS256" }),
-      ).toString("base64");
-      const token = `${header}.payload.signature`;
+      const result = await (authService as any).verifyAppleIdToken(
+        "apple-token",
+        "nonce-123",
+      );
 
-      try {
-        const result = await (authService as any).verifyAppleIdToken(token);
+      expect(appleIdentity.verifyIdentityToken).toHaveBeenCalledWith(
+        "apple-token",
+        { expectedNonce: "nonce-123" },
+      );
+      // The Apple identity token must NOT be routed through NestJS JwtService
+      // (whose key is the symmetric JWT_SECRET) — that was the RS256 defect.
+      expect(jwtService.verify).not.toHaveBeenCalled();
+      expect(result).toEqual({ email: "john@example.com" });
+    });
 
-        expect(jwtService.verify).toHaveBeenCalledWith(
-          token,
-          expect.objectContaining({ audience: "apple-client-id" }),
-        );
-        expect(result).toEqual({ email: "john@example.com" });
-      } finally {
-        global.fetch = originalFetch;
-      }
+    it("socialAuth verifies Apple tokens via the Apple verifier and issues a session", async () => {
+      appleIdentity.verifyIdentityToken.mockResolvedValue({
+        email: "apple.user@example.com",
+        sub: "apple-sub-42",
+      });
+      (usersService.findByEmail as jest.Mock).mockResolvedValue(mockUser);
+      (jwtService.sign as jest.Mock).mockReturnValue(mockToken);
+
+      const result = await authService.socialAuth({
+        provider: "apple",
+        idToken: "apple-identity-token",
+        nonce: "nonce-xyz",
+      });
+
+      expect(appleIdentity.verifyIdentityToken).toHaveBeenCalledWith(
+        "apple-identity-token",
+        { expectedNonce: "nonce-xyz" },
+      );
+      expect(result).toEqual(
+        expect.objectContaining({ token: mockToken, refreshToken: expect.any(String) }),
+      );
     });
   });
 });

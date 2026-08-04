@@ -10,7 +10,7 @@ import {
 } from "@nestjs/common";
 import { JwtService, type JwtSignOptions } from "@nestjs/jwt";
 import { ConfigService } from "@nestjs/config";
-import { createHmac, createPublicKey, randomBytes, randomUUID, timingSafeEqual } from "crypto";
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "crypto";
 
 import { UsersService } from "../users/users.service";
 import { MailService } from "../../common/services/mail.service";
@@ -19,6 +19,7 @@ import { LoginDto } from "./dto/login.dto";
 import { SignupDto } from "./dto/signup.dto";
 import { SocialAuthDto } from "./dto/social-auth.dto";
 import { MusicConnectionsService } from "../music/music-connections.service";
+import { AppleIdentityService } from "./apple-identity.service";
 
 @Injectable()
 export class AuthService {
@@ -31,6 +32,7 @@ export class AuthService {
     private readonly mailService: MailService,
     private readonly tokenBlacklist: TokenBlacklistService,
     private readonly configService: ConfigService,
+    private readonly appleIdentity: AppleIdentityService,
     @Optional() private readonly musicConnections?: MusicConnectionsService,
   ) {}
 
@@ -86,7 +88,7 @@ export class AuthService {
       email = payload.email;
       fullName = dto.fullName || payload.name || this.deriveDisplayNameFromEmail(email);
     } else {
-      const payload = await this.verifyAppleIdToken(dto.idToken);
+      const payload = await this.verifyAppleIdToken(dto.idToken, dto.nonce);
       email = payload.email;
       fullName = dto.fullName || this.deriveDisplayNameFromEmail(email);
     }
@@ -157,58 +159,21 @@ export class AuthService {
     }
   }
 
-  private async verifyAppleIdToken(idToken: string): Promise<{ email: string }> {
-    const expectedClientId = this.configService.get<string>("APPLE_CLIENT_ID");
-    if (!expectedClientId) {
-      throw new ServiceUnavailableException(
-        "Apple Sign In is not available. APPLE_CLIENT_ID must be configured.",
-      );
-    }
-
-    try {
-      const headerB64 = idToken.split(".")[0];
-      const header = JSON.parse(Buffer.from(headerB64, "base64").toString()) as { kid: string; alg: string };
-
-      const keysResponse = await fetch("https://appleid.apple.com/auth/keys");
-      if (!keysResponse.ok) {
-        throw new UnauthorizedException("Failed to fetch Apple public keys");
-      }
-      const keysData = (await keysResponse.json()) as {
-        keys: Array<{ kid: string; kty: string; use: string; n: string; e: string }>;
-      };
-
-      const appleKey = keysData.keys.find((k) => k.kid === header.kid);
-      if (!appleKey) {
-        throw new UnauthorizedException("Apple key not found for token");
-      }
-
-      const publicKey = createPublicKey({
-        key: {
-          kty: appleKey.kty,
-          n: appleKey.n,
-          e: appleKey.e,
-        },
-        format: "jwk",
-      });
-
-      const publicKeyPem = publicKey.export({ type: "spki", format: "pem" }) as string;
-      const payload = this.jwtService.verify(idToken, {
-        algorithms: [header.alg as "RS256" | "ES256"],
-        publicKey: publicKeyPem,
-        issuer: "https://appleid.apple.com",
-        audience: expectedClientId,
-      }) as { email?: string; sub?: string };
-
-      if (!payload.email) {
-        throw new UnauthorizedException("Apple token missing email");
-      }
-
-      return { email: payload.email };
-    } catch (error) {
-      if (error instanceof UnauthorizedException || error instanceof ServiceUnavailableException) throw error;
-      this.logger.error("Apple token verification failed", error);
-      throw new UnauthorizedException("Failed to verify Apple ID token");
-    }
+  /**
+   * Verify a "Sign in with Apple" identity token.
+   *
+   * Delegates to {@link AppleIdentityService}, which verifies the RS256 token
+   * against Apple's JWKS public keys — NOT via NestJS `JwtService` (whose key is
+   * the symmetric `JWT_SECRET`) and NOT with any Apple Music credential.
+   */
+  private async verifyAppleIdToken(
+    idToken: string,
+    nonce?: string,
+  ): Promise<{ email: string }> {
+    const { email } = await this.appleIdentity.verifyIdentityToken(idToken, {
+      expectedNonce: nonce,
+    });
+    return { email };
   }
 
   async forgotPassword(email: string) {

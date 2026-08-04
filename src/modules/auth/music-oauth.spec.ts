@@ -24,6 +24,9 @@ describe("music provider OAuth", () => {
     connectSpotify: jest.fn().mockResolvedValue(undefined),
     connectAppleMusic: jest.fn().mockResolvedValue(undefined),
   };
+  // Apple *identity* verification (Sign in with Apple) is distinct from Apple
+  // *Music*; this OAuth suite never exercises it, so a bare stub suffices.
+  const appleIdentity = { verifyIdentityToken: jest.fn() };
   let service: AuthService;
   let fetchSpy: jest.SpyInstance;
 
@@ -35,6 +38,7 @@ describe("music provider OAuth", () => {
       mail as never,
       blacklist as never,
       config as never,
+      appleIdentity as never,
       connections as never,
     );
   });
