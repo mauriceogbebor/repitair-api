@@ -145,6 +145,51 @@ export class UsersService {
     }
   }
 
+  /**
+   * Create a user originating from a social provider. Sets a random (unusable)
+   * password and, optionally, a social avatar. Used by identity resolution when
+   * no existing account can be safely linked.
+   */
+  async createSocialUser(data: {
+    fullName: string;
+    email: string;
+    avatarUrl?: string;
+    signupSource: string;
+  }): Promise<User> {
+    const randomPassword = randomBytes(32).toString("base64url");
+    const passwordHash = await bcrypt.hash(randomPassword, 10);
+
+    const user = this.usersRepo.create({
+      fullName: data.fullName,
+      email: data.email.toLowerCase(),
+      country: "",
+      passwordHash,
+      connectedPlatforms: [],
+      signupSource: data.signupSource,
+      avatarUrl: data.avatarUrl?.trim() || undefined,
+    });
+
+    try {
+      return await this.usersRepo.save(user);
+    } catch (err) {
+      if (isUniqueViolation(err)) {
+        const existing = await this.findByEmail(data.email);
+        if (existing) return existing;
+      }
+      throw err;
+    }
+  }
+
+  /** Adopt a social-provider image only when the user has no avatar yet. */
+  async setAvatarIfMissing(userId: string, url: string | null): Promise<void> {
+    const trimmed = url?.trim();
+    if (!trimmed) return;
+    const user = await this.findById(userId);
+    if (!user || user.avatarUrl) return;
+    user.avatarUrl = trimmed;
+    await this.usersRepo.save(user);
+  }
+
   async validatePassword(user: User, password: string): Promise<boolean> {
     return bcrypt.compare(password, user.passwordHash);
   }
@@ -196,7 +241,11 @@ export class UsersService {
     }
 
     const resetToken = randomBytes(32).toString("hex");
-    user.resetToken = resetToken;
+    // Store only the hash of the token — like the reset code, the raw value must
+    // not sit in the database (a backup/read leak within the 10-min window
+    // otherwise yields a usable reset token). The raw token is returned to the
+    // client and never persisted server-side.
+    user.resetToken = this.hashCode(resetToken);
     user.resetTokenExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
     user.resetCode = undefined;
     user.resetCodeExpiresAt = undefined;
@@ -213,7 +262,7 @@ export class UsersService {
     if (new Date(user.resetTokenExpiresAt) < new Date()) return false;
 
     const expected = Buffer.from(user.resetToken, "utf8");
-    const received = Buffer.from(resetToken, "utf8");
+    const received = Buffer.from(this.hashCode(resetToken), "utf8");
     if (expected.length !== received.length || !timingSafeEqual(expected, received)) {
       return false;
     }
@@ -223,6 +272,9 @@ export class UsersService {
     user.resetCodeExpiresAt = undefined;
     user.resetToken = undefined;
     user.resetTokenExpiresAt = undefined;
+    // Invalidate every previously issued access/refresh token so a compromised
+    // session cannot survive a password reset.
+    user.sessionVersion = (user.sessionVersion ?? 0) + 1;
 
     await this.usersRepo.save(user);
 
@@ -265,6 +317,8 @@ export class UsersService {
     if (!user) return false;
 
     user.passwordHash = await bcrypt.hash(newPassword, 10);
+    // Revoke previously issued tokens on an explicit password change too.
+    user.sessionVersion = (user.sessionVersion ?? 0) + 1;
     await this.usersRepo.save(user);
 
     return true;

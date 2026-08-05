@@ -20,6 +20,7 @@ import { SignupDto } from "./dto/signup.dto";
 import { SocialAuthDto } from "./dto/social-auth.dto";
 import { MusicConnectionsService } from "../music/music-connections.service";
 import { AppleIdentityService } from "./apple-identity.service";
+import { SocialIdentityService } from "./social-identity.service";
 
 @Injectable()
 export class AuthService {
@@ -33,6 +34,7 @@ export class AuthService {
     private readonly tokenBlacklist: TokenBlacklistService,
     private readonly configService: ConfigService,
     private readonly appleIdentity: AppleIdentityService,
+    private readonly socialIdentity: SocialIdentityService,
     @Optional() private readonly musicConnections?: MusicConnectionsService,
   ) {}
 
@@ -80,30 +82,17 @@ export class AuthService {
   }
 
   async socialAuth(dto: SocialAuthDto) {
-    let email: string;
-    let fullName: string;
-
-    if (dto.provider === "google") {
-      const payload = await this.verifyGoogleIdToken(dto.idToken);
-      email = payload.email;
-      fullName = dto.fullName || payload.name || this.deriveDisplayNameFromEmail(email);
-    } else {
-      const payload = await this.verifyAppleIdToken(dto.idToken, dto.nonce);
-      email = payload.email;
-      fullName = dto.fullName || this.deriveDisplayNameFromEmail(email);
-    }
-
-    let user = await this.usersService.findByEmail(email);
-    if (!user) {
-      const randomPassword = randomBytes(32).toString("base64url");
-      user = await this.usersService.createUser({
-        fullName,
-        email,
-        password: randomPassword,
-        country: "",
-        signupSource: dto.provider,
-      });
-    }
+    // Verify the provider token and resolve the identity by its STABLE subject
+    // (Apple/Google `sub`) — never by email alone. This is what prevents Apple
+    // private-relay logins from creating a fresh account on each sign-in.
+    const identity = await this.verifySocialToken(dto);
+    const user = await this.socialIdentity.resolveUser({
+      provider: dto.provider,
+      subject: identity.subject,
+      email: identity.email,
+      fullName: dto.fullName || identity.name || undefined,
+      picture: identity.picture,
+    });
 
     this.assertUserCanSignIn(user);
     await this.usersService.recordLogin(user.id);
@@ -111,19 +100,52 @@ export class AuthService {
     return this.issueSession(user);
   }
 
-  private deriveDisplayNameFromEmail(email: string): string {
-    const base = email.split("@")[0]?.trim();
-    if (!base) return "Repitair User";
-
-    const words = base
-      .split(/[._-]+/)
-      .filter(Boolean)
-      .map((word) => word.charAt(0).toUpperCase() + word.slice(1));
-
-    return words.length ? words.join(" ") : "Repitair User";
+  /**
+   * Attach a provider identity to the currently-authenticated user (the
+   * "Connect account in Settings" flow). Rejects if the identity is already
+   * linked to a different Repitair account.
+   */
+  async linkSocialProvider(userId: string, dto: SocialAuthDto) {
+    const identity = await this.verifySocialToken(dto);
+    await this.socialIdentity.linkToUser(userId, {
+      provider: dto.provider,
+      subject: identity.subject,
+      email: identity.email,
+      fullName: dto.fullName || identity.name || undefined,
+      picture: identity.picture,
+    });
+    return { linked: true, provider: dto.provider };
   }
 
-  private async verifyGoogleIdToken(idToken: string): Promise<{ email: string; name?: string }> {
+  /**
+   * The authentication methods a user can sign in with — social providers plus
+   * email/password for accounts that originated from an email signup. Kept
+   * distinct from music-provider connections (Spotify / Apple Music).
+   */
+  async getLinkedAuthProviders(userId: string): Promise<{ authProviders: string[] }> {
+    const social = await this.socialIdentity.getLinkedProviders(userId);
+    const user = await this.usersService.findById(userId);
+    const providers: string[] = [...social];
+    if (user && (user.signupSource === "email" || user.signupSource == null)) {
+      providers.unshift("password");
+    }
+    return { authProviders: [...new Set(providers)] };
+  }
+
+  private async verifySocialToken(
+    dto: SocialAuthDto,
+  ): Promise<{ subject: string; email: string | null; name?: string | null; picture?: string | null }> {
+    if (dto.provider === "google") {
+      const payload = await this.verifyGoogleIdToken(dto.idToken);
+      return { subject: payload.sub, email: payload.email, name: payload.name, picture: payload.picture };
+    }
+    const payload = await this.verifyAppleIdToken(dto.idToken, dto.nonce);
+    return { subject: payload.sub, email: payload.email, name: null, picture: null };
+  }
+
+  private async verifyGoogleIdToken(
+    idToken: string,
+  ): Promise<{ email: string; name?: string; sub: string; picture?: string | null }> {
     const expectedClientIds = [
       this.configService.get<string>("GOOGLE_CLIENT_ID"),
       this.configService.get<string>("GOOGLE_IOS_CLIENT_ID"),
@@ -141,7 +163,13 @@ export class AuthService {
       if (!response.ok) {
         throw new UnauthorizedException("Invalid Google ID token");
       }
-      const payload = (await response.json()) as { email?: string; name?: string; aud?: string };
+      const payload = (await response.json()) as {
+        email?: string;
+        name?: string;
+        aud?: string;
+        sub?: string;
+        picture?: string;
+      };
 
       if (!payload.aud || !expectedClientIds.includes(payload.aud)) {
         throw new UnauthorizedException("Google token audience mismatch");
@@ -151,7 +179,11 @@ export class AuthService {
         throw new UnauthorizedException("Google token missing email");
       }
 
-      return { email: payload.email, name: payload.name };
+      if (!payload.sub) {
+        throw new UnauthorizedException("Google token missing subject");
+      }
+
+      return { email: payload.email, name: payload.name, sub: payload.sub, picture: payload.picture ?? null };
     } catch (error) {
       if (error instanceof UnauthorizedException || error instanceof ServiceUnavailableException) throw error;
       this.logger.error("Google token verification failed", error);
@@ -169,11 +201,11 @@ export class AuthService {
   private async verifyAppleIdToken(
     idToken: string,
     nonce?: string,
-  ): Promise<{ email: string }> {
-    const { email } = await this.appleIdentity.verifyIdentityToken(idToken, {
+  ): Promise<{ email: string; sub: string }> {
+    const { email, sub } = await this.appleIdentity.verifyIdentityToken(idToken, {
       expectedNonce: nonce,
     });
-    return { email };
+    return { email, sub };
   }
 
   async forgotPassword(email: string) {
