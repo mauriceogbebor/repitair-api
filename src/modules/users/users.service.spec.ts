@@ -277,30 +277,39 @@ describe("UsersService", () => {
   });
 
   describe("resetPassword", () => {
-    it("should update hash, clear reset code, and return true", async () => {
+    it("should update hash, clear reset code, revoke sessions, and return true", async () => {
       const validToken = "abc123validtoken";
       const userBeforeReset = {
         ...mockUser,
+        sessionVersion: 3,
         resetCode: hashCode("123456"),
         resetCodeExpiresAt: new Date(),
-        resetToken: validToken,
+        // Stored hashed, exactly like the reset code.
+        resetToken: hashCode(validToken),
         resetTokenExpiresAt: new Date(Date.now() + 600000),
       };
       mockRepository.findOne.mockResolvedValue(userBeforeReset);
-      mockRepository.save.mockResolvedValue({
-        ...userBeforeReset,
-        passwordHash: "hashed_newpassword",
-        resetCode: undefined,
-        resetCodeExpiresAt: undefined,
-        resetToken: undefined,
-        resetTokenExpiresAt: undefined,
-      });
+      mockRepository.save.mockImplementation(async (u: unknown) => u);
 
       const result = await service.resetPassword("john@example.com", validToken, "newpassword");
 
       expect(bcrypt.hash).toHaveBeenCalledWith("newpassword", 10);
-      expect(repository.save).toHaveBeenCalled();
       expect(result).toBe(true);
+      const saved = mockRepository.save.mock.calls[0][0];
+      expect(saved.resetToken).toBeUndefined();
+      // Session invalidation: sessionVersion must be incremented.
+      expect(saved.sessionVersion).toBe(4);
+    });
+
+    it("should reject a token that does not match the stored hash", async () => {
+      mockRepository.findOne.mockResolvedValue({
+        ...mockUser,
+        resetToken: hashCode("the-real-token"),
+        resetTokenExpiresAt: new Date(Date.now() + 600000),
+      });
+
+      const result = await service.resetPassword("john@example.com", "a-different-token", "newpassword");
+      expect(result).toBe(false);
     });
 
     it("should return false when user not found", async () => {
@@ -366,16 +375,16 @@ describe("UsersService", () => {
   });
 
   describe("changePassword", () => {
-    it("should hash and save, and return true", async () => {
-      mockRepository.findOne.mockResolvedValue(mockUser);
-      const updatedUser = { ...mockUser, passwordHash: "hashed_newpassword" };
-      mockRepository.save.mockResolvedValue(updatedUser);
+    it("should hash, save, revoke sessions, and return true", async () => {
+      mockRepository.findOne.mockResolvedValue({ ...mockUser, sessionVersion: 1 });
+      mockRepository.save.mockImplementation(async (u: unknown) => u);
 
       const result = await service.changePassword("user_1", "newpassword");
 
       expect(bcrypt.hash).toHaveBeenCalledWith("newpassword", 10);
-      expect(repository.save).toHaveBeenCalled();
       expect(result).toBe(true);
+      // Session invalidation on explicit password change.
+      expect(mockRepository.save.mock.calls[0][0].sessionVersion).toBe(2);
     });
 
     it("should return false when user not found", async () => {

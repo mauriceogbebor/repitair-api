@@ -1,4 +1,6 @@
 export { User } from "./user.entity";
+export type { SocialAuthProvider } from "./social-identity.entity";
+export { SocialIdentity } from "./social-identity.entity";
 export { Repit } from "./repit.entity";
 export { PushToken } from "./push-token.entity";
 export { Template } from "./template.entity";

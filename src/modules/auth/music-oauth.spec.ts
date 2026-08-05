@@ -27,6 +27,7 @@ describe("music provider OAuth", () => {
   // Apple *identity* verification (Sign in with Apple) is distinct from Apple
   // *Music*; this OAuth suite never exercises it, so a bare stub suffices.
   const appleIdentity = { verifyIdentityToken: jest.fn() };
+  const socialIdentity = { resolveUser: jest.fn(), linkToUser: jest.fn(), getLinkedProviders: jest.fn() };
   let service: AuthService;
   let fetchSpy: jest.SpyInstance;
 
@@ -39,6 +40,7 @@ describe("music provider OAuth", () => {
       blacklist as never,
       config as never,
       appleIdentity as never,
+      socialIdentity as never,
       connections as never,
     );
   });

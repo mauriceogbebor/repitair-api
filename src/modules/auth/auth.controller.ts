@@ -44,6 +44,23 @@ export class AuthController {
     return this.authService.socialAuth(body);
   }
 
+  /**
+   * Link a social provider to the currently-authenticated Repitair account
+   * (the "Connect account" flow). Rejects if already linked elsewhere.
+   */
+  @Post("social/link")
+  @UseGuards(JwtAuthGuard)
+  linkSocial(@CurrentUser() user: CurrentUserPayload, @Body() body: SocialAuthDto) {
+    return this.authService.linkSocialProvider(user.sub, body);
+  }
+
+  /** The authentication methods (password / google / apple) linked to the user. */
+  @Get("social/providers")
+  @UseGuards(JwtAuthGuard)
+  authProviders(@CurrentUser() user: CurrentUserPayload) {
+    return this.authService.getLinkedAuthProviders(user.sub);
+  }
+
   @Post("forgot-password")
   forgotPassword(@Body() body: ForgotPasswordDto) {
     return this.authService.forgotPassword(body.email);
