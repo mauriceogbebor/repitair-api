@@ -4,6 +4,7 @@ import { config as dotenvConfig } from 'dotenv';
 
 import {
   User,
+  SocialIdentity,
   Repit,
   RepitModerationDecision,
   RepitModerationNote,
@@ -66,6 +67,7 @@ export default new DataSource({
     'postgresql://repitair:repitair@localhost:5432/repitair',
   entities: [
     User,
+    SocialIdentity,
     Repit,
     RepitModerationDecision,
     RepitModerationNote,

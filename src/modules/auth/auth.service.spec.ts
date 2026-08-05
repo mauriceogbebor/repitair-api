@@ -4,6 +4,7 @@ import { ConfigService } from "@nestjs/config";
 import { JwtService } from "@nestjs/jwt";
 import { AuthService } from "./auth.service";
 import { AppleIdentityService } from "./apple-identity.service";
+import { SocialIdentityService } from "./social-identity.service";
 import { UsersService } from "../users/users.service";
 import { MailService } from "../../common/services/mail.service";
 import { TokenBlacklistService } from "../../common/services/token-blacklist.service";
@@ -14,6 +15,7 @@ describe("AuthService", () => {
   let jwtService: JwtService;
   let tokenBlacklist: TokenBlacklistService;
   let appleIdentity: { verifyIdentityToken: jest.Mock };
+  let socialIdentity: { resolveUser: jest.Mock; linkToUser: jest.Mock; getLinkedProviders: jest.Mock };
 
   const mockUser = {
     id: "user_1",
@@ -63,6 +65,12 @@ describe("AuthService", () => {
       verifyIdentityToken: jest.fn(),
     };
 
+    const mockSocialIdentity = {
+      resolveUser: jest.fn(),
+      linkToUser: jest.fn(),
+      getLinkedProviders: jest.fn().mockResolvedValue([]),
+    };
+
     mockConfigService.get.mockImplementation((key: string) => {
       if (key === "GOOGLE_CLIENT_ID") return "google-client-id";
       if (key === "APPLE_CLIENT_ID") return "apple-client-id";
@@ -81,6 +89,7 @@ describe("AuthService", () => {
         { provide: TokenBlacklistService, useValue: mockTokenBlacklist },
         { provide: ConfigService, useValue: mockConfigService },
         { provide: AppleIdentityService, useValue: mockAppleIdentity },
+        { provide: SocialIdentityService, useValue: mockSocialIdentity },
       ],
     }).compile();
 
@@ -89,6 +98,7 @@ describe("AuthService", () => {
     jwtService = module.get<JwtService>(JwtService);
     tokenBlacklist = module.get<TokenBlacklistService>(TokenBlacklistService);
     appleIdentity = module.get(AppleIdentityService);
+    socialIdentity = module.get(SocialIdentityService);
   });
 
   afterEach(() => {
@@ -500,15 +510,15 @@ describe("AuthService", () => {
       // The Apple identity token must NOT be routed through NestJS JwtService
       // (whose key is the symmetric JWT_SECRET) — that was the RS256 defect.
       expect(jwtService.verify).not.toHaveBeenCalled();
-      expect(result).toEqual({ email: "john@example.com" });
+      expect(result).toEqual({ email: "john@example.com", sub: "apple-sub-1" });
     });
 
-    it("socialAuth verifies Apple tokens via the Apple verifier and issues a session", async () => {
+    it("socialAuth resolves Apple by provider subject (not email) and issues a session", async () => {
       appleIdentity.verifyIdentityToken.mockResolvedValue({
-        email: "apple.user@example.com",
+        email: "mc5ph9zs44@privaterelay.appleid.com",
         sub: "apple-sub-42",
       });
-      (usersService.findByEmail as jest.Mock).mockResolvedValue(mockUser);
+      socialIdentity.resolveUser.mockResolvedValue(mockUser);
       (jwtService.sign as jest.Mock).mockReturnValue(mockToken);
 
       const result = await authService.socialAuth({
@@ -521,9 +531,45 @@ describe("AuthService", () => {
         "apple-identity-token",
         { expectedNonce: "nonce-xyz" },
       );
+      // Identity resolution keys on the stable subject, and email lookup is NOT
+      // used as the primary key (that is what created duplicate relay accounts).
+      expect(socialIdentity.resolveUser).toHaveBeenCalledWith(
+        expect.objectContaining({ provider: "apple", subject: "apple-sub-42" }),
+      );
+      expect(usersService.findByEmail).not.toHaveBeenCalled();
       expect(result).toEqual(
         expect.objectContaining({ token: mockToken, refreshToken: expect.any(String) }),
       );
+    });
+
+    it("socialAuth resolves Google by provider subject and passes the picture through", async () => {
+      const fetchMock = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          email: "g@example.com",
+          aud: "google-client-id",
+          sub: "google-sub-7",
+          name: "G User",
+          picture: "https://lh3.googleusercontent.com/a/pic",
+        }),
+      });
+      const originalFetch = global.fetch;
+      global.fetch = fetchMock as typeof fetch;
+      socialIdentity.resolveUser.mockResolvedValue(mockUser);
+      (jwtService.sign as jest.Mock).mockReturnValue(mockToken);
+
+      try {
+        await authService.socialAuth({ provider: "google", idToken: "g-token" });
+        expect(socialIdentity.resolveUser).toHaveBeenCalledWith(
+          expect.objectContaining({
+            provider: "google",
+            subject: "google-sub-7",
+            picture: "https://lh3.googleusercontent.com/a/pic",
+          }),
+        );
+      } finally {
+        global.fetch = originalFetch;
+      }
     });
   });
 });
