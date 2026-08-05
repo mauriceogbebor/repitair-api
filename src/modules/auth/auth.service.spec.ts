@@ -461,6 +461,7 @@ describe("AuthService", () => {
         if (key === "GOOGLE_CLIENT_ID") return undefined;
         if (key === "GOOGLE_IOS_CLIENT_ID") return undefined;
         if (key === "GOOGLE_ANDROID_CLIENT_ID") return undefined;
+        if (key === "GOOGLE_ALLOWED_AUDIENCES") return undefined;
         return "mock-value";
       });
 
@@ -475,6 +476,54 @@ describe("AuthService", () => {
           ),
         );
         expect(fetchMock).not.toHaveBeenCalled();
+      } finally {
+        global.fetch = originalFetch;
+      }
+    });
+
+    it("accepts a Google token whose aud matches GOOGLE_ALLOWED_AUDIENCES (e.g. the iOS client)", async () => {
+      const iosClientId = "929490823050-ios.apps.googleusercontent.com";
+      mockConfigService.get.mockImplementation((key: string) => {
+        if (key === "GOOGLE_CLIENT_ID") return "web.apps.googleusercontent.com";
+        if (key === "GOOGLE_IOS_CLIENT_ID") return undefined;
+        if (key === "GOOGLE_ANDROID_CLIENT_ID") return undefined;
+        if (key === "GOOGLE_ALLOWED_AUDIENCES") return `${iosClientId}, android.apps.googleusercontent.com`;
+        return "mock-value";
+      });
+      const fetchMock = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ email: "g@example.com", aud: iosClientId, sub: "sub-1" }),
+      });
+      const originalFetch = global.fetch;
+      global.fetch = fetchMock as typeof fetch;
+
+      try {
+        const result = await (authService as any).verifyGoogleIdToken("google-token");
+        expect(result).toEqual(expect.objectContaining({ email: "g@example.com", sub: "sub-1" }));
+      } finally {
+        global.fetch = originalFetch;
+      }
+    });
+
+    it("rejects a Google token whose aud is not in the accepted set", async () => {
+      mockConfigService.get.mockImplementation((key: string) => {
+        if (key === "GOOGLE_CLIENT_ID") return "web.apps.googleusercontent.com";
+        if (key === "GOOGLE_IOS_CLIENT_ID") return undefined;
+        if (key === "GOOGLE_ANDROID_CLIENT_ID") return undefined;
+        if (key === "GOOGLE_ALLOWED_AUDIENCES") return undefined;
+        return "mock-value";
+      });
+      const fetchMock = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ email: "g@example.com", aud: "attacker.apps.googleusercontent.com", sub: "sub-1" }),
+      });
+      const originalFetch = global.fetch;
+      global.fetch = fetchMock as typeof fetch;
+
+      try {
+        await expect((authService as any).verifyGoogleIdToken("google-token")).rejects.toThrow(
+          new UnauthorizedException("Google token audience mismatch"),
+        );
       } finally {
         global.fetch = originalFetch;
       }
