@@ -146,11 +146,24 @@ export class AuthService {
   private async verifyGoogleIdToken(
     idToken: string,
   ): Promise<{ email: string; name?: string; sub: string; picture?: string | null }> {
+    // The token's `aud` is the client ID that INITIATED the OAuth request. On
+    // iOS that is the iOS client ID, on Android the Android client ID — NOT the
+    // web `GOOGLE_CLIENT_ID`. All client IDs the app can use must therefore be
+    // accepted here, or valid logins fail with "audience mismatch".
+    // `GOOGLE_ALLOWED_AUDIENCES` (comma-separated) lets every client ID be
+    // enumerated in one env var, mirroring the Apple audience handling.
     const expectedClientIds = [
-      this.configService.get<string>("GOOGLE_CLIENT_ID"),
-      this.configService.get<string>("GOOGLE_IOS_CLIENT_ID"),
-      this.configService.get<string>("GOOGLE_ANDROID_CLIENT_ID"),
-    ].filter((value): value is string => Boolean(value));
+      ...new Set(
+        [
+          this.configService.get<string>("GOOGLE_CLIENT_ID"),
+          this.configService.get<string>("GOOGLE_IOS_CLIENT_ID"),
+          this.configService.get<string>("GOOGLE_ANDROID_CLIENT_ID"),
+          ...(this.configService.get<string>("GOOGLE_ALLOWED_AUDIENCES")?.split(",") ?? []),
+        ]
+          .map((value) => value?.trim())
+          .filter((value): value is string => Boolean(value)),
+      ),
+    ];
 
     if (!expectedClientIds.length) {
       throw new ServiceUnavailableException(
@@ -172,6 +185,13 @@ export class AuthService {
       };
 
       if (!payload.aud || !expectedClientIds.includes(payload.aud)) {
+        // Safe diagnostics only (client IDs are not secrets, but log a suffix):
+        // surfaces exactly which audience arrived vs how many are accepted, so a
+        // missing GOOGLE_IOS_CLIENT_ID/ANDROID env is obvious in logs.
+        const audSuffix = payload.aud ? `…${payload.aud.slice(-16)}` : "none";
+        this.logger.warn(
+          `provider=google audience_mismatch received_aud=${audSuffix} accepted_count=${expectedClientIds.length}`,
+        );
         throw new UnauthorizedException("Google token audience mismatch");
       }
 
