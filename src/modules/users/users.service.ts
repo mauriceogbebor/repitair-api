@@ -133,6 +133,8 @@ export class UsersService {
       passwordHash,
       connectedPlatforms: [],
       signupSource: data.signupSource ?? "email",
+      // Email signup sets a real password the user chose.
+      hasUsablePassword: true,
     });
 
     try {
@@ -167,6 +169,9 @@ export class UsersService {
       connectedPlatforms: [],
       signupSource: data.signupSource,
       avatarUrl: data.avatarUrl?.trim() || undefined,
+      // Random password — not usable for email/password login until the user
+      // intentionally sets one (via password reset).
+      hasUsablePassword: false,
     });
 
     try {
@@ -272,6 +277,9 @@ export class UsersService {
     user.resetCodeExpiresAt = undefined;
     user.resetToken = undefined;
     user.resetTokenExpiresAt = undefined;
+    // The user has now intentionally set a password — enable email/password login
+    // (this is how a social-only account opts into a password).
+    user.hasUsablePassword = true;
     // Invalidate every previously issued access/refresh token so a compromised
     // session cannot survive a password reset.
     user.sessionVersion = (user.sessionVersion ?? 0) + 1;
@@ -317,6 +325,7 @@ export class UsersService {
     if (!user) return false;
 
     user.passwordHash = await bcrypt.hash(newPassword, 10);
+    user.hasUsablePassword = true;
     // Revoke previously issued tokens on an explicit password change too.
     user.sessionVersion = (user.sessionVersion ?? 0) + 1;
     await this.usersRepo.save(user);

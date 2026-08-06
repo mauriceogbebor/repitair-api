@@ -70,6 +70,20 @@ export class AuthService {
       throw new UnauthorizedException("Invalid email or password");
     }
 
+    // Social-only accounts have a random (unusable) password. Guide the user to
+    // their provider instead of the misleading "invalid password" error. Guarded
+    // to a strict false + social signupSource so legacy email rows (where the
+    // column may read undefined) are never blocked.
+    if (
+      user.hasUsablePassword === false &&
+      (user.signupSource === "google" || user.signupSource === "apple")
+    ) {
+      const provider = user.signupSource === "apple" ? "Apple" : "Google";
+      throw new UnauthorizedException(
+        `This account uses ${provider} Sign In. Continue with ${provider}, or use "Forgot password" to set a password.`,
+      );
+    }
+
     this.assertUserCanSignIn(user);
 
     const valid = await this.usersService.validatePassword(user, dto.password);

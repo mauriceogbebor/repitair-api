@@ -257,6 +257,33 @@ describe("AuthService", () => {
         loginDto.password
       );
     });
+
+    it("refuses email/password login for a social-only account with a provider hint", async () => {
+      (usersService.findByEmail as jest.Mock).mockResolvedValue({
+        ...mockUser,
+        signupSource: "google",
+        hasUsablePassword: false,
+      });
+
+      await expect(
+        authService.login({ email: "john@example.com", password: "whatever" }),
+      ).rejects.toThrow(/uses Google Sign In/);
+      // Must not even attempt to validate the (unusable) password.
+      expect(usersService.validatePassword).not.toHaveBeenCalled();
+    });
+
+    it("allows email/password login for a social account that set a password (hasUsablePassword)", async () => {
+      (usersService.findByEmail as jest.Mock).mockResolvedValue({
+        ...mockUser,
+        signupSource: "google",
+        hasUsablePassword: true,
+      });
+      (usersService.validatePassword as jest.Mock).mockResolvedValue(true);
+      (jwtService.sign as jest.Mock).mockReturnValue(mockToken);
+
+      const result = await authService.login({ email: "john@example.com", password: "real-pass" });
+      expect(result).toEqual(expect.objectContaining({ token: mockToken }));
+    });
   });
 
   describe("forgotPassword", () => {
