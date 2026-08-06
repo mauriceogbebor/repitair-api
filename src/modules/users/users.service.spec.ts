@@ -24,6 +24,7 @@ describe("UsersService", () => {
     email: "john@example.com",
     country: "US",
     passwordHash: "hashed_password123",
+    hasUsablePassword: true,
     connectedPlatforms: [],
     isSuspended: false,
     suspensionReason: null,

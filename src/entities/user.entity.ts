@@ -19,6 +19,15 @@ export class User {
   @Column()
   passwordHash!: string;
 
+  /**
+   * True once the user has an intentionally-set password (email signup, password
+   * reset, or password change). Social-only accounts get a random unusable
+   * password and remain false — email/password login is refused for them with a
+   * "use your social provider" message instead of a misleading credential error.
+   */
+  @Column({ default: false })
+  hasUsablePassword!: boolean;
+
   // Native Postgres text[] instead of simple-array so individual platform
   // strings can contain commas, and values remain queryable.
   @Column("text", { array: true, default: () => "'{}'" })
