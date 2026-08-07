@@ -37,7 +37,7 @@ export class MediaController {
     @Body() dto: ResolveTemplateMediaDto,
   ) {
     await this.media.assertOwnership(id, user.sub);
-    return this.media.resolveTemplateImage(id, dto.templateId);
+    return this.media.resolveTemplateImage(id, dto.templateId, { purpose: dto.purpose });
   }
 
   /** Explicit creator retry; still governed by the published template capability. */
@@ -48,7 +48,7 @@ export class MediaController {
     @Body() dto: ResolveTemplateMediaDto,
   ) {
     await this.media.assertOwnership(id, user.sub);
-    return this.media.resolveTemplateImage(id, dto.templateId, { autoStart: true, retryFailed: true });
+    return this.media.resolveTemplateImage(id, dto.templateId, { autoStart: true, retryFailed: true, purpose: dto.purpose });
   }
 
   /** Attach the finished creation record for end-to-end operational tracing. */
