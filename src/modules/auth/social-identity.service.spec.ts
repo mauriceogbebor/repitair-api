@@ -134,4 +134,27 @@ describe("SocialIdentityService", () => {
     ]);
     await expect(service.getLinkedProviders("user-1")).resolves.toEqual(["google", "apple"]);
   });
+
+  it("getConnections exposes provider email + relay flag + dates (one per provider)", async () => {
+    const now = new Date("2026-03-01T10:00:00.000Z");
+    repo.find.mockResolvedValue([
+      { provider: "apple", providerEmail: "relay@privaterelay.appleid.com", providerEmailIsPrivateRelay: true, createdAt: now, lastAuthenticatedAt: null },
+      { provider: "google", providerEmail: "g@example.com", providerEmailIsPrivateRelay: false, createdAt: now, lastAuthenticatedAt: now },
+      // Duplicate google row must be collapsed.
+      { provider: "google", providerEmail: "g@example.com", providerEmailIsPrivateRelay: false, createdAt: now, lastAuthenticatedAt: now },
+    ]);
+
+    const result = await service.getConnections("user-1");
+
+    expect(result).toEqual([
+      { provider: "apple", email: "relay@privaterelay.appleid.com", isPrivateRelay: true, connectedAt: now.toISOString(), lastAuthenticatedAt: null },
+      { provider: "google", email: "g@example.com", isPrivateRelay: false, connectedAt: now.toISOString(), lastAuthenticatedAt: now.toISOString() },
+    ]);
+  });
+
+  it("unlink deletes every row for (user, provider) and returns the count", async () => {
+    repo.delete.mockResolvedValue({ affected: 1 });
+    await expect(service.unlink("user-1", "google")).resolves.toBe(1);
+    expect(repo.delete).toHaveBeenCalledWith({ userId: "user-1", provider: "google" });
+  });
 });

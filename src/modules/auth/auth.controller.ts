@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Header, Post, Query, Redirect, Res, UseGuards } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Delete, Get, Header, Param, Post, Query, Redirect, Res, UseGuards } from "@nestjs/common";
 import { Response } from "express";
 
 import { CurrentUser, CurrentUserPayload } from "../../common/decorators/current-user.decorator";
@@ -59,6 +59,22 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   authProviders(@CurrentUser() user: CurrentUserPayload) {
     return this.authService.getLinkedAuthProviders(user.sub);
+  }
+
+  /**
+   * Disconnect a social provider from the current account (the "Disconnect"
+   * action). Rejects if it would remove the user's last sign-in method.
+   */
+  @Delete("social/:provider")
+  @UseGuards(JwtAuthGuard)
+  unlinkSocial(
+    @CurrentUser() user: CurrentUserPayload,
+    @Param("provider") provider: string,
+  ) {
+    if (provider !== "google" && provider !== "apple") {
+      throw new BadRequestException("Unsupported provider.");
+    }
+    return this.authService.unlinkSocialProvider(user.sub, provider);
   }
 
   @Post("forgot-password")

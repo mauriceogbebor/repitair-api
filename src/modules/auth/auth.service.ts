@@ -3,6 +3,7 @@ import {
   UnauthorizedException,
   Logger,
   BadRequestException,
+  ConflictException,
   NotFoundException,
   Optional,
   ServiceUnavailableException,
@@ -20,7 +21,8 @@ import { SignupDto } from "./dto/signup.dto";
 import { SocialAuthDto } from "./dto/social-auth.dto";
 import { MusicConnectionsService } from "../music/music-connections.service";
 import { AppleIdentityService } from "./apple-identity.service";
-import { SocialIdentityService } from "./social-identity.service";
+import { SocialIdentityService, type SocialConnection } from "./social-identity.service";
+import type { SocialAuthProvider } from "../../entities";
 
 @Injectable()
 export class AuthService {
@@ -68,6 +70,20 @@ export class AuthService {
     const user = await this.usersService.findByEmail(dto.email);
     if (!user) {
       throw new UnauthorizedException("Invalid email or password");
+    }
+
+    // Social-only accounts have a random (unusable) password. Guide the user to
+    // their provider instead of the misleading "invalid password" error. Guarded
+    // to a strict false + social signupSource so legacy email rows (where the
+    // column may read undefined) are never blocked.
+    if (
+      user.hasUsablePassword === false &&
+      (user.signupSource === "google" || user.signupSource === "apple")
+    ) {
+      const provider = user.signupSource === "apple" ? "Apple" : "Google";
+      throw new UnauthorizedException(
+        `This account uses ${provider} Sign In. Continue with ${provider}, or use "Forgot password" to set a password.`,
+      );
     }
 
     this.assertUserCanSignIn(user);
@@ -119,17 +135,72 @@ export class AuthService {
 
   /**
    * The authentication methods a user can sign in with — social providers plus
-   * email/password for accounts that originated from an email signup. Kept
-   * distinct from music-provider connections (Spotify / Apple Music).
+   * email/password. Kept distinct from music-provider connections (Spotify /
+   * Apple Music). Powers the mobile Connected Accounts screen.
+   *
+   * `hasPassword` is the authoritative "can sign in with email/password" signal
+   * and is driven by `hasUsablePassword` (a social user who set a password via
+   * forgot-password flips this to true), NOT by `signupSource`. `authProviders`
+   * is kept for backward compatibility.
    */
-  async getLinkedAuthProviders(userId: string): Promise<{ authProviders: string[] }> {
-    const social = await this.socialIdentity.getLinkedProviders(userId);
-    const user = await this.usersService.findById(userId);
-    const providers: string[] = [...social];
-    if (user && (user.signupSource === "email" || user.signupSource == null)) {
+  async getLinkedAuthProviders(userId: string): Promise<{
+    authProviders: string[];
+    hasPassword: boolean;
+    email: string | null;
+    connections: SocialConnection[];
+  }> {
+    const [connections, user] = await Promise.all([
+      this.socialIdentity.getConnections(userId),
+      this.usersService.findById(userId),
+    ]);
+    const hasPassword = user?.hasUsablePassword === true;
+    const providers: string[] = connections.map((c) => c.provider);
+    if (hasPassword) {
       providers.unshift("password");
     }
-    return { authProviders: [...new Set(providers)] };
+    return {
+      authProviders: [...new Set(providers)],
+      hasPassword,
+      email: user?.email ?? null,
+      connections,
+    };
+  }
+
+  /**
+   * Disconnect a social provider from the current user (the "Disconnect" action
+   * on Connected Accounts). Enforces the invariant that a user can never remove
+   * their last remaining sign-in method: the count of methods after removal must
+   * stay ≥ 1, where methods = linked social providers + (usable password ? 1 : 0).
+   */
+  async unlinkSocialProvider(
+    userId: string,
+    provider: SocialAuthProvider,
+  ): Promise<{
+    authProviders: string[];
+    hasPassword: boolean;
+    email: string | null;
+    connections: SocialConnection[];
+  }> {
+    const [linkedProviders, user] = await Promise.all([
+      this.socialIdentity.getLinkedProviders(userId),
+      this.usersService.findById(userId),
+    ]);
+    if (!user) {
+      throw new NotFoundException("User not found");
+    }
+    if (!linkedProviders.includes(provider)) {
+      throw new NotFoundException(`No ${provider} account is connected.`);
+    }
+
+    const hasPassword = user.hasUsablePassword === true;
+    const methodsAfterRemoval =
+      linkedProviders.filter((p) => p !== provider).length + (hasPassword ? 1 : 0);
+    if (methodsAfterRemoval < 1) {
+      throw new ConflictException("You must keep at least one sign-in method.");
+    }
+
+    await this.socialIdentity.unlink(userId, provider);
+    return this.getLinkedAuthProviders(userId);
   }
 
   private async verifySocialToken(
