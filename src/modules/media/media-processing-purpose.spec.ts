@@ -2,6 +2,7 @@ import {
   DEFAULT_MEDIA_PROCESSING_PURPOSE,
   derivativeContentKey,
   normalizeMediaProcessingPurpose,
+  purposeRequiresBackgroundRemoval,
 } from "./media-processing-purpose";
 
 describe("media processing purpose (Ice Girl dual-photo ownership)", () => {
@@ -28,5 +29,13 @@ describe("media processing purpose (Ice Girl dual-photo ownership)", () => {
     const widget = derivativeContentKey("abc123", "transparent_png", "v2", "iceGirlWidgetSubject");
     expect(widget).not.toBe(canvas);
     expect(widget).toBe("abc123:transparent_png:v2:iceGirlWidgetSubject");
+  });
+
+  it("the widget-subject purpose forces removal ONLY on the ice-girl template that owns it", () => {
+    expect(purposeRequiresBackgroundRemoval("iceGirlWidgetSubject", "ice-girl")).toBe(true);
+    // Wrong template → no forced removal (cost/abuse guard).
+    expect(purposeRequiresBackgroundRemoval("iceGirlWidgetSubject", "matcha-mood")).toBe(false);
+    // The default purpose never forces removal — it defers to the template flag.
+    expect(purposeRequiresBackgroundRemoval("canvasSubject", "ice-girl")).toBe(false);
   });
 });
