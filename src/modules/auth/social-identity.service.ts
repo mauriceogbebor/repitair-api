@@ -26,6 +26,15 @@ export interface ResolveIdentityInput {
   picture?: string | null;
 }
 
+/** Public-safe view of a linked social identity (no subject, no tokens). */
+export interface SocialConnection {
+  provider: SocialAuthProvider;
+  email: string | null;
+  isPrivateRelay: boolean;
+  connectedAt: string;
+  lastAuthenticatedAt: string | null;
+}
+
 /**
  * Resolves and links social-provider identities to Repitair users.
  *
@@ -125,6 +134,45 @@ export class SocialIdentityService {
   async getLinkedProviders(userId: string): Promise<SocialAuthProvider[]> {
     const rows = await this.identities.find({ where: { userId } });
     return [...new Set(rows.map((r) => r.provider))];
+  }
+
+  /**
+   * Detailed connection info for the Connected Accounts screen — one entry per
+   * linked provider (deduplicated), newest link first. Exposes only the
+   * provider email, private-relay flag, and timestamps; never the subject.
+   */
+  async getConnections(userId: string): Promise<SocialConnection[]> {
+    const rows = await this.identities.find({
+      where: { userId },
+      order: { createdAt: "DESC" },
+    });
+    const seen = new Set<SocialAuthProvider>();
+    const connections: SocialConnection[] = [];
+    for (const row of rows) {
+      if (seen.has(row.provider)) continue;
+      seen.add(row.provider);
+      connections.push({
+        provider: row.provider,
+        email: row.providerEmail ?? null,
+        isPrivateRelay: row.providerEmailIsPrivateRelay,
+        connectedAt: row.createdAt.toISOString(),
+        lastAuthenticatedAt: row.lastAuthenticatedAt
+          ? row.lastAuthenticatedAt.toISOString()
+          : null,
+      });
+    }
+    return connections;
+  }
+
+  /**
+   * Remove every identity row for `(user, provider)` — the "Disconnect" action.
+   * Returns the number of rows deleted so the caller can distinguish a real
+   * unlink from a no-op. The last-remaining-method guard lives in AuthService,
+   * which knows about the password method too.
+   */
+  async unlink(userId: string, provider: SocialAuthProvider): Promise<number> {
+    const result = await this.identities.delete({ userId, provider });
+    return result.affected ?? 0;
   }
 
   private async persistLink(

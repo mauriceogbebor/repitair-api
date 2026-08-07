@@ -12,6 +12,7 @@ import { canTransitionMedia, isReprocessable } from "./media-lifecycle";
 import { MediaStorageGateway } from "./media-storage.gateway";
 import { BackgroundRemovalService } from "./background-removal.service";
 import { isolationCapabilityError, templateRequiresBackgroundRemoval } from "./template-media-capability";
+import { normalizeMediaProcessingPurpose, type MediaProcessingPurpose } from "./media-processing-purpose";
 
 export const MEDIA_BACKGROUND_REMOVE_JOB = "media.background_remove";
 export const REQUIRED_ISOLATION_SAVE_MESSAGE =
@@ -283,8 +284,9 @@ export class MediaProcessingService {
   async resolveTemplateImage(
     assetId: string,
     templateId: string,
-    options: { autoStart?: boolean; retryFailed?: boolean } = {},
+    options: { autoStart?: boolean; retryFailed?: boolean; purpose?: MediaProcessingPurpose } = {},
   ) {
+    const purpose = normalizeMediaProcessingPurpose(options.purpose);
     const template = await this.templates.findOne({
       where: { id: templateId, status: "published", isActive: true },
     });
@@ -308,7 +310,7 @@ export class MediaProcessingService {
         statusUrl: `/media/assets/${assetId}`,
       };
       await this.assetService.emit("media.template_resolved", {
-        assetId, templateId, requiresBackgroundRemoval: false, imageSource: "original", status: "ready",
+        assetId, templateId, purpose, requiresBackgroundRemoval: false, imageSource: "original", status: "ready",
       });
       return response;
     }
@@ -336,7 +338,7 @@ export class MediaProcessingService {
           statusUrl: `/media/assets/${assetId}`,
         };
         await this.assetService.emit("media.template_resolved", {
-          assetId, templateId, requiresBackgroundRemoval: true, imageSource: "derivative", status: "ready",
+          assetId, templateId, purpose, requiresBackgroundRemoval: true, imageSource: "derivative", status: "ready",
           jobId: response.jobId,
         });
         return response;
@@ -412,7 +414,7 @@ export class MediaProcessingService {
       retryable: refreshed.processingStatus !== "cancelled",
     };
     await this.assetService.emit("media.template_resolved", {
-      assetId, templateId, requiresBackgroundRemoval: true, imageSource: "pending",
+      assetId, templateId, purpose, requiresBackgroundRemoval: true, imageSource: "pending",
       status: response.status, processingStatus: refreshed.processingStatus, jobId: response.jobId,
     });
     return response;

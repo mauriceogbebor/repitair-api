@@ -15,7 +15,13 @@ describe("AuthService", () => {
   let jwtService: JwtService;
   let tokenBlacklist: TokenBlacklistService;
   let appleIdentity: { verifyIdentityToken: jest.Mock };
-  let socialIdentity: { resolveUser: jest.Mock; linkToUser: jest.Mock; getLinkedProviders: jest.Mock };
+  let socialIdentity: {
+    resolveUser: jest.Mock;
+    linkToUser: jest.Mock;
+    getLinkedProviders: jest.Mock;
+    getConnections: jest.Mock;
+    unlink: jest.Mock;
+  };
 
   const mockUser = {
     id: "user_1",
@@ -69,6 +75,8 @@ describe("AuthService", () => {
       resolveUser: jest.fn(),
       linkToUser: jest.fn(),
       getLinkedProviders: jest.fn().mockResolvedValue([]),
+      getConnections: jest.fn().mockResolvedValue([]),
+      unlink: jest.fn().mockResolvedValue(1),
     };
 
     mockConfigService.get.mockImplementation((key: string) => {
@@ -646,6 +654,80 @@ describe("AuthService", () => {
       } finally {
         global.fetch = originalFetch;
       }
+    });
+  });
+
+  describe("connected accounts", () => {
+    const google = { provider: "google", email: "g@example.com", isPrivateRelay: false, connectedAt: "2026-01-01T00:00:00.000Z", lastAuthenticatedAt: null };
+    const apple = { provider: "apple", email: "relay@privaterelay.appleid.com", isPrivateRelay: true, connectedAt: "2026-02-01T00:00:00.000Z", lastAuthenticatedAt: null };
+
+    it("getLinkedAuthProviders reports hasPassword from hasUsablePassword, not signupSource", async () => {
+      // A Google-signup user who later set a password: hasUsablePassword=true.
+      socialIdentity.getConnections.mockResolvedValue([google]);
+      (usersService.findById as jest.Mock).mockResolvedValue({
+        ...mockUser, signupSource: "google", hasUsablePassword: true,
+      });
+
+      const result = await authService.getLinkedAuthProviders("user_1");
+
+      expect(result.hasPassword).toBe(true);
+      expect(result.authProviders).toEqual(["password", "google"]);
+      expect(result.email).toBe(mockUser.email);
+      expect(result.connections).toEqual([google]);
+    });
+
+    it("getLinkedAuthProviders omits password for a social-only account", async () => {
+      socialIdentity.getConnections.mockResolvedValue([apple]);
+      (usersService.findById as jest.Mock).mockResolvedValue({
+        ...mockUser, signupSource: "apple", hasUsablePassword: false,
+      });
+
+      const result = await authService.getLinkedAuthProviders("user_1");
+
+      expect(result.hasPassword).toBe(false);
+      expect(result.authProviders).toEqual(["apple"]);
+    });
+
+    it("unlinkSocialProvider removes a provider when another method remains", async () => {
+      socialIdentity.getLinkedProviders.mockResolvedValue(["google", "apple"]);
+      (usersService.findById as jest.Mock).mockResolvedValue({ ...mockUser, hasUsablePassword: false });
+      // Post-removal snapshot for the returned payload.
+      socialIdentity.getConnections.mockResolvedValue([apple]);
+
+      const result = await authService.unlinkSocialProvider("user_1", "google");
+
+      expect(socialIdentity.unlink).toHaveBeenCalledWith("user_1", "google");
+      expect(result.authProviders).toEqual(["apple"]);
+    });
+
+    it("unlinkSocialProvider allows removing the only social provider when a password exists", async () => {
+      socialIdentity.getLinkedProviders.mockResolvedValue(["google"]);
+      (usersService.findById as jest.Mock).mockResolvedValue({ ...mockUser, hasUsablePassword: true });
+      socialIdentity.getConnections.mockResolvedValue([]);
+
+      await authService.unlinkSocialProvider("user_1", "google");
+      expect(socialIdentity.unlink).toHaveBeenCalledWith("user_1", "google");
+    });
+
+    it("unlinkSocialProvider REJECTS removing the last remaining sign-in method", async () => {
+      // Only Google linked, no usable password → cannot remove it.
+      socialIdentity.getLinkedProviders.mockResolvedValue(["google"]);
+      (usersService.findById as jest.Mock).mockResolvedValue({ ...mockUser, hasUsablePassword: false });
+
+      await expect(
+        authService.unlinkSocialProvider("user_1", "google"),
+      ).rejects.toThrow(/at least one sign-in method/);
+      expect(socialIdentity.unlink).not.toHaveBeenCalled();
+    });
+
+    it("unlinkSocialProvider 404s when the provider isn't connected", async () => {
+      socialIdentity.getLinkedProviders.mockResolvedValue(["google"]);
+      (usersService.findById as jest.Mock).mockResolvedValue({ ...mockUser, hasUsablePassword: true });
+
+      await expect(
+        authService.unlinkSocialProvider("user_1", "apple"),
+      ).rejects.toThrow(/No apple account is connected/);
+      expect(socialIdentity.unlink).not.toHaveBeenCalled();
     });
   });
 });
