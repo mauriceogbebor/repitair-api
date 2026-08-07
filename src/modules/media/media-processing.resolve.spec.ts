@@ -81,6 +81,44 @@ describe("MediaProcessingService.resolveTemplateImage", () => {
     expect(assetService.findReusableDerivative).not.toHaveBeenCalled();
   });
 
+  it("FORCES removal for the Ice Girl widget-subject purpose even though the template's background needs none", async () => {
+    // Ice Girl's template capability requiresBackgroundRemoval === false (its
+    // background is a whole photo), but the widget-subject purpose is intrinsic
+    // isolation — it must enqueue and report pending, never the original.
+    const uploaded = { id: "a1", originalKey: "o.jpg", originalUrl: "http://x/o.jpg", processingStatus: "uploaded", lastError: null } as MediaAsset;
+    const queued = { ...uploaded, processingStatus: "queued" } as MediaAsset;
+    const assetService = {
+      requireAsset: jest.fn().mockResolvedValueOnce(uploaded).mockResolvedValueOnce(queued),
+      findReusableDerivative: jest.fn().mockResolvedValue(null),
+      emit: jest.fn(),
+    };
+    const service = makeService(assetService, false); // template requires NO removal
+    const enqueueSpy = jest.spyOn(service, "enqueueProcessing").mockResolvedValue({ jobId: "job-ig" } as never);
+
+    const result = await service.resolveTemplateImage("a1", "ice-girl", { purpose: "iceGirlWidgetSubject" });
+
+    expect(result.imageSource).toBe("pending");
+    expect(result.status).toBe("processing");
+    expect(result.requiresBackgroundRemoval).toBe(true);
+    expect(result.jobId).toBe("job-ig");
+    expect(enqueueSpy).toHaveBeenCalledWith("a1", { templateId: "ice-girl", incrementRetry: false });
+  });
+
+  it("does NOT force removal when the widget-subject purpose is attached to a template that does not own it", async () => {
+    // Cost/abuse guard: an isolation purpose only forces removal on its owning
+    // template. Any other template still consumes the original.
+    const asset = { id: "a1", originalKey: "o.jpg", originalUrl: "http://x/o.jpg", processingStatus: "uploaded" } as MediaAsset;
+    const assetService = { requireAsset: jest.fn().mockResolvedValue(asset), findReusableDerivative: jest.fn(), emit: jest.fn() };
+    const service = makeService(assetService, false);
+    const enqueueSpy = jest.spyOn(service, "enqueueProcessing");
+
+    const result = await service.resolveTemplateImage("a1", "matcha-mood", { purpose: "iceGirlWidgetSubject" });
+
+    expect(result.imageSource).toBe("original");
+    expect(result.requiresBackgroundRemoval).toBe(false);
+    expect(enqueueSpy).not.toHaveBeenCalled();
+  });
+
   it("uses the transparent DERIVATIVE when isolation is required and processing is complete", async () => {
     const asset = { id: "a1", originalUrl: "http://x/o.jpg", processingStatus: "completed" } as MediaAsset;
     const assetService = {

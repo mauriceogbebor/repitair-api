@@ -23,6 +23,39 @@ export function normalizeMediaProcessingPurpose(value: unknown): MediaProcessing
 }
 
 /**
+ * Purposes that are INTRINSICALLY subject-isolation jobs, independent of the
+ * template's own background capability.
+ *
+ * The `canvasSubject` purpose (the default) defers entirely to the template
+ * capability: a full-bleed template consumes the original, an isolation template
+ * consumes the transparent derivative. But some purposes are isolation BY
+ * DEFINITION regardless of what the template does with its background — the Ice
+ * Girl widget subject is composited over the player, so it always needs its
+ * background removed, even though the Ice Girl BACKGROUND is a whole photo that
+ * requires no removal. Without this, the template-level flag (false for Ice Girl)
+ * would suppress the widget-subject job and the subject would never be isolated.
+ *
+ * Each isolation purpose is bound to the single template that owns it, so a
+ * client cannot force a paid removal job for an unrelated template by attaching
+ * an isolation purpose to an arbitrary resolve request.
+ */
+const ISOLATION_PURPOSE_OWNERS: Readonly<Record<string, string>> = {
+  iceGirlWidgetSubject: "ice-girl",
+};
+
+/**
+ * True when the given purpose intrinsically requires background removal for the
+ * given template — i.e. it is an isolation purpose AND the template is the one
+ * that owns it. This is OR-ed with the template capability, never replacing it.
+ */
+export function purposeRequiresBackgroundRemoval(
+  purpose: MediaProcessingPurpose,
+  templateId: string,
+): boolean {
+  return ISOLATION_PURPOSE_OWNERS[purpose] === templateId;
+}
+
+/**
  * Content-address key for derivative reuse/dedupe, scoped by purpose.
  *
  * `canvasSubject` yields the LEGACY key (no suffix) so existing content-addressed

@@ -12,7 +12,7 @@ import { canTransitionMedia, isReprocessable } from "./media-lifecycle";
 import { MediaStorageGateway } from "./media-storage.gateway";
 import { BackgroundRemovalService } from "./background-removal.service";
 import { isolationCapabilityError, templateRequiresBackgroundRemoval } from "./template-media-capability";
-import { normalizeMediaProcessingPurpose, type MediaProcessingPurpose } from "./media-processing-purpose";
+import { normalizeMediaProcessingPurpose, purposeRequiresBackgroundRemoval, type MediaProcessingPurpose } from "./media-processing-purpose";
 
 export const MEDIA_BACKGROUND_REMOVE_JOB = "media.background_remove";
 export const REQUIRED_ISOLATION_SAVE_MESSAGE =
@@ -292,7 +292,16 @@ export class MediaProcessingService {
     });
     if (!template) throw new NotFoundException("Published template not found");
 
-    const requiresBackgroundRemoval = templateRequiresBackgroundRemoval(template.capabilities);
+    // The template capability governs the DEFAULT (canvasSubject) purpose. An
+    // intrinsic isolation purpose (e.g. the Ice Girl widget subject) forces
+    // removal on its owning template even when that template's own background is
+    // a full photo requiring none — otherwise the widget-subject job is never
+    // enqueued and the subject is never isolated. This only ever ADDS a job for
+    // the one template that owns the purpose; every other template/flow is
+    // unaffected.
+    const requiresBackgroundRemoval =
+      templateRequiresBackgroundRemoval(template.capabilities)
+      || purposeRequiresBackgroundRemoval(purpose, templateId);
     const asset = await this.assetService.requireAsset(assetId);
     if (!requiresBackgroundRemoval) {
       const response = {
