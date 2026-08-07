@@ -5,7 +5,7 @@ import { MediaDerivative } from "../../entities/media-derivative.entity";
 import { MediaAssetService } from "./media-asset.service";
 import { MediaStorageGateway } from "./media-storage.gateway";
 import { MediaProcessor, MediaProcessorContext } from "./media-processor.registry";
-import { validateTransparentOutput } from "./media-image-validation";
+import { validateTransparentOutput, classifyProviderBytes, bytePrefixHex } from "./media-image-validation";
 import { BACKGROUND_REMOVAL_PROVIDER, BackgroundRemovalProvider } from "./providers/background-removal.provider";
 
 /**
@@ -98,6 +98,18 @@ export class BackgroundRemovalService implements MediaProcessor {
       + ` assetId=${asset.id} provider=${this.provider.name}`,
     );
     const output = await this.provider.removeBackground({ buffer: source, mimeType: asset.mimeType });
+    // Safe diagnostic: if the provider did not return a PNG, log the signature
+    // (never image content — only length + first 16 bytes hex + classification)
+    // so a misconfigured provider is diagnosable without a device or a re-run.
+    const signature = classifyProviderBytes(output.buffer);
+    if (signature !== "png") {
+      this.logger.warn(
+        `[WORKER] provider output not PNG jobId=${context?.jobId ?? "unknown"}`
+        + ` assetId=${asset.id} provider=${this.provider.name} version=${this.provider.version}`
+        + ` declaredMime=${output.mimeType} bytes=${output.buffer.length}`
+        + ` signature=${signature} first16=${bytePrefixHex(output.buffer)}`,
+      );
+    }
     validateTransparentOutput(output.buffer);
     const stored = await this.storage.storeDerivative(output.buffer, "image/png");
     const durationMs = Date.now() - startedAt;
