@@ -6,6 +6,7 @@ import { MediaAssetService } from "./media-asset.service";
 import { MediaStorageGateway } from "./media-storage.gateway";
 import { MediaProcessor, MediaProcessorContext } from "./media-processor.registry";
 import { validateTransparentOutput, classifyProviderBytes, bytePrefixHex } from "./media-image-validation";
+import { computePngVisibleBounds } from "./png-alpha-bounds";
 import { BACKGROUND_REMOVAL_PROVIDER, BackgroundRemovalProvider } from "./providers/background-removal.provider";
 
 /**
@@ -74,6 +75,7 @@ export class BackgroundRemovalService implements MediaProcessor {
             mimeType: contentMatch.mimeType,
             width: contentMatch.width ?? null,
             height: contentMatch.height ?? null,
+            visibleBounds: contentMatch.visibleBounds ?? null,
             bytes: contentMatch.bytes ?? null,
             checksum: contentMatch.checksum ?? null,
             provider: contentMatch.provider,
@@ -114,6 +116,11 @@ export class BackgroundRemovalService implements MediaProcessor {
     const stored = await this.storage.storeDerivative(output.buffer, "image/png");
     const durationMs = Date.now() - startedAt;
 
+    // Visible-content bounds for opt-in subject fitting (Ice Girl). Best-effort:
+    // the util returns null for any undecodable/unsupported PNG, and decoded
+    // dimensions supersede the provider's header dims when available.
+    const bounds = computePngVisibleBounds(output.buffer);
+
     const derivative = await this.assetService.saveDerivative({
       assetId: asset.id,
       sourceChecksum: asset.checksum ?? null,
@@ -121,8 +128,9 @@ export class BackgroundRemovalService implements MediaProcessor {
       key: stored.key,
       url: stored.url,
       mimeType: "image/png",
-      width: output.width ?? null,
-      height: output.height ?? null,
+      width: bounds?.width ?? output.width ?? null,
+      height: bounds?.height ?? output.height ?? null,
+      visibleBounds: bounds?.visibleBounds ?? null,
       bytes: output.buffer.length,
       checksum: createHash("sha256").update(output.buffer).digest("hex"),
       provider: this.provider.name,
