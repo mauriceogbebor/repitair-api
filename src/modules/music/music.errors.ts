@@ -3,6 +3,7 @@ import { HttpException } from "@nestjs/common";
 export type MusicErrorCode =
   | "INVALID_LINK"
   | "UNSUPPORTED_PROVIDER_URL"
+  | "PROVIDER_NOT_CONNECTED"
   | "PROVIDER_AUTH_FAILURE"
   | "PROVIDER_RATE_LIMIT"
   | "PROVIDER_TIMEOUT"
