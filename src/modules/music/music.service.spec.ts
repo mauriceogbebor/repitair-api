@@ -58,6 +58,40 @@ describe("MusicService", () => {
     });
   });
 
+  describe("prepareLink host hardening + normalization", () => {
+    it("accepts canonical Spotify + Apple hosts and normalizes away ?si= and query params", async () => {
+      const spotify = await service.prepareLink("https://open.spotify.com/playlist/abc123?si=deadbeef&utm=x", "req");
+      expect(spotify.provider).toBe("spotify");
+      expect(spotify.linkType).toBe("playlist");
+      expect(spotify.normalizedUrl).toBe("https://open.spotify.com/playlist/abc123"); // no ?si=
+
+      const apple = await service.prepareLink("https://music.apple.com/us/playlist/chill/pl.pm-123", "req");
+      expect(apple.provider).toBe("apple-music");
+      expect(apple.linkType).toBe("playlist");
+      expect(apple.storefront).toBe("us");
+    });
+
+    it("rejects look-alike hosts that a bare endsWith() would have accepted", async () => {
+      for (const bad of [
+        "https://xspotify.com/playlist/abc123",
+        "https://evil-spotify.com/playlist/abc123",
+        "https://notmusic.apple.com/us/playlist/x/pl.1",
+        "https://spotify.com.evil.example/playlist/abc123",
+        "https://example.com/playlist/abc123",
+      ]) {
+        await expect(service.prepareLink(bad, "req")).rejects.toMatchObject({
+          code: expect.stringMatching(/UNSUPPORTED_PROVIDER_URL|INVALID_LINK/),
+        });
+      }
+    });
+
+    it("still accepts a real Spotify subdomain", async () => {
+      const r = await service.prepareLink("https://open.spotify.com/track/xyz789", "req");
+      expect(r.provider).toBe("spotify");
+      expect(r.linkType).toBe("track");
+    });
+  });
+
   describe("Apple Music extractors", () => {
     it("preserves storefront and embedded song ids", () => {
       expect((service as any).extractAppleMusicStorefront("https://music.apple.com/ng/album/starboy/1440877791?i=1440877793")).toBe("ng");
@@ -549,6 +583,73 @@ describe("MusicService", () => {
       );
       expect(response.status).toBe(404);
       expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("provider-not-connected contract", () => {
+    const playlistContext = (overrides: Record<string, unknown> = {}) => ({
+      requestId: "req-nc",
+      endpoint: "/music/parse-link",
+      provider: "spotify" as const,
+      linkType: "playlist" as const,
+      normalizedUrl: "https://open.spotify.com/playlist/plabc",
+      rawUrl: "https://open.spotify.com/playlist/plabc",
+      storefront: null,
+      ...overrides,
+    });
+
+    it("throws PROVIDER_NOT_CONNECTED (401) when a private Spotify playlist is requested with no user token", async () => {
+      fetchSpy = jest.spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "cc", expires_in: 3600 }), { status: 200 }))
+        .mockResolvedValue(new Response("Not Found", { status: 404 }));
+
+      await expect(
+        (service as any).listSpotifyPlaylist("plabc", playlistContext()),
+      ).rejects.toMatchObject({
+        code: "PROVIDER_NOT_CONNECTED",
+        provider: "spotify",
+        status: 401,
+      });
+    });
+
+    it("distinguishes connected-but-access-denied (PROVIDER_NOT_FOUND) from not-connected", async () => {
+      // User token available but the account can't see the playlist → 404 on user token path,
+      // 404 on client-credentials → terminal access-denied, NOT a connect prompt.
+      const connections = {
+        spotifyAccessToken: jest.fn().mockResolvedValue("user-tok"),
+        requireReauthorization: jest.fn().mockResolvedValue(undefined),
+      };
+      const connectedService = new MusicService(
+        mockConfig as never,
+        mockUsersRepo as never,
+        null,
+        connections as never,
+      );
+      fetchSpy = jest.spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(new Response("Not Found", { status: 404 })) // user-token playlist lookup
+        .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "cc", expires_in: 3600 }), { status: 200 }))
+        .mockResolvedValue(new Response("Not Found", { status: 404 })); // client credentials
+
+      await expect(
+        (connectedService as any).listSpotifyPlaylist("plabc", playlistContext({ userId: "user-1" })),
+      ).rejects.toMatchObject({
+        code: "PROVIDER_NOT_FOUND",
+        status: 404,
+      });
+      connectedService.onModuleDestroy();
+    });
+
+    it("throws PROVIDER_NOT_CONNECTED (401) for a personal Apple Music playlist with no user token", async () => {
+      await expect(
+        (service as any).listAppleMusicPlaylist(
+          "pl.u-abc123",
+          playlistContext({ provider: "apple-music", storefront: "us" }),
+        ),
+      ).rejects.toMatchObject({
+        code: "PROVIDER_NOT_CONNECTED",
+        provider: "apple-music",
+        status: 401,
+      });
     });
   });
 

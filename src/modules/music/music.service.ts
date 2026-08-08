@@ -385,12 +385,18 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
     }
 
     const host = url.hostname.toLowerCase();
+    // Exact-host matching: `base` itself or a real subdomain (`.base`). This
+    // rejects look-alikes such as `xspotify.com` / `notmusic.apple.com` that a
+    // bare endsWith() would accept. (IDs are still only ever used against the
+    // hardcoded official API bases, so this is defence-in-depth, not the sole
+    // SSRF guard.)
+    const hostIs = (base: string) => host === base || host.endsWith(`.${base}`);
     if (host === "spotify.link") {
       const resolvedUrl = await this.resolveSpotifyShortLink(cleaned, requestId);
       return this.prepareLink(resolvedUrl, requestId, userId);
     }
 
-    if (host.endsWith("spotify.com")) {
+    if (hostIs("spotify.com")) {
       const segments = url.pathname
         .split("/")
         .filter(Boolean)
@@ -431,7 +437,7 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
       };
     }
 
-    if (host.endsWith("music.apple.com") || host.endsWith("itunes.apple.com")) {
+    if (hostIs("music.apple.com") || hostIs("itunes.apple.com")) {
       const lowerSegments = url.pathname.split("/").filter(Boolean).map((segment) => segment.toLowerCase());
       const linkType: MusicLinkType = lowerSegments.includes("playlist")
         ? "playlist"
@@ -1535,9 +1541,21 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
       // If Spotify returned 404 and we had no user token to try, the playlist is likely
       // private or personal. Provide an actionable message.
       if (response.status === 404 || userTokenStatus === 404) {
+        // A private/personal playlist. Distinguish "no Spotify connection at all"
+        // (→ prompt the user to connect, and the client can auto-resume after) from
+        // "connected but this account can't access it" (→ terminal access-denied).
+        if (!userTokenAvailable) {
+          throw this.buildResolutionException(context, {
+            code: "PROVIDER_NOT_CONNECTED" as const,
+            message: "Connect Spotify to access this playlist.",
+            providerStatus: 404,
+            retriable: false,
+            status: 401,
+          });
+        }
         throw this.buildResolutionException(context, {
           code: "PROVIDER_NOT_FOUND" as const,
-          message: "This playlist is private. Connect the account that owns it or ask the owner to share it through Repitair.",
+          message: "You don’t have access to this Spotify playlist. Ask the owner to share it through Repitair.",
           providerStatus: 404,
           retriable: false,
           status: 404,
@@ -1635,11 +1653,12 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
     if (isPersonal) {
       const userToken = context.userId ? await this.getUserAppleMusicToken(context.userId) : null;
       if (!userToken) {
+        // No Apple Music connection → prompt connect (client can auto-resume after).
         throw this.buildResolutionException(context, {
-          code: "PROVIDER_AUTH_FAILURE",
-          message: "Connect Apple Music in Profile to use personal playlists.",
+          code: "PROVIDER_NOT_CONNECTED",
+          message: "Connect Apple Music to access this playlist.",
           retriable: false,
-          status: 409,
+          status: 401,
         });
       }
       extraHeaders = { "Music-User-Token": userToken };
