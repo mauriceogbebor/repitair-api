@@ -598,7 +598,7 @@ describe("MusicService", () => {
       ...overrides,
     });
 
-    it("throws PROVIDER_NOT_CONNECTED (401) when a private Spotify playlist is requested with no user token", async () => {
+    it("throws PROVIDER_NOT_CONNECTED (409) when a private Spotify playlist is requested with no user token", async () => {
       fetchSpy = jest.spyOn(globalThis, "fetch")
         .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "cc", expires_in: 3600 }), { status: 200 }))
         .mockResolvedValue(new Response("Not Found", { status: 404 }));
@@ -608,7 +608,7 @@ describe("MusicService", () => {
       ).rejects.toMatchObject({
         code: "PROVIDER_NOT_CONNECTED",
         provider: "spotify",
-        status: 401,
+        status: 409,
       });
     });
 
@@ -639,7 +639,7 @@ describe("MusicService", () => {
       connectedService.onModuleDestroy();
     });
 
-    it("throws PROVIDER_NOT_CONNECTED (401) for a personal Apple Music playlist with no user token", async () => {
+    it("throws PROVIDER_NOT_CONNECTED (409) for a personal Apple Music playlist with no user token", async () => {
       await expect(
         (service as any).listAppleMusicPlaylist(
           "pl.u-abc123",
@@ -648,7 +648,7 @@ describe("MusicService", () => {
       ).rejects.toMatchObject({
         code: "PROVIDER_NOT_CONNECTED",
         provider: "apple-music",
-        status: 401,
+        status: 409,
       });
     });
   });

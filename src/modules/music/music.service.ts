@@ -1550,7 +1550,7 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
             message: "Connect Spotify to access this playlist.",
             providerStatus: 404,
             retriable: false,
-            status: 401,
+            status: 409,
           });
         }
         throw this.buildResolutionException(context, {
@@ -1658,7 +1658,7 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
           code: "PROVIDER_NOT_CONNECTED",
           message: "Connect Apple Music to access this playlist.",
           retriable: false,
-          status: 401,
+          status: 409,
         });
       }
       extraHeaders = { "Music-User-Token": userToken };
