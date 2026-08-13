@@ -2,6 +2,7 @@ import { BadRequestException, Body, Controller, Delete, Get, Header, Param, Post
 import { Response } from "express";
 
 import { CurrentUser, CurrentUserPayload } from "../../common/decorators/current-user.decorator";
+import { AdminEmailGuard } from "../../common/guards/admin-email.guard";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { AuthService } from "./auth.service";
 import { ForgotPasswordDto } from "./dto/forgot-password.dto";
@@ -204,6 +205,19 @@ export class AuthController {
   }
 
   /**
+   * Admin-only, secret-free readiness report for the music OAuth flows.
+   * Lets an operator instantly see which env vars are missing/misconfigured on
+   * a given deployment (e.g. staging) when "connect" fails, instead of chasing
+   * a generic provider "Problem Connecting" screen. Returns booleans only
+   * (plus the non-secret Spotify redirect URI, which must match the dashboard).
+   */
+  @Get("oauth/diagnostics")
+  @UseGuards(JwtAuthGuard, AdminEmailGuard)
+  oauthDiagnostics() {
+    return this.authService.getOAuthConfigDiagnostics();
+  }
+
+  /**
    * Initiate Apple Music connection flow.
    * Returns the URL for the MusicKit JS authorization page.
    */
@@ -235,10 +249,14 @@ export class AuthController {
     }
     const developerToken = this.authService.generateMusicKitDeveloperToken();
 
-    if (!developerToken || !state) {
+    // Fail loudly on a missing OR structurally-invalid developer token — the
+    // common staging misconfiguration (missing/mangled APPLE_MUSIC_* env). This
+    // prevents handing Apple a broken token that surfaces as a confusing
+    // "Problem Connecting / network issue" on authorize.music.apple.com.
+    if (!state || !developerToken || !this.authService.isDeveloperTokenWellFormed(developerToken)) {
       const redirectUrl = this.buildAppleMusicAppRedirect(
         "error",
-        "Apple Music is not available right now.",
+        "Apple Music isn't configured on this server yet. Please try again later.",
       );
       return res.redirect(redirectUrl);
     }

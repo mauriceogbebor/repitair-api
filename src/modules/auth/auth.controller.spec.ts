@@ -1,4 +1,5 @@
 import { Test, TestingModule } from "@nestjs/testing";
+import { ConfigService } from "@nestjs/config";
 import { JwtService } from "@nestjs/jwt";
 import { AuthController } from "./auth.controller";
 import { AuthService } from "./auth.service";
@@ -36,6 +37,8 @@ describe("AuthController", () => {
       handleSpotifyCallback: jest.fn(),
       validateAppleMusicAuthorizationState: jest.fn(),
       generateMusicKitDeveloperToken: jest.fn(),
+      isDeveloperTokenWellFormed: jest.fn().mockReturnValue(true),
+      getOAuthConfigDiagnostics: jest.fn(),
       handleAppleMusicCallback: jest.fn(),
     };
 
@@ -57,6 +60,12 @@ describe("AuthController", () => {
         {
           provide: TokenBlacklistService,
           useValue: { isBlacklisted: jest.fn().mockResolvedValue(false), add: jest.fn() },
+        },
+        {
+          // Required so the AdminEmailGuard on GET /auth/oauth/diagnostics can be
+          // instantiated by the testing module (its canActivate isn't exercised here).
+          provide: ConfigService,
+          useValue: { get: jest.fn() },
         },
       ],
     }).compile();
@@ -462,6 +471,26 @@ describe("AuthController", () => {
         "const CALLBACK_URL = new URL('callback', window.location.href).toString();",
       );
       expect(html).not.toContain("window.location.origin + '/auth/apple-music/callback'");
+    });
+
+    it("fails loudly with a config error instead of serving a broken MusicKit page when the developer token is malformed", async () => {
+      (authService.validateAppleMusicAuthorizationState as jest.Mock).mockResolvedValue(undefined);
+      (authService.generateMusicKitDeveloperToken as jest.Mock).mockReturnValue("malformed-token");
+      (authService.isDeveloperTokenWellFormed as jest.Mock).mockReturnValue(false);
+      const send = jest.fn();
+      const response = {
+        redirect: jest.fn(),
+        type: jest.fn().mockReturnThis(),
+        send,
+      };
+
+      await authController.appleMusicAuthorize("oauth-state", response as never);
+
+      // No MusicKit page served; a deep-link error redirect is issued instead.
+      expect(send).not.toHaveBeenCalled();
+      expect(response.redirect).toHaveBeenCalledTimes(1);
+      expect(String(response.redirect.mock.calls[0][0])).toContain("repitair://apple-music-connected");
+      expect(String(response.redirect.mock.calls[0][0])).toContain("status=error");
     });
   });
 });

@@ -575,6 +575,90 @@ export class AuthService {
     }
   }
 
+  /**
+   * Structural validation of a MusicKit developer token — three JWT segments,
+   * ES256 header with a non-empty `kid`, and a payload with a non-empty `iss`
+   * (team id) that has not already expired. This catches the common staging
+   * misconfiguration (missing/mangled key id or private key) before we hand a
+   * broken token to Apple's authorize page, which would otherwise present a
+   * generic "Problem Connecting" error to the user.
+   */
+  isDeveloperTokenWellFormed(token: string | null | undefined): boolean {
+    if (!token || typeof token !== "string") return false;
+    const segments = token.split(".");
+    if (segments.length !== 3) return false;
+    try {
+      const header = JSON.parse(Buffer.from(segments[0], "base64url").toString("utf8")) as {
+        alg?: string;
+        kid?: string;
+      };
+      const payload = JSON.parse(Buffer.from(segments[1], "base64url").toString("utf8")) as {
+        iss?: string;
+        exp?: number;
+      };
+      if (header.alg !== "ES256") return false;
+      if (!header.kid || typeof header.kid !== "string") return false;
+      if (!payload.iss || typeof payload.iss !== "string") return false;
+      if (typeof payload.exp !== "number" || payload.exp <= Math.floor(Date.now() / 1000)) return false;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Safe, secret-free report of whether this environment is configured for the
+   * music OAuth flows. Returns only booleans (and the non-secret Spotify
+   * redirect URI, which is required to match the provider dashboard) so it can
+   * be surfaced to an admin to diagnose "connect fails" without leaking any
+   * client secrets or signing keys.
+   */
+  getOAuthConfigDiagnostics(): {
+    apiBaseUrl: { configured: boolean; isLocalhost: boolean };
+    spotify: { clientId: boolean; clientSecret: boolean; redirectUri: string | null; ready: boolean };
+    appleMusic: {
+      teamId: boolean;
+      keyId: boolean;
+      privateKey: boolean;
+      developerTokenGenerates: boolean;
+      developerTokenWellFormed: boolean;
+      ready: boolean;
+    };
+  } {
+    const apiBaseUrl = this.configService.get<string>("API_BASE_URL");
+    const spotifyClientId = Boolean(this.configService.get<string>("SPOTIFY_CLIENT_ID"));
+    const spotifyClientSecret = Boolean(this.configService.get<string>("SPOTIFY_CLIENT_SECRET"));
+    const spotifyRedirectUri = this.configService.get<string>("SPOTIFY_REDIRECT_URI") ?? null;
+
+    const teamId = Boolean(this.configService.get<string>("APPLE_MUSIC_TEAM_ID"));
+    const keyId = Boolean(this.configService.get<string>("APPLE_MUSIC_KEY_ID"));
+    const privateKey = Boolean(this.configService.get<string>("APPLE_MUSIC_PRIVATE_KEY"));
+    const developerToken = this.generateMusicKitDeveloperToken();
+    const developerTokenGenerates = Boolean(developerToken);
+    const developerTokenWellFormed = this.isDeveloperTokenWellFormed(developerToken);
+
+    return {
+      apiBaseUrl: {
+        configured: Boolean(apiBaseUrl),
+        isLocalhost: Boolean(apiBaseUrl && /localhost|127\.0\.0\.1/.test(apiBaseUrl)),
+      },
+      spotify: {
+        clientId: spotifyClientId,
+        clientSecret: spotifyClientSecret,
+        redirectUri: spotifyRedirectUri,
+        ready: spotifyClientId && Boolean(spotifyRedirectUri),
+      },
+      appleMusic: {
+        teamId,
+        keyId,
+        privateKey,
+        developerTokenGenerates,
+        developerTokenWellFormed,
+        ready: teamId && keyId && privateKey && developerTokenWellFormed,
+      },
+    };
+  }
+
   async handleAppleMusicCallback(state: string, userToken: string): Promise<{ success: boolean; message: string }> {
     const { userId } = this.musicConnections
       ? await this.musicConnections.consumeOAuthState(state, "apple-music")
