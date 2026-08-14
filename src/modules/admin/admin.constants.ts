@@ -89,6 +89,8 @@ export const ADMIN_PERMISSION_DEFINITIONS: AdminPermissionDefinition[] = [
   { key: "jobs.view_errors", module: "jobs", description: "View job error details and stacks" },
   { key: "media.read", module: "media", description: "View media processing queue and asset status" },
   { key: "media.manage", module: "media", description: "Retry and regenerate media processing" },
+  { key: "music.read", module: "music", description: "View music provider connection operations" },
+  { key: "music.manage", module: "music", description: "Force reauthorization or disconnect a user's music provider connection" },
 ];
 
 export const ADMIN_ROLE_DEFINITIONS = [
@@ -177,6 +179,8 @@ export const ADMIN_ROLE_DEFINITIONS = [
       "support.sla.read",
       "support.sensitive_context.read",
       "notifications.read",
+      "music.read",
+      "music.manage",
     ],
   },
   {
