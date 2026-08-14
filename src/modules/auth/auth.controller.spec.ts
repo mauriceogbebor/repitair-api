@@ -38,6 +38,7 @@ describe("AuthController", () => {
       validateAppleMusicAuthorizationState: jest.fn(),
       generateMusicKitDeveloperToken: jest.fn(),
       isDeveloperTokenWellFormed: jest.fn().mockReturnValue(true),
+      developerTokenSelfVerifies: jest.fn().mockReturnValue(true),
       getOAuthConfigDiagnostics: jest.fn(),
       handleAppleMusicCallback: jest.fn(),
     };
@@ -490,6 +491,21 @@ describe("AuthController", () => {
       expect(send).not.toHaveBeenCalled();
       expect(response.redirect).toHaveBeenCalledTimes(1);
       expect(String(response.redirect.mock.calls[0][0])).toContain("repitair://apple-music-connected");
+      expect(String(response.redirect.mock.calls[0][0])).toContain("status=error");
+    });
+
+    it("preflight rejects a well-formed token that does not self-verify (the ERROR_FAILED_TO_VERIFY_JWT class)", async () => {
+      (authService.validateAppleMusicAuthorizationState as jest.Mock).mockResolvedValue(undefined);
+      (authService.generateMusicKitDeveloperToken as jest.Mock).mockReturnValue("well-formed-but-wrong-signature");
+      (authService.isDeveloperTokenWellFormed as jest.Mock).mockReturnValue(true);
+      (authService.developerTokenSelfVerifies as jest.Mock).mockReturnValue(false);
+      const send = jest.fn();
+      const response = { redirect: jest.fn(), type: jest.fn().mockReturnThis(), send };
+
+      await authController.appleMusicAuthorize("oauth-state", response as never);
+
+      expect(send).not.toHaveBeenCalled();
+      expect(response.redirect).toHaveBeenCalledTimes(1);
       expect(String(response.redirect.mock.calls[0][0])).toContain("status=error");
     });
   });

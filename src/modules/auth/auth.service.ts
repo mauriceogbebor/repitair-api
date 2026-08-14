@@ -11,7 +11,8 @@ import {
 } from "@nestjs/common";
 import { JwtService, type JwtSignOptions } from "@nestjs/jwt";
 import { ConfigService } from "@nestjs/config";
-import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "crypto";
+import { createHmac, createPublicKey, randomBytes, randomUUID, timingSafeEqual } from "crypto";
+import * as jwt from "jsonwebtoken";
 
 import { UsersService } from "../users/users.service";
 import { MailService } from "../../common/services/mail.service";
@@ -554,21 +555,18 @@ export class AuthService {
 
     try {
       const privateKey = privateKeyStr.replace(/\\n/g, "\n");
-      const now = Math.floor(Date.now() / 1000);
-      const exp = now + 6 * 30 * 24 * 60 * 60;
-
-      const header = { alg: "ES256", kid: keyId, typ: "JWT" };
-      const payload = { iss: teamId, iat: now, exp };
-
-      const headerEnc = Buffer.from(JSON.stringify(header)).toString("base64url");
-      const payloadEnc = Buffer.from(JSON.stringify(payload)).toString("base64url");
-      const message = `${headerEnc}.${payloadEnc}`;
-
-      const { createSign } = require("crypto");
-      const sig = createSign("sha256").update(message).sign({ key: privateKey, format: "pem" }, "base64");
-      const sigEnc = Buffer.from(sig, "base64").toString("base64url");
-
-      return `${message}.${sigEnc}`;
+      // MusicKit requires a JOSE ES256 JWT: the ECDSA signature must be the raw
+      // r‖s (IEEE P1363) form. Node's crypto.createSign(...).sign() emits an
+      // ASN.1 DER signature by default, which Apple rejects with
+      // ERROR_FAILED_TO_VERIFY_JWT. Sign with the jsonwebtoken library (as the
+      // catalog-lookup path already does) so the encoding is correct.
+      const token = jwt.sign({}, privateKey, {
+        algorithm: "ES256",
+        expiresIn: "180d",
+        header: { alg: "ES256", kid: keyId },
+        issuer: teamId,
+      });
+      return token;
     } catch (err) {
       this.logger.error("Failed to generate MusicKit developer token", err);
       return null;
@@ -607,6 +605,29 @@ export class AuthService {
   }
 
   /**
+   * Cryptographically verify a MusicKit developer token against the public key
+   * derived from the configured `.p8` private key. This catches the exact class
+   * of signing bug that produced `ERROR_FAILED_TO_VERIFY_JWT` (e.g. a DER-
+   * encoded ECDSA signature instead of JOSE r‖s) *before* the token ever
+   * reaches Apple. It cannot detect a wrong Key ID / Team ID (only Apple can),
+   * but it guarantees the signature itself is a valid ES256 JOSE signature for
+   * this key.
+   */
+  developerTokenSelfVerifies(token: string | null | undefined): boolean {
+    if (!token) return false;
+    const privateKeyStr = this.configService.get<string>("APPLE_MUSIC_PRIVATE_KEY");
+    if (!privateKeyStr) return false;
+    try {
+      const privateKey = privateKeyStr.replace(/\\n/g, "\n");
+      const publicKey = createPublicKey({ key: privateKey, format: "pem" });
+      jwt.verify(token, publicKey, { algorithms: ["ES256"] });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Safe, secret-free report of whether this environment is configured for the
    * music OAuth flows. Returns only booleans (and the non-secret Spotify
    * redirect URI, which is required to match the provider dashboard) so it can
@@ -622,6 +643,7 @@ export class AuthService {
       privateKey: boolean;
       developerTokenGenerates: boolean;
       developerTokenWellFormed: boolean;
+      developerTokenSelfVerifies: boolean;
       ready: boolean;
     };
   } {
@@ -636,6 +658,7 @@ export class AuthService {
     const developerToken = this.generateMusicKitDeveloperToken();
     const developerTokenGenerates = Boolean(developerToken);
     const developerTokenWellFormed = this.isDeveloperTokenWellFormed(developerToken);
+    const developerTokenSelfVerifies = this.developerTokenSelfVerifies(developerToken);
 
     return {
       apiBaseUrl: {
@@ -654,7 +677,10 @@ export class AuthService {
         privateKey,
         developerTokenGenerates,
         developerTokenWellFormed,
-        ready: teamId && keyId && privateKey && developerTokenWellFormed,
+        developerTokenSelfVerifies,
+        // A self-verifiable token guarantees the signature is valid ES256 JOSE
+        // for this key — the class of failure behind ERROR_FAILED_TO_VERIFY_JWT.
+        ready: teamId && keyId && privateKey && developerTokenSelfVerifies,
       },
     };
   }

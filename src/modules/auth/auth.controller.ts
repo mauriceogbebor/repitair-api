@@ -249,14 +249,21 @@ export class AuthController {
     }
     const developerToken = this.authService.generateMusicKitDeveloperToken();
 
-    // Fail loudly on a missing OR structurally-invalid developer token — the
-    // common staging misconfiguration (missing/mangled APPLE_MUSIC_* env). This
-    // prevents handing Apple a broken token that surfaces as a confusing
-    // "Problem Connecting / network issue" on authorize.music.apple.com.
-    if (!state || !developerToken || !this.authService.isDeveloperTokenWellFormed(developerToken)) {
+    // Fail loudly on a missing, structurally-invalid, OR non-self-verifiable
+    // developer token before ever launching MusicKit. Self-verification catches
+    // the signing-bug class (e.g. DER vs JOSE ES256) that Apple would otherwise
+    // reject with the cryptic ERROR_FAILED_TO_VERIFY_JWT behind a generic
+    // "Problem Connecting" screen. A wrong Key ID / Team ID can still only be
+    // caught by Apple, but every server-detectable misconfig is surfaced here.
+    if (
+      !state
+      || !developerToken
+      || !this.authService.isDeveloperTokenWellFormed(developerToken)
+      || !this.authService.developerTokenSelfVerifies(developerToken)
+    ) {
       const redirectUrl = this.buildAppleMusicAppRedirect(
         "error",
-        "Apple Music isn't configured on this server yet. Please try again later.",
+        "Apple Music isn't configured correctly on this server yet. Please try again later.",
       );
       return res.redirect(redirectUrl);
     }

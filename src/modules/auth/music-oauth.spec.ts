@@ -105,6 +105,80 @@ describe("music provider OAuth", () => {
     });
   });
 
+  describe("MusicKit developer token signing", () => {
+    it("produces a verifiable ES256 (JOSE) JWT — not a DER-signed token Apple rejects", () => {
+      const { generateKeyPairSync } = require("crypto") as typeof import("crypto");
+      const jwtLib = require("jsonwebtoken") as typeof import("jsonwebtoken");
+      const { privateKey, publicKey } = generateKeyPairSync("ec", {
+        namedCurve: "prime256v1",
+        publicKeyEncoding: { type: "spki", format: "pem" },
+        privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      });
+      const cfg = {
+        get: jest.fn((key: string) => ({
+          APPLE_MUSIC_TEAM_ID: "TEAM123456",
+          APPLE_MUSIC_KEY_ID: "KEY1234567",
+          APPLE_MUSIC_PRIVATE_KEY: privateKey,
+          JWT_SECRET: "test-secret",
+        } as Record<string, string>)[key]),
+      };
+      const svc = new AuthService(
+        users as never, jwt as never, mail as never, blacklist as never,
+        cfg as never, appleIdentity as never, socialIdentity as never, connections as never,
+      );
+
+      const token = svc.generateMusicKitDeveloperToken();
+      expect(token).toBeTruthy();
+
+      // The DER-signature bug produced a signature Apple could not verify
+      // (ERROR_FAILED_TO_VERIFY_JWT). A correct JOSE ES256 signature verifies
+      // against the public key and is exactly 64 bytes (raw r‖s for P-256).
+      const decoded = jwtLib.verify(token as string, publicKey, { algorithms: ["ES256"] }) as { iss?: string };
+      expect(decoded.iss).toBe("TEAM123456");
+      expect(Buffer.from((token as string).split(".")[2], "base64url").length).toBe(64);
+
+      const header = JSON.parse(Buffer.from((token as string).split(".")[0], "base64url").toString("utf8"));
+      expect(header).toMatchObject({ alg: "ES256", kid: "KEY1234567" });
+      expect(svc.isDeveloperTokenWellFormed(token)).toBe(true);
+      // Self-verification derives the public key from the same private key and
+      // confirms the signature — the guard behind ERROR_FAILED_TO_VERIFY_JWT.
+      expect(svc.developerTokenSelfVerifies(token)).toBe(true);
+    });
+
+    it("self-verification fails for a token signed by a different key", () => {
+      const { generateKeyPairSync } = require("crypto") as typeof import("crypto");
+      const jwtLib = require("jsonwebtoken") as typeof import("jsonwebtoken");
+      const configuredKey = generateKeyPairSync("ec", {
+        namedCurve: "prime256v1",
+        privateKeyEncoding: { type: "pkcs8", format: "pem" },
+        publicKeyEncoding: { type: "spki", format: "pem" },
+      }).privateKey;
+      const strangerKey = generateKeyPairSync("ec", {
+        namedCurve: "prime256v1",
+        privateKeyEncoding: { type: "pkcs8", format: "pem" },
+        publicKeyEncoding: { type: "spki", format: "pem" },
+      }).privateKey;
+      const cfg = {
+        get: jest.fn((key: string) => ({
+          APPLE_MUSIC_TEAM_ID: "TEAM123456",
+          APPLE_MUSIC_KEY_ID: "KEY1234567",
+          APPLE_MUSIC_PRIVATE_KEY: configuredKey,
+          JWT_SECRET: "test-secret",
+        } as Record<string, string>)[key]),
+      };
+      const svc = new AuthService(
+        users as never, jwt as never, mail as never, blacklist as never,
+        cfg as never, appleIdentity as never, socialIdentity as never, connections as never,
+      );
+      // A well-formed token signed by an UNRELATED key must not self-verify.
+      const foreignToken = jwtLib.sign({}, strangerKey, {
+        algorithm: "ES256", expiresIn: "180d", header: { alg: "ES256", kid: "KEY1234567" }, issuer: "TEAM123456",
+      });
+      expect(svc.isDeveloperTokenWellFormed(foreignToken)).toBe(true);
+      expect(svc.developerTokenSelfVerifies(foreignToken)).toBe(false);
+    });
+  });
+
   describe("OAuth config diagnostics", () => {
     it("reports readiness with secret-free booleans and the non-secret redirect URI", () => {
       const report = service.getOAuthConfigDiagnostics();
@@ -123,6 +197,7 @@ describe("music provider OAuth", () => {
       expect(report.appleMusic.keyId).toBe(true);
       expect(report.appleMusic.privateKey).toBe(true);
       expect(report.appleMusic.developerTokenWellFormed).toBe(false);
+      expect(report.appleMusic.developerTokenSelfVerifies).toBe(false);
       expect(report.appleMusic.ready).toBe(false);
       // No secret material leaks into the report.
       expect(JSON.stringify(report)).not.toContain("spotify-secret");
