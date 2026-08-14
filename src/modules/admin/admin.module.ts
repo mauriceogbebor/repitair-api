@@ -30,6 +30,9 @@ import {
   MediaAsset,
   MediaDerivative,
   AnalyticsEvent,
+  MusicCollection,
+  MusicConnection,
+  MusicPlaylistImport,
 } from "../../entities";
 import { AuthModule } from "../auth/auth.module";
 import { NotificationsModule } from "../notifications/notifications.module";
@@ -73,6 +76,9 @@ import { AdminSessionRegistryService } from "./iam/admin-session-registry.servic
 import { AdminMediaController } from "./media/admin-media.controller";
 import { AdminMediaService } from "./media/admin-media.service";
 import { MediaProcessingModule } from "../media/media-processing.module";
+import { MusicConnectionsModule } from "../music/music-connections.module";
+import { AdminMusicController } from "./music/admin-music.controller";
+import { AdminMusicService } from "./music/admin-music.service";
 
 @Module({
   imports: [
@@ -81,6 +87,7 @@ import { MediaProcessingModule } from "../media/media-processing.module";
     PlatformModule,
     PrivacyModule,
     MediaProcessingModule,
+    MusicConnectionsModule,
     TypeOrmModule.forFeature([
       AdminUser,
       AdminRole,
@@ -111,6 +118,9 @@ import { MediaProcessingModule } from "../media/media-processing.module";
       MediaAsset,
       MediaDerivative,
       AnalyticsEvent,
+      MusicConnection,
+      MusicPlaylistImport,
+      MusicCollection,
     ]),
   ],
   controllers: [
@@ -130,6 +140,7 @@ import { MediaProcessingModule } from "../media/media-processing.module";
     AdminPrivacyController,
     AdminJobsController,
     AdminMediaController,
+    AdminMusicController,
   ],
   providers: [
     AdminAuthService,
@@ -152,6 +163,7 @@ import { MediaProcessingModule } from "../media/media-processing.module";
     AdminCsrfMiddleware,
     AdminBootstrapService,
     AdminMediaService,
+    AdminMusicService,
   ],
   exports: [
     AdminAuthService,
