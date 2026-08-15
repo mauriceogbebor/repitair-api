@@ -6,12 +6,11 @@
  * contents of this map. repitair-admin/lib/support-lifecycle.ts keeps an
  * identical copy for UI option shaping.
  *
- * NOTE: there is NO automated cross-repository parity check — the admin package
- * currently has no test runner, so CI does not detect drift between this table
- * and the admin mirror. Keeping them in step relies on code review and the
- * matching literals. This is tracked as a LOW residual risk; the durable fix is
- * a shared cross-application contract both projects consume. When you change a
- * transition here, update the admin mirror by hand.
+ * Cross-repository drift IS now guarded: support-lifecycle.parity.spec.ts reads
+ * the admin mirror and asserts it matches this table exactly, so a change here
+ * without the matching admin edit fails the backend suite. Still update the
+ * admin mirror (repitair-admin/lib/support-lifecycle.ts) whenever you change a
+ * transition; the parity test will confirm the two stay in step.
  */
 export const SUPPORT_STATUS_TRANSITIONS: Record<string, string[]> = {
   new: ["open", "assigned", "waiting_for_internal", "escalated"],

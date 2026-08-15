@@ -53,10 +53,10 @@ export class AdminMusicService {
       .andWhere('connection."accessTokenExpiresAt" > :now', { now })
       .andWhere('connection."accessTokenExpiresAt" <= :expiryCutoff', { expiryCutoff });
     const recentImportQuery = this.importsRepository
-      .createQueryBuilder("musicImport")
+      .createQueryBuilder("music_import")
       .select("COUNT(*)", "importCount")
-      .addSelect('COALESCE(SUM(musicImport."trackCount"), 0)', "trackCount")
-      .where('musicImport."importedAt" >= :importSince', { importSince });
+      .addSelect('COALESCE(SUM(music_import."trackCount"), 0)', "trackCount")
+      .where('music_import."importedAt" >= :importSince', { importSince });
 
     const [statusRows, expiringSoon, recentImports, totalCollections] = await Promise.all([
       statusQuery.getRawMany<{ provider: MusicProviderName; status: string; count: string }>(),
@@ -100,8 +100,8 @@ export class AdminMusicService {
     const qb = this.connectionsRepository
       .createQueryBuilder("connection")
       .leftJoin("connection.user", "user")
-      .addSelect('user."fullName"', "userFullName")
-      .orderBy('connection."updatedAt"', "DESC");
+      .addSelect("user.fullName", "userFullName")
+      .orderBy("connection.updatedAt", "DESC");
 
     if (query.status) qb.andWhere("connection.status = :status", { status: query.status });
     if (query.provider) qb.andWhere("connection.provider = :provider", { provider: query.provider });
