@@ -23,6 +23,7 @@ import { SocialAuthDto } from "./dto/social-auth.dto";
 import { MusicConnectionsService } from "../music/music-connections.service";
 import { AppleIdentityService } from "./apple-identity.service";
 import { SocialIdentityService, type SocialConnection } from "./social-identity.service";
+import { AnalyticsService, ANALYTICS_EVENTS } from "../analytics/analytics.service";
 import type { SocialAuthProvider } from "../../entities";
 
 @Injectable()
@@ -39,7 +40,13 @@ export class AuthService {
     private readonly appleIdentity: AppleIdentityService,
     private readonly socialIdentity: SocialIdentityService,
     @Optional() private readonly musicConnections?: MusicConnectionsService,
+    @Optional() private readonly analytics?: AnalyticsService,
   ) {}
+
+  /** Fire-and-forget analytics emit; never blocks or breaks the auth path. */
+  private emit(name: string, userId: string, properties?: Record<string, unknown>) {
+    void this.analytics?.track(name, { userId, properties, source: "backend" });
+  }
 
   private requireSecret(key: string): string {
     const value = this.configService.get<string>(key);
@@ -64,6 +71,7 @@ export class AuthService {
       signupSource: "email",
     });
 
+    this.emit(ANALYTICS_EVENTS.USER_REGISTERED, user.id, { method: "email" });
     return this.issueSession(user);
   }
 
@@ -95,6 +103,7 @@ export class AuthService {
     }
 
     await this.usersService.recordLogin(user.id);
+    this.emit(ANALYTICS_EVENTS.LOGIN, user.id, { method: "email" });
     return this.issueSession(user);
   }
 
@@ -113,6 +122,7 @@ export class AuthService {
 
     this.assertUserCanSignIn(user);
     await this.usersService.recordLogin(user.id);
+    this.emit(ANALYTICS_EVENTS.LOGIN, user.id, { method: dto.provider });
 
     return this.issueSession(user);
   }

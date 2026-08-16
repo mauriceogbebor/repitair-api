@@ -50,6 +50,8 @@ import { AdminTokenService } from "./auth/admin-token.service";
 import { AdminBootstrapService } from "./bootstrap/admin-bootstrap.service";
 import { AdminDashboardController } from "./dashboard/admin-dashboard.controller";
 import { AdminDashboardService } from "./dashboard/admin-dashboard.service";
+import { AdminAnalyticsController } from "./analytics/admin-analytics.controller";
+import { AdminAnalyticsService } from "./analytics/admin-analytics.service";
 import { AdminJwtAuthGuard } from "./guards/admin-jwt-auth.guard";
 import { AdminRbacGuard } from "./guards/admin-rbac.guard";
 import { AdminRequestContextMiddleware } from "./middleware/admin-request-context.middleware";
@@ -126,6 +128,7 @@ import { AdminMusicService } from "./music/admin-music.service";
   controllers: [
     AdminAuthController,
     AdminDashboardController,
+    AdminAnalyticsController,
     AdminAuditLogsController,
     AdminUsersController,
     AdminRepitsController,
@@ -148,6 +151,7 @@ import { AdminMusicService } from "./music/admin-music.service";
     AdminTokenService,
     AdminAuditLogsService,
     AdminDashboardService,
+    AdminAnalyticsService,
     AdminUsersService,
     AdminRepitsService,
     AdminRepitModerationService,
