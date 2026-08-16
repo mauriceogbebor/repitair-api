@@ -48,6 +48,15 @@ describe("AdminMusicService", () => {
     expect(result.recentImports).toEqual(expect.objectContaining({ importCount: 5, trackCount: 140 }));
     expect(result.totalCollections).toBe(8);
     expect(result.callbackFailuresAvailable).toBe(false);
+    expect(importsRepository.createQueryBuilder).toHaveBeenCalledWith("music_import");
+    expect(importQb.addSelect).toHaveBeenCalledWith(
+      'COALESCE(SUM(music_import."trackCount"), 0)',
+      "trackCount",
+    );
+    expect(importQb.where).toHaveBeenCalledWith(
+      'music_import."importedAt" >= :importSince',
+      expect.objectContaining({ importSince: expect.any(Date) }),
+    );
   });
 
   it("serializes connection operations without token or secret fields", async () => {
@@ -93,5 +102,7 @@ describe("AdminMusicService", () => {
     expect(serialized).not.toHaveProperty("encryptedRefreshToken");
     expect(serialized).not.toHaveProperty("accessToken");
     expect(serialized).not.toHaveProperty("refreshToken");
+    expect(listQb.addSelect).toHaveBeenCalledWith("user.fullName", "userFullName");
+    expect(listQb.orderBy).toHaveBeenCalledWith("connection.updatedAt", "DESC");
   });
 });

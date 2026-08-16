@@ -6,6 +6,7 @@ export type AdminPermissionDefinition = {
 
 export const ADMIN_PERMISSION_DEFINITIONS: AdminPermissionDefinition[] = [
   { key: "dashboard.read", module: "dashboard", description: "View the admin dashboard" },
+  { key: "analytics.read", module: "analytics", description: "View product analytics (funnel, retention, adoption, providers)" },
   { key: "audit.read", module: "audit", description: "View audit logs" },
   { key: "audit.export", module: "audit", description: "Export filtered audit records" },
   { key: "search.read", module: "search", description: "Use global admin search" },
@@ -106,6 +107,7 @@ export const ADMIN_ROLE_DEFINITIONS = [
     description: "Templates, spotlight, and moderation workflows.",
     permissions: [
       "dashboard.read",
+      "analytics.read",
       "audit.read",
       "search.read",
       "repits.read",
@@ -141,6 +143,7 @@ export const ADMIN_ROLE_DEFINITIONS = [
     description: "User support, diagnostics, and queue triage.",
     permissions: [
       "dashboard.read",
+      "analytics.read",
       "audit.read",
       "search.read",
       "users.read",
@@ -189,6 +192,7 @@ export const ADMIN_ROLE_DEFINITIONS = [
     description: "Campaigns, growth operations, and spotlight reporting.",
     permissions: [
       "dashboard.read",
+      "analytics.read",
       "audit.read",
       "search.read",
       "spotlight.read",
