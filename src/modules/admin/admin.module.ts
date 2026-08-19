@@ -45,6 +45,7 @@ import { AdminJobsController } from "./jobs/admin-jobs.controller";
 import { AdminAuditLogsService } from "./audit-logs/admin-audit-logs.service";
 import { AdminAuthController } from "./auth/admin-auth.controller";
 import { AdminAuthService } from "./auth/admin-auth.service";
+import { AdminMfaTicketStoreService } from "./auth/admin-mfa-ticket-store.service";
 import { AdminSessionService } from "./auth/admin-session.service";
 import { AdminTokenService } from "./auth/admin-token.service";
 import { AdminBootstrapService } from "./bootstrap/admin-bootstrap.service";
@@ -147,6 +148,7 @@ import { AdminMusicService } from "./music/admin-music.service";
   ],
   providers: [
     AdminAuthService,
+    AdminMfaTicketStoreService,
     AdminSessionService,
     AdminTokenService,
     AdminAuditLogsService,

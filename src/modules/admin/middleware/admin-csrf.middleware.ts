@@ -5,7 +5,7 @@ import type { NextFunction, Request, Response } from "express";
 import { AdminSessionService } from "../auth/admin-session.service";
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
-const AUTH_BOOTSTRAP_PATHS = ["/admin/auth/login", "/admin/auth/verify-mfa"];
+const AUTH_BOOTSTRAP_PATHS = ["/admin/auth/login", "/admin/auth/mfa-enrollment", "/admin/auth/verify-mfa"];
 const LOCAL_ADMIN_ORIGINS = ["http://localhost:3002"];
 
 @Injectable()

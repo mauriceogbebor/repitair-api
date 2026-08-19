@@ -5,6 +5,29 @@ import { AdminAuthService } from "./admin-auth.service";
 import { AdminSessionService } from "./admin-session.service";
 
 describe("AdminAuthController", () => {
+  it("moves the MFA ticket into an HttpOnly challenge cookie", async () => {
+    const authService = {
+      login: jest.fn(() => ({
+        status: "MFA_REQUIRED",
+        ticket: "signed-mfa-ticket",
+        admin: { id: "admin-1" },
+      })),
+    };
+    const sessionService = { startMfaChallenge: jest.fn() };
+    const controller = new AdminAuthController(
+      authService as unknown as AdminAuthService,
+      sessionService as unknown as AdminSessionService,
+    );
+    const response = {} as Response;
+
+    await expect(controller.login(
+      { email: "admin@example.test", password: "valid-password" },
+      { adminRequestContext: undefined } as AdminRequest,
+      response,
+    )).resolves.toEqual({ status: "MFA_REQUIRED", admin: { id: "admin-1" } });
+    expect(sessionService.startMfaChallenge).toHaveBeenCalledWith(response, "signed-mfa-ticket");
+  });
+
   it("sets the browser session after MFA without returning the access token", async () => {
     const authService = {
       verifyMfa: jest.fn(() => ({
@@ -13,18 +36,27 @@ describe("AdminAuthController", () => {
         admin: { id: "admin-1" },
       })),
     };
-    const sessionService = { startSession: jest.fn(() => "csrf-token") };
+    const sessionService = {
+      getMfaTicket: jest.fn(() => "cookie-ticket"),
+      clearMfaChallenge: jest.fn(),
+      startSession: jest.fn(() => "csrf-token"),
+    };
     const controller = new AdminAuthController(
       authService as unknown as AdminAuthService,
       sessionService as unknown as AdminSessionService,
     );
 
     const result = await controller.verifyMfa(
-      { ticket: "ticket", code: "123456" },
+      { code: "123456" },
       { adminRequestContext: undefined } as AdminRequest,
       {} as Response,
     );
 
+    expect(authService.verifyMfa).toHaveBeenCalledWith(
+      { code: "123456", ticket: "cookie-ticket" },
+      undefined,
+    );
+    expect(sessionService.clearMfaChallenge).toHaveBeenCalledWith({});
     expect(sessionService.startSession).toHaveBeenCalledWith({}, "secret-access-token");
     expect(result).toEqual({ status: "ACCESS_GRANTED", admin: { id: "admin-1" }, csrfToken: "csrf-token" });
     expect(result).not.toHaveProperty("accessToken");
