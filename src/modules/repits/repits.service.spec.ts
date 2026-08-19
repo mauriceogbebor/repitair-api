@@ -182,6 +182,14 @@ describe("RepitsService", () => {
         songLink: "https://example.com/track",
         platform: RepitPlatform.SPOTIFY,
         backgroundPhotoUrl: "https://example.com/photo.jpg",
+        selectedSongs: [{
+          songLink: "https://example.com/track",
+          songTitle: "New Song",
+          artistName: "New Artist",
+          platform: RepitPlatform.SPOTIFY,
+          isExplicit: true,
+          progressFraction: 0.5,
+        }],
       };
 
       const newRepit = {
@@ -211,6 +219,7 @@ describe("RepitsService", () => {
           songLink: createDto.songLink,
           status: "draft",
           backgroundPhotoUrl: createDto.backgroundPhotoUrl,
+          selectedSongs: createDto.selectedSongs,
         }),
       );
       expect(repository.save).toHaveBeenCalled();
