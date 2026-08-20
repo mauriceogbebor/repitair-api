@@ -150,6 +150,51 @@ describe("MusicLibraryService", () => {
     expect(analytics.track).toHaveBeenCalledWith("music.collection_created", expect.any(Object));
   });
 
+  it("preserves duplicate playlist occurrences as independently selectable songs", async () => {
+    const duplicateTrack = {
+      provider: "spotify" as const,
+      providerTrackId: "catalog-track-1",
+      title: "Song",
+      artist: "Artist",
+      album: "Album",
+      albumArt: null,
+      durationMs: 123000,
+      explicit: false,
+      sourceLink: "https://open.spotify.com/track/catalog-track-1",
+    };
+    jest.spyOn(service, "loadProviderPlaylist").mockResolvedValue({
+      tracks: [
+        { ...duplicateTrack, id: "catalog-track-1:0" },
+        { ...duplicateTrack, id: "catalog-track-1:4" },
+      ],
+      playlist: {
+        id: "playlist-1",
+        name: "Duplicate mix",
+        owner: "Owner",
+        artworkUrl: null,
+        songCount: 2,
+        lastUpdated: null,
+        provider: "spotify",
+        isCollaborative: false,
+        isPublic: false,
+        lastImportedAt: null,
+      },
+    });
+
+    const result = await service.createCollection("user-1", {
+      provider: MusicProviderDto.SPOTIFY,
+      playlistId: "playlist-1",
+      trackIds: ["catalog-track-1:0", "catalog-track-1:4"],
+    });
+
+    expect(result.trackCount).toBe(2);
+    expect(result.tracks).toHaveLength(2);
+    expect(result.tracks.map((track) => track.providerTrackId)).toEqual([
+      "catalog-track-1",
+      "catalog-track-1",
+    ]);
+  });
+
   it("rejects stale selected track IDs instead of publishing a partial collection", async () => {
     jest.spyOn(service, "loadProviderPlaylist").mockResolvedValue({
       tracks: [{
