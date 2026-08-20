@@ -360,11 +360,13 @@ export class MusicLibraryService {
         userId,
       );
       const batch = payload.items ?? [];
-      for (const wrapper of batch) {
+      for (const [batchIndex, wrapper] of batch.entries()) {
         const track = wrapper.track ?? wrapper.item;
         if (!track?.id || track.is_local) continue;
         tracks.push({
-          id: track.id,
+          // Selection IDs identify playlist occurrences, not catalog tracks.
+          // The same song may legitimately appear more than once in a playlist.
+          id: `${track.id}:${offset + batchIndex}`,
           provider: "spotify",
           providerTrackId: track.id,
           title: track.name?.trim() || "Untitled track",
@@ -455,10 +457,10 @@ export class MusicLibraryService {
         userId,
       );
       const batch = payload.data ?? [];
-      for (const track of batch) {
+      for (const [batchIndex, track] of batch.entries()) {
         const catalogId = track.attributes?.playParams?.catalogId ?? track.attributes?.playParams?.globalId ?? track.id;
         tracks.push({
-          id: track.id,
+          id: `${track.id}:${offset + batchIndex}`,
           provider: "apple-music",
           providerTrackId: catalogId,
           title: track.attributes?.name?.trim() || "Untitled track",

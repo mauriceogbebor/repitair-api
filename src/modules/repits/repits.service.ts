@@ -364,10 +364,13 @@ export class RepitsService {
    */
   private tryDeleteCompositionAssets(composition: unknown): void {
     if (!composition || typeof composition !== "object") return;
-    const comp = composition as { layers?: Array<{ photoUri?: string; imageUri?: string }> };
+    const comp = composition as {
+      layers?: Array<{ data?: { uri?: string }; photoUri?: string; imageUri?: string }>;
+    };
     if (!Array.isArray(comp.layers)) return;
 
     for (const layer of comp.layers) {
+      if (layer.data?.uri) this.tryDeleteUpload(layer.data.uri);
       if (layer.photoUri) this.tryDeleteUpload(layer.photoUri);
       if (layer.imageUri) this.tryDeleteUpload(layer.imageUri);
     }
@@ -410,7 +413,35 @@ export class RepitsService {
   }
 
   private normalizeRepit(repit: Repit): Repit {
-    return normalizeRepitState(repit) as Repit;
+    const normalized = normalizeRepitState(repit) as Repit;
+    const backgroundPhotoUrl = this.uploadsService.canonicalReadUrl(normalized.backgroundPhotoUrl);
+    const composition = normalized.composition
+      ? {
+          ...normalized.composition,
+          layers: normalized.composition.layers.map((layer) => {
+            if (layer.type !== "photo" || typeof layer.data?.uri !== "string") return layer;
+            const uri = this.uploadsService.canonicalReadUrl(layer.data.uri);
+            return uri === layer.data.uri
+              ? layer
+              : { ...layer, data: { ...layer.data, uri } };
+          }),
+        }
+      : normalized.composition;
+    const editorState = normalized.editorState && typeof normalized.editorState === "object"
+      ? {
+          ...normalized.editorState,
+          mediaOriginalPhotoUrl: this.uploadsService.canonicalReadUrl(
+            normalized.editorState.mediaOriginalPhotoUrl,
+          ),
+        }
+      : normalized.editorState;
+
+    return {
+      ...normalized,
+      backgroundPhotoUrl,
+      composition,
+      editorState,
+    } as Repit;
   }
 
   private getRepitLegacy(userId: string, id: string): Promise<Repit | null> {
