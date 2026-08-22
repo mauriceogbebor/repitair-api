@@ -22,6 +22,7 @@ import {
   SupportTicketEscalation,
   SupportTicketResolution,
   Template,
+  TemplateDraft,
   TemplateVersion,
   User,
   UserOperationalNote,
@@ -107,6 +108,7 @@ import { AdminMusicService } from "./music/admin-music.service";
       RepitModerationReport,
       PushToken,
       Template,
+      TemplateDraft,
       TemplateVersion,
       Spotlight,
       ContactSubmission,
@@ -179,12 +181,16 @@ import { AdminMusicService } from "./music/admin-music.service";
     AdminJwtAuthGuard,
     AdminRbacGuard,
     AdminSessionRegistryService,
+    AdminTemplatesService,
   ],
 })
 export class AdminModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
     consumer
       .apply(AdminRequestContextMiddleware, AdminCsrfMiddleware)
-      .forRoutes({ path: "admin/(.*)", method: RequestMethod.ALL });
+      .forRoutes(
+        { path: "admin/(.*)", method: RequestMethod.ALL },
+        { path: "templates/admin/(.*)", method: RequestMethod.ALL },
+      );
   }
 }

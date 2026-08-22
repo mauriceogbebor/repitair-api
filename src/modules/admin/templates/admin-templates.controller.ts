@@ -6,6 +6,7 @@ import { AdminRbacGuard } from "../guards/admin-rbac.guard";
 import { AdminTemplatesService } from "./admin-templates.service";
 import { AdminListTemplatesQueryDto } from "./dto/admin-list-templates-query.dto";
 import { AdminTemplateActionDto } from "./dto/admin-template-action.dto";
+import { AdminTemplateCertifyDto } from "./dto/admin-template-certify.dto";
 import { AdminTemplateRollbackDto } from "./dto/admin-template-rollback.dto";
 import { AdminUpdateTemplateDto } from "./dto/admin-update-template.dto";
 import { AdminUpsertTemplateDto } from "./dto/admin-upsert-template.dto";
@@ -43,6 +44,12 @@ export class AdminTemplatesController {
   @AdminPermissions("templates.publish")
   async publishTemplate(@Param("id") templateId: string, @Body() dto: AdminTemplateActionDto, @Req() req: AdminRequest) {
     return this.adminTemplatesService.publishTemplate(templateId, dto, req.adminUser, req.adminRequestContext);
+  }
+
+  @Post(":id/certify")
+  @AdminPermissions("templates.certify")
+  async certifyTemplate(@Param("id") templateId: string, @Body() dto: AdminTemplateCertifyDto, @Req() req: AdminRequest) {
+    return this.adminTemplatesService.certifyTemplate(templateId, dto, req.adminUser, req.adminRequestContext);
   }
 
   @Post(":id/archive")
