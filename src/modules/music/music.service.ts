@@ -1560,7 +1560,7 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
         }
         throw this.buildResolutionException(context, {
           code: "PROVIDER_NOT_FOUND" as const,
-          message: "You don’t have access to this Spotify playlist. Ask the owner to share it through Repitair.",
+          message: "This playlist can’t be imported. Spotify only lets apps read playlists you created or public playlists — private playlists owned by others and Spotify‑curated/algorithmic playlists (like Discover Weekly) aren’t accessible. Try one of your own playlists.",
           providerStatus: 404,
           retriable: false,
           status: 404,
