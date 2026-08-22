@@ -7,6 +7,7 @@ describe("MusicLibraryService", () => {
     appleMusicUserToken: jest.fn().mockResolvedValue("apple-user-token"),
     recordSync: jest.fn().mockResolvedValue(undefined),
     requireReauthorization: jest.fn().mockResolvedValue(undefined),
+    providerUserId: jest.fn().mockResolvedValue("spotify-user-1"),
   };
   const collectionRepo = {
     create: jest.fn((value) => value),
@@ -135,6 +136,8 @@ describe("MusicLibraryService", () => {
         isCollaborative: false,
         isPublic: false,
         lastImportedAt: null,
+        owned: true,
+        importable: true,
       },
     });
 
@@ -178,6 +181,8 @@ describe("MusicLibraryService", () => {
         isCollaborative: false,
         isPublic: false,
         lastImportedAt: null,
+        owned: true,
+        importable: true,
       },
     });
 
@@ -220,6 +225,8 @@ describe("MusicLibraryService", () => {
         isCollaborative: false,
         isPublic: false,
         lastImportedAt: null,
+        owned: true,
+        importable: true,
       },
     });
 

@@ -235,6 +235,13 @@ export class MusicConnectionsService {
     return qb.getOne();
   }
 
+  /** The connected account's provider-side user id (e.g. Spotify user id), used
+   *  to distinguish playlists the user owns from ones they merely follow. */
+  async providerUserId(userId: string, provider: MusicProviderName): Promise<string | null> {
+    const row = await this.connectionRepo.findOne({ where: { userId, provider } });
+    return row?.providerUserId ?? null;
+  }
+
   async listConnections(userId: string): Promise<MusicConnectionSummary[]> {
     await this.assertProviderAccess(userId);
     let rows = await this.connectionRepo.find({
