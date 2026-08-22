@@ -1497,7 +1497,13 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async listSpotifyPlaylist(playlistId: string, context: PreparedMusicLink): Promise<ParsedCollection | null> {
-    const url = `https://api.spotify.com/v1/playlists/${playlistId}`;
+    // Request a FIELDS-SCOPED playlist object. Spotify's Web API returns 404 on
+    // the unscoped full-object request for some playlists (the same playlists the
+    // browse flow reads fine — it always passes ?fields=), so mirror that here.
+    // Only the fields the parser consumes are requested (first 100 items, which
+    // comfortably exceeds any template's song capacity).
+    const fields = "name,tracks.items(track(id,name,duration_ms,artists(name),album(images)))";
+    const url = `https://api.spotify.com/v1/playlists/${playlistId}?fields=${encodeURIComponent(fields)}`;
 
     // Try user token first if available.
     let usedUserToken = false;
