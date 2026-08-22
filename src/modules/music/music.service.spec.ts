@@ -97,7 +97,31 @@ describe("MusicService", () => {
       expect((service as any).extractAppleMusicStorefront("https://music.apple.com/ng/album/starboy/1440877791?i=1440877793")).toBe("ng");
       expect((service as any).extractAppleMusicAlbumId("https://music.apple.com/us/album/starboy/1440877791")).toBe("1440877791");
       expect((service as any).extractAppleMusicTrackId("https://music.apple.com/us/album/starboy/1440877791?i=1440877793")).toBe("1440877793");
+      // Modern storefront-less canonical song share links (no /xx/ segment).
+      expect((service as any).extractAppleMusicTrackId("https://music.apple.com/song/1830591149")).toBe("1830591149");
+      expect((service as any).extractAppleMusicTrackId("https://music.apple.com/song/some-name/1830591149")).toBe("1830591149");
       expect((service as any).extractAppleMusicPlaylistId("https://itunes.apple.com/us/playlist/chill/pl.pm-123456789")).toBe("pl.pm-123456789");
+    });
+
+    it("parses a Spotify playlist with podcast episodes / null tracks without throwing", async () => {
+      const fakeResponse = {
+        json: async () => ({
+          name: "Mixed playlist",
+          tracks: {
+            items: [
+              { track: { id: "t1", name: "Song One", duration_ms: 1000, artists: [{ name: "Artist" }], album: { images: [{ url: "art" }] } } },
+              { track: null }, // unavailable/local track
+              { track: { id: "e1", name: "Episode", duration_ms: 2000 } }, // podcast episode: no artists
+            ],
+          },
+        }),
+      };
+      const result = await (service as any).parseSpotifyPlaylistResponse(fakeResponse);
+      expect(result.type).toBe("playlist");
+      // Only the real song survives; the null track and the episode are skipped.
+      expect(result.tracks).toEqual([
+        expect.objectContaining({ title: "Song One", artist: "Artist", platform: "spotify" }),
+      ]);
     });
   });
 
