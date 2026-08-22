@@ -1379,8 +1379,13 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
     const songWithName = url.match(/(?:music|itunes)\.apple\.com\/[a-z]{2}\/song\/[^/]+\/(\d+)/);
     if (songWithName) return songWithName[1];
 
-    const songDirect = url.match(/(?:music|itunes)\.apple\.com\/[a-z]{2}\/song\/(\d+)(?:\?|$)/);
-    return songDirect ? songDirect[1] : null;
+    const songDirect = url.match(/(?:music|itunes)\.apple\.com\/[a-z]{2}\/song\/(\d+)(?:[/?]|$)/);
+    if (songDirect) return songDirect[1];
+
+    // Modern storefront-less canonical share links: music.apple.com/song/{id}
+    // (and the rarer name variant music.apple.com/song/{name}/{id}).
+    const songNoStorefront = url.match(/(?:music|itunes)\.apple\.com\/song\/(?:[^/]+\/)?(\d+)(?:[/?]|$)/);
+    return songNoStorefront ? songNoStorefront[1] : null;
   }
 
   private extractAppleMusicPlaylistId(url: string) {

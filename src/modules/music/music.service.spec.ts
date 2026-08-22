@@ -97,6 +97,9 @@ describe("MusicService", () => {
       expect((service as any).extractAppleMusicStorefront("https://music.apple.com/ng/album/starboy/1440877791?i=1440877793")).toBe("ng");
       expect((service as any).extractAppleMusicAlbumId("https://music.apple.com/us/album/starboy/1440877791")).toBe("1440877791");
       expect((service as any).extractAppleMusicTrackId("https://music.apple.com/us/album/starboy/1440877791?i=1440877793")).toBe("1440877793");
+      // Modern storefront-less canonical song share links (no /xx/ segment).
+      expect((service as any).extractAppleMusicTrackId("https://music.apple.com/song/1830591149")).toBe("1830591149");
+      expect((service as any).extractAppleMusicTrackId("https://music.apple.com/song/some-name/1830591149")).toBe("1830591149");
       expect((service as any).extractAppleMusicPlaylistId("https://itunes.apple.com/us/playlist/chill/pl.pm-123456789")).toBe("pl.pm-123456789");
     });
   });
