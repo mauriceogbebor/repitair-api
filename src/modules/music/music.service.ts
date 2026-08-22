@@ -1223,7 +1223,13 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
     if (this.musicConnections) {
       try {
         return await this.musicConnections.spotifyAccessToken(userId);
-      } catch {
+      } catch (err) {
+        // Don't swallow silently: a null user token here downgrades playlist
+        // paste-link to client-credentials (which 404s on private/own playlists
+        // that browse can read), so surface why for diagnosis.
+        this.logger.warn(
+          `getUserSpotifyAccessToken: connection token unavailable for user ${userId}: ${(err as Error).message}`,
+        );
         return null;
       }
     }
