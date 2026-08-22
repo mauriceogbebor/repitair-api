@@ -64,7 +64,7 @@ describe("MusicLibraryService", () => {
     });
     const result = await service.listPlaylists("user-1", query);
 
-    expect(result.items).toEqual([expect.objectContaining({ id: "private-1", name: "My private mix" })]);
+    expect(result.items).toEqual([expect.objectContaining({ id: "private-1", name: "My private mix", songCount: 14 })]);
     expect(fetchSpy).toHaveBeenCalledWith(
       expect.stringContaining("/v1/me/playlists"),
       expect.objectContaining({ headers: { Authorization: "Bearer spotify-user-token" } }),
