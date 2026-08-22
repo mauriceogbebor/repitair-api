@@ -356,9 +356,12 @@ export class AuthController {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ state: STATE, userToken }),
         });
-        const result = await callback.json();
+        const result = await callback.json().catch(() => ({}));
         if (!callback.ok || !result.redirectUrl) {
-          throw new Error(result.message || 'Authorization failed. Please try again.');
+          // Never surface a raw server error (e.g. "Internal server error") to the
+          // user; log the technical detail and show friendly copy.
+          console.error('apple-music callback failed', callback.status, result);
+          throw new Error("We couldn't connect Apple Music right now. Please try again in a moment.");
         }
         window.location.replace(result.redirectUrl);
       } catch (err) {
@@ -384,7 +387,9 @@ export class AuthController {
   async appleMusicCallback(
     @Body() body: { state?: string; userToken?: string; error?: string },
   ) {
-    const { state, userToken, error } = body;
+    // Defensive: an empty/malformed POST body must not throw (raw 500) — degrade
+    // to a friendly redirect like every other failure path here.
+    const { state, userToken, error } = body ?? {};
     if (error || !state || !userToken) {
       return {
         redirectUrl: this.buildAppleMusicAppRedirect("error", "Could not connect Apple Music. Please try again."),
