@@ -1223,7 +1223,13 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
     if (this.musicConnections) {
       try {
         return await this.musicConnections.spotifyAccessToken(userId);
-      } catch {
+      } catch (err) {
+        // Don't swallow silently: a null user token here downgrades playlist
+        // paste-link to client-credentials (which 404s on private/own playlists
+        // that browse can read), so surface why for diagnosis.
+        this.logger.warn(
+          `getUserSpotifyAccessToken: connection token unavailable for user ${userId}: ${(err as Error).message}`,
+        );
         return null;
       }
     }
@@ -1560,7 +1566,7 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
         }
         throw this.buildResolutionException(context, {
           code: "PROVIDER_NOT_FOUND" as const,
-          message: "You don’t have access to this Spotify playlist. Ask the owner to share it through Repitair.",
+          message: "This playlist can’t be imported. Spotify only lets apps read playlists you created or public playlists — private playlists owned by others and Spotify‑curated/algorithmic playlists (like Discover Weekly) aren’t accessible. Try one of your own playlists.",
           providerStatus: 404,
           retriable: false,
           status: 404,
