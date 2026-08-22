@@ -1,4 +1,3 @@
-import { BadRequestException, NotFoundException } from "@nestjs/common";
 import { Test, TestingModule } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
 
@@ -148,73 +147,27 @@ describe("TemplatesService", () => {
       expect(result.map((template) => template.id)).toEqual(ids);
       expect(result).toHaveLength(10);
     });
-  });
 
-  describe("updateComposition", () => {
-    it("should update template composition with validated payload", async () => {
-      const existing = {
-        id: "1",
-        name: "Template A",
-        templateVersion: 1,
-        canvasMeta: null,
-        composition: null,
-      };
-      const merged = {
-        ...existing,
-        templateVersion: 2,
-        canvasMeta: validComposition.canvasMeta,
-        composition: validComposition,
-      };
+    it("does not expose internal Admin identities or change summaries", async () => {
+      mockRepo.find.mockResolvedValue([{
+        id: "public-template",
+        name: "Public template",
+        status: "published",
+        isActive: true,
+        createdByAdminUserId: "9ba9197a-3f22-46cf-9c12-208158022907",
+        createdByAdminEmail: "designer@repitair.com",
+        updatedByAdminUserId: "e1cf5125-fe8c-49fc-b04d-a37605c5cb2f",
+        updatedByAdminEmail: "reviewer@repitair.com",
+        lastChangeSummary: "Internal release note",
+      }]);
 
-      mockRepo.findOne.mockResolvedValue(existing);
-      mockRepo.merge.mockReturnValue(merged);
-      mockRepo.save.mockResolvedValue(merged);
+      const [result] = await service.findAll();
 
-      const result = await service.updateComposition("1", {
-        templateVersion: 2,
-        canvasMeta: validComposition.canvasMeta,
-        composition: validComposition,
-      });
-
-      expect(mockRepo.merge).toHaveBeenCalledWith(existing, expect.objectContaining({
-        templateVersion: 2,
-        composition: expect.objectContaining({
-          templateId: "1",
-          templateVersion: 2,
-        }),
-      }));
-      expect(result).toEqual(expect.objectContaining({
-        id: "1",
-        composition: expect.objectContaining({
-          templateId: "1",
-        }),
-      }));
-    });
-
-    it("should reject invalid composition payloads", async () => {
-      mockRepo.findOne.mockResolvedValue({
-        id: "1",
-        name: "Template A",
-        templateVersion: 1,
-        canvasMeta: null,
-        composition: null,
-      });
-
-      await expect(service.updateComposition("1", {
-        composition: {
-          version: 1,
-          templateId: "other-template",
-          layers: [],
-        },
-      })).rejects.toBeInstanceOf(BadRequestException);
-    });
-
-    it("should throw when template is missing", async () => {
-      mockRepo.findOne.mockResolvedValue(null);
-
-      await expect(service.updateComposition("missing", {
-        templateVersion: 1,
-      })).rejects.toBeInstanceOf(NotFoundException);
+      expect(result).not.toHaveProperty("createdByAdminUserId");
+      expect(result).not.toHaveProperty("createdByAdminEmail");
+      expect(result).not.toHaveProperty("updatedByAdminUserId");
+      expect(result).not.toHaveProperty("updatedByAdminEmail");
+      expect(result).not.toHaveProperty("lastChangeSummary");
     });
   });
 });

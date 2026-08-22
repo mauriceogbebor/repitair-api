@@ -1,4 +1,4 @@
-import { IsArray, IsBoolean, IsNumber, IsObject, IsOptional, IsString, Max, Min } from "class-validator";
+import { ArrayMaxSize, IsArray, IsBoolean, IsNotEmpty, IsNumber, IsObject, IsOptional, IsString, Matches, Max, MaxLength, Min } from "class-validator";
 import type {
   TemplateCapabilities,
   TemplateDesignTokens,
@@ -10,15 +10,23 @@ import type {
 
 export class AdminUpsertTemplateDto {
   @IsString()
+  @Matches(/^[a-z0-9]+(?:-[a-z0-9]+)*$/)
+  @MaxLength(80)
   id!: string;
 
   @IsString()
+  @IsNotEmpty()
+  @MaxLength(120)
   name!: string;
 
   @IsString()
+  @IsNotEmpty()
+  @MaxLength(80)
   style!: string;
 
   @IsString()
+  @IsNotEmpty()
+  @MaxLength(80)
   category!: string;
 
   @IsOptional()
@@ -39,10 +47,12 @@ export class AdminUpsertTemplateDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(80)
   layoutVariant?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(80)
   playerVariant?: string;
 
   @IsOptional()
@@ -53,17 +63,21 @@ export class AdminUpsertTemplateDto {
 
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(12)
   @IsString({ each: true })
   previewImages?: string[];
 
   @IsOptional()
+  @IsObject()
   composition?: Record<string, unknown>;
 
   @IsOptional()
+  @IsObject()
   canvasMeta?: Record<string, unknown>;
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   changeSummary?: string;
 
   /* ── Template-First Metadata (Sprint D) ─────────────────────── */

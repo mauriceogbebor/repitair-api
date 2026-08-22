@@ -37,6 +37,7 @@ export const ADMIN_PERMISSION_DEFINITIONS: AdminPermissionDefinition[] = [
   { key: "templates.publish", module: "templates", description: "Publish template versions" },
   { key: "templates.rollback", module: "templates", description: "Rollback template versions" },
   { key: "templates.archive", module: "templates", description: "Archive templates" },
+  { key: "templates.certify", module: "templates", description: "Approve/certify templates for publication" },
   { key: "spotlight.read", module: "spotlight", description: "View spotlight campaigns" },
   { key: "spotlight.write", module: "spotlight", description: "Create and edit spotlight campaigns" },
   { key: "spotlight.publish", module: "spotlight", description: "Publish spotlight campaigns" },
