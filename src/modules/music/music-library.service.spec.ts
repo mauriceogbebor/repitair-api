@@ -7,6 +7,7 @@ describe("MusicLibraryService", () => {
     appleMusicUserToken: jest.fn().mockResolvedValue("apple-user-token"),
     recordSync: jest.fn().mockResolvedValue(undefined),
     requireReauthorization: jest.fn().mockResolvedValue(undefined),
+    providerUserId: jest.fn().mockResolvedValue("spotify-user-1"),
   };
   const collectionRepo = {
     create: jest.fn((value) => value),
@@ -63,7 +64,7 @@ describe("MusicLibraryService", () => {
     });
     const result = await service.listPlaylists("user-1", query);
 
-    expect(result.items).toEqual([expect.objectContaining({ id: "private-1", name: "My private mix" })]);
+    expect(result.items).toEqual([expect.objectContaining({ id: "private-1", name: "My private mix", songCount: 14 })]);
     expect(fetchSpy).toHaveBeenCalledWith(
       expect.stringContaining("/v1/me/playlists"),
       expect.objectContaining({ headers: { Authorization: "Bearer spotify-user-token" } }),
@@ -135,6 +136,8 @@ describe("MusicLibraryService", () => {
         isCollaborative: false,
         isPublic: false,
         lastImportedAt: null,
+        owned: true,
+        importable: true,
       },
     });
 
@@ -178,6 +181,8 @@ describe("MusicLibraryService", () => {
         isCollaborative: false,
         isPublic: false,
         lastImportedAt: null,
+        owned: true,
+        importable: true,
       },
     });
 
@@ -220,6 +225,8 @@ describe("MusicLibraryService", () => {
         isCollaborative: false,
         isPublic: false,
         lastImportedAt: null,
+        owned: true,
+        importable: true,
       },
     });
 
