@@ -60,7 +60,9 @@ export class AddTemplateDrafts1722500000000 implements MigrationInterface {
           'workflow', template."workflow",
           'certificationMeta', template."certificationMeta"
         ),
-        template."updatedByAdminUserId",
+        -- templates.updatedByAdminUserId is varchar; the draft column is uuid.
+        -- Cast explicitly (empty string → NULL) since Postgres won't do it implicitly.
+        NULLIF(template."updatedByAdminUserId", '')::uuid,
         template."updatedByAdminEmail",
         COALESCE(template."lastChangeSummary", 'Existing draft migrated'),
         template."createdAt",
