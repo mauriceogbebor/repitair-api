@@ -1581,17 +1581,22 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
       tracks: { items: Array<{ track: { album?: { images?: Array<{ url: string }> }; artists: Array<{ name: string }>; duration_ms: number; id: string; name: string } | null }> };
     };
 
+    // Playlists can contain podcast episodes and local/unavailable items whose
+    // `track` is truthy but has no `id`/`artists` — accessing `.artists.map` on
+    // those threw a TypeError that surfaced as a generic 503. Only keep real
+    // songs and null-safe every field.
+    const items = Array.isArray(data?.tracks?.items) ? data.tracks.items : [];
     return {
-      name: data.name,
-      tracks: data.tracks.items
-        .filter((item) => item.track)
+      name: data?.name ?? "Playlist",
+      tracks: items
+        .filter((item) => item.track && item.track.id && Array.isArray(item.track.artists))
         .map((item) => ({
           albumArt: item.track?.album?.images?.[0]?.url,
-          artist: item.track!.artists.map((artist) => artist.name).join(", "),
+          artist: (item.track!.artists ?? []).map((artist) => artist.name).filter(Boolean).join(", ") || "Unknown artist",
           durationMs: item.track!.duration_ms,
           platform: "spotify" as const,
           sourceLink: `https://open.spotify.com/track/${item.track!.id}`,
-          title: item.track!.name,
+          title: item.track!.name ?? "Untitled track",
         })),
       type: "playlist",
     };
