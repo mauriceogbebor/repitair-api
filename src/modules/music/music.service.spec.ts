@@ -642,6 +642,7 @@ describe("MusicService", () => {
       const connections = {
         spotifyAccessToken: jest.fn().mockResolvedValue("user-tok"),
         requireReauthorization: jest.fn().mockResolvedValue(undefined),
+        providerScopes: jest.fn().mockResolvedValue(["playlist-read-private", "playlist-read-collaborative"]),
       };
       const connectedService = new MusicService(
         mockConfig as never,
@@ -659,6 +660,32 @@ describe("MusicService", () => {
       ).rejects.toMatchObject({
         code: "PROVIDER_NOT_FOUND",
         status: 404,
+      });
+      connectedService.onModuleDestroy();
+    });
+
+    it("asks the user to reconnect when the private-playlist scope was never granted", async () => {
+      const connections = {
+        spotifyAccessToken: jest.fn().mockResolvedValue("user-tok"),
+        requireReauthorization: jest.fn().mockResolvedValue(undefined),
+        providerScopes: jest.fn().mockResolvedValue([]), // connected before playlist-read-private
+      };
+      const connectedService = new MusicService(
+        mockConfig as never,
+        mockUsersRepo as never,
+        null,
+        connections as never,
+      );
+      fetchSpy = jest.spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(new Response("Not Found", { status: 404 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "cc", expires_in: 3600 }), { status: 200 }))
+        .mockResolvedValue(new Response("Not Found", { status: 404 }));
+
+      await expect(
+        (connectedService as any).listSpotifyPlaylist("plabc", playlistContext({ userId: "user-1" })),
+      ).rejects.toMatchObject({
+        code: "PROVIDER_REAUTH_REQUIRED",
+        status: 409,
       });
       connectedService.onModuleDestroy();
     });

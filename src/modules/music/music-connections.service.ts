@@ -242,6 +242,13 @@ export class MusicConnectionsService {
     return row?.providerUserId ?? null;
   }
 
+  /** OAuth scopes granted on the connection — used to tell a "reconnect to grant
+   *  playlist access" case apart from a genuinely inaccessible playlist. */
+  async providerScopes(userId: string, provider: MusicProviderName): Promise<string[]> {
+    const row = await this.connectionRepo.findOne({ where: { userId, provider } });
+    return row?.scopes ?? [];
+  }
+
   async listConnections(userId: string): Promise<MusicConnectionSummary[]> {
     await this.assertProviderAccess(userId);
     let rows = await this.connectionRepo.find({
