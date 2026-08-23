@@ -1598,6 +1598,21 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
             status: 409,
           });
         }
+        // Connected, but if the private-playlist scope was never granted (e.g. the
+        // account connected before it was requested), the user's own private
+        // playlists 404 — a reconnect fixes that, so say so specifically.
+        if (context.userId && this.musicConnections) {
+          const scopes = await this.musicConnections.providerScopes(context.userId, "spotify").catch(() => [] as string[]);
+          if (!scopes.includes("playlist-read-private")) {
+            throw this.buildResolutionException(context, {
+              code: "PROVIDER_REAUTH_REQUIRED" as const,
+              message: "Reconnect Spotify and allow playlist access so Repitair can read your private playlists. (Playlists owned by others or curated by Spotify still can’t be imported.)",
+              providerStatus: 404,
+              retriable: false,
+              status: 409,
+            });
+          }
+        }
         throw this.buildResolutionException(context, {
           code: "PROVIDER_NOT_FOUND" as const,
           message: "This playlist can’t be imported. Spotify only lets apps read playlists you created or public playlists — private playlists owned by others and Spotify‑curated/algorithmic playlists (like Discover Weekly) aren’t accessible. Try one of your own playlists.",
