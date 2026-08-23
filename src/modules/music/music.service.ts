@@ -15,6 +15,7 @@ import {
   UpstreamMusicError,
 } from "./music.errors";
 import { MusicConnectionsService } from "./music-connections.service";
+import { MusicLibraryService } from "./music-library.service";
 
 type RedisClient = any;
 
@@ -109,6 +110,7 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
     private readonly usersRepo: Repository<User>,
     @Inject(REDIS_CLIENT) @Optional() private readonly redis: RedisClient | null,
     @Optional() private readonly musicConnections?: MusicConnectionsService,
+    @Optional() private readonly musicLibrary?: MusicLibraryService,
   ) {}
 
   /* ── Lifecycle ─────────────────────────────────────────────────────── */
@@ -1497,6 +1499,32 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async listSpotifyPlaylist(playlistId: string, context: PreparedMusicLink): Promise<ParsedCollection | null> {
+    // Prefer the exact path the browse flow uses (object with ?fields + the
+    // /tracks endpoint). Browse reads playlists that this paste path 404'd on, so
+    // for a connected user delegate to that proven code and only fall back to the
+    // legacy object/client-credentials path if it can't resolve (e.g. not connected).
+    if (context.userId && this.musicLibrary) {
+      try {
+        const loaded = await this.musicLibrary.loadProviderPlaylist(context.userId, "spotify", playlistId);
+        if (loaded && Array.isArray(loaded.tracks) && loaded.tracks.length > 0) {
+          return {
+            type: "playlist",
+            name: loaded.playlist?.name ?? "Playlist",
+            tracks: loaded.tracks.map((track) => ({
+              albumArt: track.albumArt ?? undefined,
+              artist: track.artist,
+              durationMs: track.durationMs ?? undefined,
+              platform: "spotify" as const,
+              sourceLink: track.sourceLink,
+              title: track.title,
+            })),
+          };
+        }
+      } catch {
+        // Fall through to the legacy path (handles unconnected users / public links).
+      }
+    }
+
     // Request a FIELDS-SCOPED playlist object. Spotify's Web API returns 404 on
     // the unscoped full-object request for some playlists (the same playlists the
     // browse flow reads fine — it always passes ?fields=), so mirror that here.
