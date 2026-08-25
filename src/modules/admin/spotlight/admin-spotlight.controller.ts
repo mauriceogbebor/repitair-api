@@ -45,6 +45,12 @@ export class AdminSpotlightController {
     return this.adminSpotlightService.publishCampaign(campaignId, dto, req.adminUser, req.adminRequestContext);
   }
 
+  @Post(":id/pause")
+  @AdminPermissions("spotlight.publish")
+  async pauseCampaign(@Param("id") campaignId: string, @Body() dto: AdminSpotlightActionDto, @Req() req: AdminRequest) {
+    return this.adminSpotlightService.pauseCampaign(campaignId, dto, req.adminUser, req.adminRequestContext);
+  }
+
   @Post(":id/archive")
   @AdminPermissions("spotlight.archive")
   async archiveCampaign(@Param("id") campaignId: string, @Body() dto: AdminSpotlightActionDto, @Req() req: AdminRequest) {
