@@ -1,9 +1,4 @@
-import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Query, UseGuards } from "@nestjs/common";
-
-import { AdminEmailGuard } from "../../common/guards/admin-email.guard";
-import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
-import { CreateSpotlightDto } from "./dto/create-spotlight.dto";
-import { UpdateSpotlightDto } from "./dto/update-spotlight.dto";
+import { Controller, Get, Param, Post } from "@nestjs/common";
 import { SpotlightService } from "./spotlight.service";
 
 @Controller("spotlight")
@@ -24,43 +19,9 @@ export class SpotlightController {
     return this.spotlightService.trackImpression(id);
   }
 
-  // ── Admin routes (auth + admin email required) ──
-
-  /** GET /spotlight/admin/all — list all campaigns (any status) */
-  @Get("admin/all")
-  @UseGuards(JwtAuthGuard, AdminEmailGuard)
-  findAll(
-    @Query("limit", new ParseIntPipe({ optional: true })) limit?: number,
-    @Query("offset", new ParseIntPipe({ optional: true })) offset?: number,
-  ) {
-    return this.spotlightService.findAll({ limit, offset });
-  }
-
-  /** GET /spotlight/admin/:id — single campaign details */
-  @Get("admin/:id")
-  @UseGuards(JwtAuthGuard, AdminEmailGuard)
-  findOne(@Param("id") id: string) {
-    return this.spotlightService.findOne(id);
-  }
-
-  /** POST /spotlight/admin — create a new campaign */
-  @Post("admin")
-  @UseGuards(JwtAuthGuard, AdminEmailGuard)
-  create(@Body() dto: CreateSpotlightDto) {
-    return this.spotlightService.create(dto);
-  }
-
-  /** PATCH /spotlight/admin/:id — update a campaign */
-  @Patch("admin/:id")
-  @UseGuards(JwtAuthGuard, AdminEmailGuard)
-  update(@Param("id") id: string, @Body() dto: UpdateSpotlightDto) {
-    return this.spotlightService.update(id, dto);
-  }
-
-  /** DELETE /spotlight/admin/:id — remove a campaign */
-  @Delete("admin/:id")
-  @UseGuards(JwtAuthGuard, AdminEmailGuard)
-  remove(@Param("id") id: string) {
-    return this.spotlightService.remove(id);
+  /** POST /spotlight/:id/tap — track an intentional campaign interaction */
+  @Post(":id/tap")
+  trackTap(@Param("id") id: string) {
+    return this.spotlightService.trackTap(id);
   }
 }
