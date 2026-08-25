@@ -39,7 +39,7 @@ export class AdminCreateSpotlightDto {
   @IsOptional()
   @IsString()
   @IsSupportedSpotlightDestination({
-    message: "deepLink must be a supported Repitair app path or an HTTPS URL",
+    message: "deepLink must start a fresh Repit from the template picker",
   })
   deepLink?: string | null;
 
