@@ -23,7 +23,7 @@ describe("SpotlightService", () => {
       campaignType: "release",
       buttonLabel: "Open release",
       tag: "NEW_SINGLE",
-      deepLink: "/create/attach-song",
+      deepLink: "repitair://spotlight/legacy-release",
       priority: 2,
       expiresAt: new Date("2027-01-01T00:00:00.000Z"),
     };
@@ -49,7 +49,8 @@ describe("SpotlightService", () => {
       song: "Song",
       backgroundImage: "https://cdn.example/background.jpg",
       campaignType: "release",
-      buttonLabel: "Open release",
+      buttonLabel: "Create Repit",
+      deepLink: "/create/pick-template?fresh=1",
     }));
   });
 

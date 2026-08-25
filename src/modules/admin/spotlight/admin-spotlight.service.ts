@@ -11,7 +11,7 @@ import { AdminListSpotlightQueryDto } from "./dto/admin-list-spotlight-query.dto
 import { AdminScheduleSpotlightDto } from "./dto/admin-schedule-spotlight.dto";
 import { AdminSpotlightActionDto } from "./dto/admin-spotlight-action.dto";
 import { AdminUpdateSpotlightDto } from "./dto/admin-update-spotlight.dto";
-import { isSupportedSpotlightDestination } from "./spotlight-destination";
+import { SPOTLIGHT_CREATE_DESTINATION } from "./spotlight-destination";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
@@ -137,8 +137,8 @@ export class AdminSpotlightService {
         albumArt: dto.albumArt,
         backgroundImage: nullableText(dto.backgroundImage) ?? null,
         campaignType: dto.campaignType ?? "editorial",
-        buttonLabel: nullableText(dto.buttonLabel) ?? null,
-        deepLink: nullableText(dto.deepLink) ?? null,
+        buttonLabel: "Create Repit",
+        deepLink: SPOTLIGHT_CREATE_DESTINATION,
         tag: (dto.tag as Spotlight["tag"]) ?? "NEW_SINGLE",
         priority: dto.priority ?? 0,
         status: "draft",
@@ -180,6 +180,8 @@ export class AdminSpotlightService {
       if (dto.campaignType !== undefined) campaign.campaignType = dto.campaignType;
       if (dto.buttonLabel !== undefined) campaign.buttonLabel = nullableText(dto.buttonLabel) ?? null;
       if (dto.deepLink !== undefined) campaign.deepLink = nullableText(dto.deepLink) ?? null;
+      campaign.buttonLabel = "Create Repit";
+      campaign.deepLink = SPOTLIGHT_CREATE_DESTINATION;
       if (dto.tag !== undefined) campaign.tag = dto.tag as Spotlight["tag"];
       if (dto.priority !== undefined) campaign.priority = dto.priority;
       if (dto.startsAt !== undefined) campaign.startsAt = parseDate(dto.startsAt);
@@ -335,8 +337,8 @@ export class AdminSpotlightService {
         albumArt: campaign.albumArt,
         backgroundImage: campaign.backgroundImage,
         campaignType: campaign.campaignType,
-        buttonLabel: campaign.buttonLabel,
-        deepLink: campaign.deepLink,
+        buttonLabel: "Create Repit",
+        deepLink: SPOTLIGHT_CREATE_DESTINATION,
         tag: campaign.tag,
         priority: campaign.priority,
         status: "draft",
@@ -400,9 +402,6 @@ export class AdminSpotlightService {
     if (!campaign.albumArt.startsWith("https://") || (campaign.backgroundImage && !campaign.backgroundImage.startsWith("https://"))) {
       throw new BadRequestException({ statusCode: 400, error: "UnsafeSpotlightMedia", message: "Spotlight media must use HTTPS URLs." });
     }
-    if (campaign.deepLink && !isSupportedSpotlightDestination(campaign.deepLink)) {
-      throw new BadRequestException({ statusCode: 400, error: "UnsafeSpotlightDestination", message: "Destination must be an internal app path or an HTTPS URL." });
-    }
     this.validateWindow(campaign.startsAt ?? null, campaign.expiresAt ?? null);
     if (campaign.expiresAt && campaign.expiresAt <= now) {
       throw new BadRequestException({ statusCode: 400, error: "SpotlightAlreadyExpired", message: "Campaign expiry must be in the future." });
@@ -439,8 +438,8 @@ export class AdminSpotlightService {
       albumArt: campaign.albumArt,
       backgroundImage: campaign.backgroundImage ?? null,
       tag: campaign.tag,
-      buttonLabel: campaign.buttonLabel ?? null,
-      destination: campaign.deepLink ?? null,
+      buttonLabel: "Create Repit",
+      destination: SPOTLIGHT_CREATE_DESTINATION,
       priority: campaign.priority,
       campaignType: campaign.campaignType,
       status: campaign.status,
@@ -461,8 +460,8 @@ export class AdminSpotlightService {
         song: campaign.song ?? null,
         albumArt: campaign.albumArt,
         tag: campaign.tag,
-        destination: campaign.deepLink ?? null,
-        buttonLabel: campaign.buttonLabel ?? null,
+        destination: SPOTLIGHT_CREATE_DESTINATION,
+        buttonLabel: "Create Repit",
         backgroundImage: campaign.backgroundImage ?? null,
       },
       metrics: {

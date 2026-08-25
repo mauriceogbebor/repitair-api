@@ -13,6 +13,7 @@ describe("music provider OAuth", () => {
       APPLE_MUSIC_TEAM_ID: "team",
       APPLE_MUSIC_KEY_ID: "key",
       APPLE_MUSIC_PRIVATE_KEY: "private-key",
+      APPLE_MUSIC_AUTH_BASE_URL: "https://api-staging.repitair.com/api",
       API_BASE_URL: "https://api.repitair.com",
       JWT_SECRET: "test-secret",
     })[key]),
@@ -77,6 +78,35 @@ describe("music provider OAuth", () => {
     await service.validateAppleMusicAuthorizationState("single-use-state");
 
     expect(connections.validateOAuthState).toHaveBeenCalledWith("single-use-state", "apple-music");
+  });
+
+  it("serves MusicKit from the explicitly approved Apple Music origin", async () => {
+    const url = new URL(await service.buildAppleMusicAuthUrl("user-1"));
+
+    expect(url.origin).toBe("https://api-staging.repitair.com");
+    expect(url.pathname).toBe("/api/auth/apple-music/authorize");
+    expect(url.searchParams.get("state")).toBe("single-use-state");
+  });
+
+  it("refuses to serve MusicKit from an implicit production or Railway origin", async () => {
+    const productionConfig = {
+      get: jest.fn((key: string) => ({
+        APPLE_MUSIC_TEAM_ID: "team",
+        APPLE_MUSIC_KEY_ID: "key",
+        APPLE_MUSIC_PRIVATE_KEY: "private-key",
+        API_BASE_URL: "https://repitair-api-staging-staging.up.railway.app/api",
+        NODE_ENV: "production",
+        JWT_SECRET: "test-secret",
+      } as Record<string, string>)[key]),
+    };
+    const productionService = new AuthService(
+      users as never, jwt as never, mail as never, blacklist as never,
+      productionConfig as never, appleIdentity as never, socialIdentity as never, connections as never,
+    );
+
+    await expect(productionService.buildAppleMusicAuthUrl("user-1")).rejects.toThrow(
+      "APPLE_MUSIC_AUTH_BASE_URL",
+    );
   });
 
   describe("developer token well-formedness", () => {
@@ -194,6 +224,9 @@ describe("music provider OAuth", () => {
       // generation fails → Apple Music is reported not-ready (exactly the
       // signal a misconfigured staging deploy should surface).
       expect(report.appleMusic.teamId).toBe(true);
+      expect(report.appleMusic.authBaseUrlConfigured).toBe(true);
+      expect(report.appleMusic.authBaseUrlHttps).toBe(true);
+      expect(report.appleMusic.authBaseUrlUsesRailwayDomain).toBe(false);
       expect(report.appleMusic.keyId).toBe(true);
       expect(report.appleMusic.privateKey).toBe(true);
       expect(report.appleMusic.developerTokenWellFormed).toBe(false);

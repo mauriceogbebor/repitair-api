@@ -12,8 +12,8 @@ function campaign(overrides: Record<string, unknown> = {}) {
     albumArt: "https://cdn.example/art.jpg",
     backgroundImage: null,
     campaignType: "editorial",
-    buttonLabel: "Open",
-    deepLink: "/create/attach-song",
+    buttonLabel: "Create Repit",
+    deepLink: "/create/pick-template?fresh=1",
     tag: "TRENDING",
     priority: 1,
     status: "draft",
@@ -74,7 +74,11 @@ describe("AdminSpotlightService lifecycle", () => {
     });
 
     expect(setupResult.transactionRepository.create).toHaveBeenCalledWith(
-      expect.objectContaining({ status: "draft" }),
+      expect.objectContaining({
+        status: "draft",
+        buttonLabel: "Create Repit",
+        deepLink: "/create/pick-template?fresh=1",
+      }),
     );
     expect(setupResult.auditLogsService.append).toHaveBeenCalledWith(
       expect.objectContaining({ action: "admin.spotlight.created" }),
@@ -119,10 +123,10 @@ describe("AdminSpotlightService lifecycle", () => {
 });
 
 describe("Spotlight destination policy", () => {
-  it("matches the routes supported by the mobile client", () => {
+  it("allows only the fresh Repit creation route", () => {
     expect(isSupportedSpotlightDestination("/create/pick-template?fresh=1")).toBe(true);
-    expect(isSupportedSpotlightDestination("/repit/abc-123")).toBe(true);
-    expect(isSupportedSpotlightDestination("https://repitair.com/releases")).toBe(true);
+    expect(isSupportedSpotlightDestination("/repit/abc-123")).toBe(false);
+    expect(isSupportedSpotlightDestination("https://repitair.com/releases")).toBe(false);
     expect(isSupportedSpotlightDestination("/admin/settings")).toBe(false);
     expect(isSupportedSpotlightDestination("http://example.com")).toBe(false);
     expect(isSupportedSpotlightDestination("https://")).toBe(false);

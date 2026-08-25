@@ -542,9 +542,43 @@ export class AuthService {
       ? await this.musicConnections.createOAuthState(userId, "apple-music")
       : this.signOAuthState(userId);
 
-    const baseUrl = this.configService.get<string>("API_BASE_URL") || "http://localhost:3000";
+    const baseUrl = this.resolveAppleMusicAuthBaseUrl();
     const params = new URLSearchParams({ state });
     return `${baseUrl}/auth/apple-music/authorize?${params.toString()}`;
+  }
+
+  private resolveAppleMusicAuthBaseUrl(): string {
+    const configuredBaseUrl = this.configService.get<string>("APPLE_MUSIC_AUTH_BASE_URL")?.trim();
+    const nodeEnv = this.configService.get<string>("NODE_ENV")?.trim().toLowerCase();
+    if (!configuredBaseUrl && nodeEnv === "production") {
+      throw new ServiceUnavailableException(
+        "Apple Music is not available. APPLE_MUSIC_AUTH_BASE_URL must be configured to an Apple-approved HTTPS origin.",
+      );
+    }
+
+    const candidate = configuredBaseUrl
+      || this.configService.get<string>("API_BASE_URL")?.trim()
+      || "http://localhost:3000";
+    let parsed: URL;
+    try {
+      parsed = new URL(candidate);
+    } catch {
+      throw new ServiceUnavailableException("Apple Music authorization URL is invalid.");
+    }
+
+    const isLocalhost = ["localhost", "127.0.0.1"].includes(parsed.hostname);
+    if (!isLocalhost && parsed.protocol !== "https:") {
+      throw new ServiceUnavailableException("Apple Music authorization must use HTTPS.");
+    }
+    if (parsed.hostname.endsWith(".up.railway.app")) {
+      throw new ServiceUnavailableException(
+        "Apple Music authorization must use the Apple-approved custom domain, not a Railway service domain.",
+      );
+    }
+
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString().replace(/\/$/, "");
   }
 
   async validateAppleMusicAuthorizationState(state: string): Promise<void> {
@@ -648,6 +682,9 @@ export class AuthService {
     apiBaseUrl: { configured: boolean; isLocalhost: boolean };
     spotify: { clientId: boolean; clientSecret: boolean; redirectUri: string | null; ready: boolean };
     appleMusic: {
+      authBaseUrlConfigured: boolean;
+      authBaseUrlHttps: boolean;
+      authBaseUrlUsesRailwayDomain: boolean;
       teamId: boolean;
       keyId: boolean;
       privateKey: boolean;
@@ -665,6 +702,18 @@ export class AuthService {
     const teamId = Boolean(this.configService.get<string>("APPLE_MUSIC_TEAM_ID"));
     const keyId = Boolean(this.configService.get<string>("APPLE_MUSIC_KEY_ID"));
     const privateKey = Boolean(this.configService.get<string>("APPLE_MUSIC_PRIVATE_KEY"));
+    const appleMusicAuthBaseUrl = this.configService.get<string>("APPLE_MUSIC_AUTH_BASE_URL")?.trim();
+    let authBaseUrlHttps = false;
+    let authBaseUrlUsesRailwayDomain = false;
+    if (appleMusicAuthBaseUrl) {
+      try {
+        const parsed = new URL(appleMusicAuthBaseUrl);
+        authBaseUrlHttps = parsed.protocol === "https:";
+        authBaseUrlUsesRailwayDomain = parsed.hostname.endsWith(".up.railway.app");
+      } catch {
+        // Invalid URLs remain not ready and are reported through the booleans.
+      }
+    }
     const developerToken = this.generateMusicKitDeveloperToken();
     const developerTokenGenerates = Boolean(developerToken);
     const developerTokenWellFormed = this.isDeveloperTokenWellFormed(developerToken);
@@ -682,6 +731,9 @@ export class AuthService {
         ready: spotifyClientId && Boolean(spotifyRedirectUri),
       },
       appleMusic: {
+        authBaseUrlConfigured: Boolean(appleMusicAuthBaseUrl),
+        authBaseUrlHttps,
+        authBaseUrlUsesRailwayDomain,
         teamId,
         keyId,
         privateKey,
@@ -690,7 +742,13 @@ export class AuthService {
         developerTokenSelfVerifies,
         // A self-verifiable token guarantees the signature is valid ES256 JOSE
         // for this key — the class of failure behind ERROR_FAILED_TO_VERIFY_JWT.
-        ready: teamId && keyId && privateKey && developerTokenSelfVerifies,
+        ready: Boolean(appleMusicAuthBaseUrl)
+          && authBaseUrlHttps
+          && !authBaseUrlUsesRailwayDomain
+          && teamId
+          && keyId
+          && privateKey
+          && developerTokenSelfVerifies,
       },
     };
   }

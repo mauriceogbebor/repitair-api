@@ -4,6 +4,7 @@ import { Repository } from "typeorm";
 
 import { Spotlight } from "../../entities/spotlight.entity";
 import { AnalyticsService, ANALYTICS_EVENTS } from "../analytics/analytics.service";
+import { SPOTLIGHT_CREATE_DESTINATION } from "./spotlight-destination";
 
 @Injectable()
 export class SpotlightService {
@@ -34,9 +35,9 @@ export class SpotlightService {
         albumArt: item.albumArt,
         backgroundImage: item.backgroundImage ?? null,
         campaignType: item.campaignType,
-        buttonLabel: item.buttonLabel ?? null,
+        buttonLabel: "Create Repit",
         tag: item.tag,
-        deepLink: item.deepLink,
+        deepLink: SPOTLIGHT_CREATE_DESTINATION,
         priority: item.priority,
         expiresAt: item.expiresAt?.toISOString(),
       })),
