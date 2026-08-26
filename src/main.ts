@@ -4,6 +4,7 @@ import { NestExpressApplication } from "@nestjs/platform-express";
 import { DocumentBuilder, SwaggerModule } from "@nestjs/swagger";
 
 import { AppModule } from "./app.module";
+import { resolveCorsOrigins } from "./common/config/cors-origins";
 import { GlobalExceptionFilter } from "./common/filters/global-exception.filter";
 
 function setupSwagger(app: NestExpressApplication): void {
@@ -139,21 +140,7 @@ function validateEnvironment(): void {
 async function bootstrap() {
   validateEnvironment();
 
-  const defaultCorsOrigins = [
-    "http://localhost:3000",
-    "http://localhost:3001",
-    "http://localhost:3002",
-    "https://repitair.com",
-    "https://www.repitair.com",
-  ];
-
-  const corsOrigins = process.env.CORS_ORIGINS
-    ? process.env.CORS_ORIGINS.split(",").map((origin) => origin.trim()).filter(Boolean)
-    : defaultCorsOrigins;
-
-  if (process.env.ADMIN_FRONTEND_ORIGIN && !corsOrigins.includes(process.env.ADMIN_FRONTEND_ORIGIN)) {
-    corsOrigins.push(process.env.ADMIN_FRONTEND_ORIGIN);
-  }
+  const corsOrigins = resolveCorsOrigins();
 
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     cors: {
