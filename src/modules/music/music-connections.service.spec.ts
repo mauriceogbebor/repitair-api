@@ -114,6 +114,26 @@ describe("MusicConnectionsService", () => {
     expect(JSON.stringify(summary)).not.toContain("raw-refresh-token");
   });
 
+  it("reports when Spotify rejects an account that is not approved for the development app", async () => {
+    fetchSpy = jest.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ error: { status: 403 } }), { status: 403 }),
+    );
+
+    await expect(service.connectSpotify("user-1", {
+      access_token: "raw-access-token",
+      refresh_token: "raw-refresh-token",
+      expires_in: 3600,
+      scope: "playlist-read-private",
+    })).rejects.toMatchObject({
+      status: 400,
+      response: {
+        errorCode: "SPOTIFY_ACCOUNT_NOT_ALLOWED",
+        message: expect.stringContaining("approved tester"),
+      },
+    });
+    expect(rows).toHaveLength(0);
+  });
+
   it("refreshes an expired Spotify token on the backend and preserves a rotated refresh token", async () => {
     fetchSpy = jest.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(JSON.stringify({ id: "spotify-user" }), { status: 200 }))

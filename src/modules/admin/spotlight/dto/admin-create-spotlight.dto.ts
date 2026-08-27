@@ -1,5 +1,6 @@
 import { IsEmail, IsISO8601, IsIn, IsInt, IsOptional, IsString, IsUrl, MaxLength, Min, MinLength } from "class-validator";
 import { IsSupportedSpotlightDestination } from "../spotlight-destination";
+import { IsSupportedSpotlightSongLink } from "../spotlight-song-link";
 
 export class AdminCreateSpotlightDto {
   @IsString()
@@ -19,6 +20,13 @@ export class AdminCreateSpotlightDto {
   @IsOptional()
   @IsString()
   song?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @IsSupportedSpotlightSongLink({
+    message: "songLink must be a Spotify or Apple Music track URL",
+  })
+  songLink?: string | null;
 
   @IsUrl({ protocols: ["https"], require_protocol: true })
   albumArt!: string;

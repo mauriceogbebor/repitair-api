@@ -8,7 +8,7 @@ describe("music provider OAuth", () => {
   const config = {
     get: jest.fn((key: string) => ({
       SPOTIFY_CLIENT_ID: "spotify-client",
-      SPOTIFY_REDIRECT_URI: "https://api.repitair.com/auth/spotify/callback",
+      SPOTIFY_REDIRECT_URI: "https://api.repitair.com/api/auth/spotify/callback",
       SPOTIFY_CLIENT_SECRET: "spotify-secret",
       APPLE_MUSIC_TEAM_ID: "team",
       APPLE_MUSIC_KEY_ID: "key",
@@ -70,8 +70,43 @@ describe("music provider OAuth", () => {
 
     const request = fetchSpy.mock.calls[0]?.[1] as RequestInit;
     expect(String(request.body)).toContain("code_verifier=pkce-verifier");
+    expect(String(request.body)).not.toContain("client_id=");
+    expect((request.headers as Record<string, string>).Authorization).toMatch(/^Basic /);
     expect(connections.consumeOAuthState).toHaveBeenCalledWith("single-use-state", "spotify");
     expect(connections.connectSpotify).toHaveBeenCalledWith("user-1", expect.objectContaining({ refresh_token: "refresh-token" }));
+  });
+
+  it("uses a public PKCE token exchange when no Spotify client secret is configured", async () => {
+    const publicConfig = {
+      get: jest.fn((key: string) => ({
+        SPOTIFY_CLIENT_ID: "spotify-client",
+        SPOTIFY_REDIRECT_URI: "https://api.repitair.com/api/auth/spotify/callback",
+        JWT_SECRET: "test-secret",
+      } as Record<string, string>)[key]),
+    };
+    const publicService = new AuthService(
+      users as never,
+      jwt as never,
+      mail as never,
+      blacklist as never,
+      publicConfig as never,
+      appleIdentity as never,
+      socialIdentity as never,
+      connections as never,
+    );
+    fetchSpy = jest.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      access_token: "access-token",
+      refresh_token: "refresh-token",
+      expires_in: 3600,
+      scope: "playlist-read-private",
+    }), { status: 200 }));
+
+    await publicService.handleSpotifyCallback("authorization-code", "single-use-state");
+
+    const request = fetchSpy.mock.calls[0]?.[1] as RequestInit;
+    expect(String(request.body)).toContain("client_id=spotify-client");
+    expect(String(request.body)).toContain("code_verifier=pkce-verifier");
+    expect((request.headers as Record<string, string>).Authorization).toBeUndefined();
   });
 
   it("validates Apple Music authorization state before exposing MusicKit", async () => {
@@ -217,7 +252,10 @@ describe("music provider OAuth", () => {
       expect(report.spotify).toEqual({
         clientId: true,
         clientSecret: true,
-        redirectUri: "https://api.repitair.com/auth/spotify/callback",
+        redirectUri: "https://api.repitair.com/api/auth/spotify/callback",
+        redirectUriHttps: true,
+        redirectUriCallbackPath: true,
+        redirectUriValid: true,
         ready: true,
       });
       // The fake ES256 key in this suite cannot actually sign, so token
@@ -241,7 +279,7 @@ describe("music provider OAuth", () => {
       const localConfig = {
         get: jest.fn((key: string) => ({ ...({
           SPOTIFY_CLIENT_ID: "spotify-client",
-          SPOTIFY_REDIRECT_URI: "https://api.repitair.com/auth/spotify/callback",
+          SPOTIFY_REDIRECT_URI: "https://api.repitair.com/api/auth/spotify/callback",
           API_BASE_URL: "http://localhost:3000",
           JWT_SECRET: "test-secret",
         } as Record<string, string>) })[key]),

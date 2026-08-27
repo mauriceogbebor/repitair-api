@@ -32,6 +32,7 @@ export class SpotlightService {
         subtitle: item.subtitle ?? null,
         artist: item.artist,
         song: item.song ?? null,
+        songLink: item.songLink ?? null,
         albumArt: item.albumArt,
         backgroundImage: item.backgroundImage ?? null,
         campaignType: item.campaignType,

@@ -12,6 +12,7 @@ import { AdminScheduleSpotlightDto } from "./dto/admin-schedule-spotlight.dto";
 import { AdminSpotlightActionDto } from "./dto/admin-spotlight-action.dto";
 import { AdminUpdateSpotlightDto } from "./dto/admin-update-spotlight.dto";
 import { SPOTLIGHT_CREATE_DESTINATION } from "./spotlight-destination";
+import { isSupportedSpotlightSongLink } from "./spotlight-song-link";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
@@ -134,6 +135,7 @@ export class AdminSpotlightService {
         subtitle: nullableText(dto.subtitle) ?? null,
         artist: dto.artist.trim(),
         song: nullableText(dto.song) ?? null,
+        songLink: nullableText(dto.songLink) ?? null,
         albumArt: dto.albumArt,
         backgroundImage: nullableText(dto.backgroundImage) ?? null,
         campaignType: dto.campaignType ?? "editorial",
@@ -175,6 +177,7 @@ export class AdminSpotlightService {
       if (dto.subtitle !== undefined) campaign.subtitle = nullableText(dto.subtitle) ?? null;
       if (dto.artist !== undefined) campaign.artist = dto.artist.trim();
       if (dto.song !== undefined) campaign.song = nullableText(dto.song) ?? null;
+      if (dto.songLink !== undefined) campaign.songLink = nullableText(dto.songLink) ?? null;
       if (dto.albumArt !== undefined) campaign.albumArt = dto.albumArt;
       if (dto.backgroundImage !== undefined) campaign.backgroundImage = nullableText(dto.backgroundImage) ?? null;
       if (dto.campaignType !== undefined) campaign.campaignType = dto.campaignType;
@@ -334,6 +337,7 @@ export class AdminSpotlightService {
         subtitle: campaign.subtitle,
         artist: campaign.artist,
         song: campaign.song,
+        songLink: campaign.songLink,
         albumArt: campaign.albumArt,
         backgroundImage: campaign.backgroundImage,
         campaignType: campaign.campaignType,
@@ -402,6 +406,13 @@ export class AdminSpotlightService {
     if (!campaign.albumArt.startsWith("https://") || (campaign.backgroundImage && !campaign.backgroundImage.startsWith("https://"))) {
       throw new BadRequestException({ statusCode: 400, error: "UnsafeSpotlightMedia", message: "Spotlight media must use HTTPS URLs." });
     }
+    if (!isSupportedSpotlightSongLink(campaign.songLink)) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: "SpotlightSongLinkRequired",
+        message: "Add a Spotify or Apple Music song URL before publishing or scheduling this campaign.",
+      });
+    }
     this.validateWindow(campaign.startsAt ?? null, campaign.expiresAt ?? null);
     if (campaign.expiresAt && campaign.expiresAt <= now) {
       throw new BadRequestException({ statusCode: 400, error: "SpotlightAlreadyExpired", message: "Campaign expiry must be in the future." });
@@ -415,6 +426,7 @@ export class AdminSpotlightService {
       subtitle: campaign.subtitle ?? null,
       artist: campaign.artist,
       song: campaign.song ?? null,
+      songLink: campaign.songLink ?? null,
       albumArt: campaign.albumArt,
       priority: campaign.priority,
       campaignType: campaign.campaignType,
@@ -435,6 +447,7 @@ export class AdminSpotlightService {
       subtitle: campaign.subtitle ?? null,
       artist: campaign.artist,
       song: campaign.song ?? null,
+      songLink: campaign.songLink ?? null,
       albumArt: campaign.albumArt,
       backgroundImage: campaign.backgroundImage ?? null,
       tag: campaign.tag,
@@ -458,6 +471,7 @@ export class AdminSpotlightService {
         subtitle: campaign.subtitle ?? campaign.artist,
         artist: campaign.artist,
         song: campaign.song ?? null,
+        songLink: campaign.songLink ?? null,
         albumArt: campaign.albumArt,
         tag: campaign.tag,
         destination: SPOTLIGHT_CREATE_DESTINATION,
@@ -479,6 +493,7 @@ export class AdminSpotlightService {
       subtitle: campaign.subtitle ?? null,
       artist: campaign.artist,
       song: campaign.song ?? null,
+      songLink: campaign.songLink ?? null,
       albumArt: campaign.albumArt,
       backgroundImage: campaign.backgroundImage ?? null,
       campaignType: campaign.campaignType,

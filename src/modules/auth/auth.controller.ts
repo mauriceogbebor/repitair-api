@@ -1,4 +1,18 @@
-import { BadRequestException, Body, Controller, Delete, Get, Header, Param, Post, Query, Redirect, Res, UseGuards } from "@nestjs/common";
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Header,
+  HttpException,
+  Param,
+  Post,
+  Query,
+  Redirect,
+  Res,
+  UseGuards,
+} from "@nestjs/common";
 import { Response } from "express";
 
 import { CurrentUser, CurrentUserPayload } from "../../common/decorators/current-user.decorator";
@@ -22,12 +36,40 @@ export class AuthController {
   private buildSpotifyAppRedirect(
     status: "success" | "error",
     message?: string,
+    reason?: string,
   ) {
     const params = new URLSearchParams({ status });
     if (message) {
       params.set("message", message);
     }
+    if (reason) {
+      params.set("reason", reason);
+    }
     return { url: `repitair://spotify-connected?${params.toString()}` };
+  }
+
+  private spotifyCallbackError(error: unknown): {
+    message: string;
+    reason?: string;
+  } {
+    if (error instanceof HttpException) {
+      const response = error.getResponse();
+      if (response && typeof response === "object") {
+        const errorCode = (response as { errorCode?: unknown }).errorCode;
+        const message = (response as { message?: unknown }).message;
+        if (typeof errorCode === "string" && typeof message === "string") {
+          return { message, reason: errorCode };
+        }
+      }
+    }
+
+    if (error instanceof Error && error.message.includes("not available")) {
+      return { message: "Spotify connection is not available right now." };
+    }
+    if (error instanceof Error && error.message.includes("Invalid state")) {
+      return { message: "This Spotify connection link is invalid or expired." };
+    }
+    return { message: "Could not connect Spotify. Please try again." };
   }
 
   @Post("signup")
@@ -181,13 +223,12 @@ export class AuthController {
       await this.authService.handleSpotifyCallback(code, state);
       return this.buildSpotifyAppRedirect("success");
     } catch (err) {
-      const message =
-        err instanceof Error && err.message.includes("not available")
-          ? "Spotify connection is not available right now."
-          : err instanceof Error && err.message.includes("Invalid state")
-            ? "This Spotify connection link is invalid or expired."
-            : "Could not connect Spotify. Please try again.";
-      return this.buildSpotifyAppRedirect("error", message);
+      const failure = this.spotifyCallbackError(err);
+      return this.buildSpotifyAppRedirect(
+        "error",
+        failure.message,
+        failure.reason,
+      );
     }
   }
 

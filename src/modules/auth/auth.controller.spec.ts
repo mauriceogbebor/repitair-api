@@ -6,6 +6,7 @@ import { AuthService } from "./auth.service";
 import { TokenBlacklistService } from "../../common/services/token-blacklist.service";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { User } from "../../entities";
+import { BadRequestException } from "@nestjs/common";
 
 describe("AuthController", () => {
   let authController: AuthController;
@@ -448,6 +449,21 @@ describe("AuthController", () => {
 
       expect(result).toEqual({
         url: "repitair://spotify-connected?status=error&message=Could+not+connect+Spotify.+Please+try+again.",
+      });
+    });
+
+    it("preserves a safe Spotify account eligibility error for the mobile callback", async () => {
+      (authService.handleSpotifyCallback as jest.Mock).mockRejectedValue(
+        new BadRequestException({
+          errorCode: "SPOTIFY_ACCOUNT_NOT_ALLOWED",
+          message: "This Spotify account is not approved for the staging app.",
+        }),
+      );
+
+      const result = await authController.spotifyCallback("code", "state", undefined);
+
+      expect(result).toEqual({
+        url: "repitair://spotify-connected?status=error&message=This+Spotify+account+is+not+approved+for+the+staging+app.&reason=SPOTIFY_ACCOUNT_NOT_ALLOWED",
       });
     });
   });

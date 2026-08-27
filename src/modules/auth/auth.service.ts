@@ -4,6 +4,7 @@ import {
   Logger,
   BadRequestException,
   ConflictException,
+  HttpException,
   NotFoundException,
   Optional,
   ServiceUnavailableException,
@@ -680,7 +681,15 @@ export class AuthService {
    */
   getOAuthConfigDiagnostics(): {
     apiBaseUrl: { configured: boolean; isLocalhost: boolean };
-    spotify: { clientId: boolean; clientSecret: boolean; redirectUri: string | null; ready: boolean };
+    spotify: {
+      clientId: boolean;
+      clientSecret: boolean;
+      redirectUri: string | null;
+      redirectUriHttps: boolean;
+      redirectUriCallbackPath: boolean;
+      redirectUriValid: boolean;
+      ready: boolean;
+    };
     appleMusic: {
       authBaseUrlConfigured: boolean;
       authBaseUrlHttps: boolean;
@@ -698,6 +707,24 @@ export class AuthService {
     const spotifyClientId = Boolean(this.configService.get<string>("SPOTIFY_CLIENT_ID"));
     const spotifyClientSecret = Boolean(this.configService.get<string>("SPOTIFY_CLIENT_SECRET"));
     const spotifyRedirectUri = this.configService.get<string>("SPOTIFY_REDIRECT_URI") ?? null;
+    let spotifyRedirectUriHttps = false;
+    let spotifyRedirectUriCallbackPath = false;
+    let spotifyRedirectUriValid = false;
+    if (spotifyRedirectUri) {
+      try {
+        const parsed = new URL(spotifyRedirectUri);
+        const isLoopback = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+        spotifyRedirectUriHttps = parsed.protocol === "https:";
+        spotifyRedirectUriCallbackPath = parsed.pathname === "/api/auth/spotify/callback";
+        spotifyRedirectUriValid =
+          (spotifyRedirectUriHttps || (isLoopback && parsed.protocol === "http:"))
+          && spotifyRedirectUriCallbackPath
+          && !parsed.search
+          && !parsed.hash;
+      } catch {
+        // Invalid URLs remain not ready and are reported through the booleans.
+      }
+    }
 
     const teamId = Boolean(this.configService.get<string>("APPLE_MUSIC_TEAM_ID"));
     const keyId = Boolean(this.configService.get<string>("APPLE_MUSIC_KEY_ID"));
@@ -728,7 +755,10 @@ export class AuthService {
         clientId: spotifyClientId,
         clientSecret: spotifyClientSecret,
         redirectUri: spotifyRedirectUri,
-        ready: spotifyClientId && Boolean(spotifyRedirectUri),
+        redirectUriHttps: spotifyRedirectUriHttps,
+        redirectUriCallbackPath: spotifyRedirectUriCallbackPath,
+        redirectUriValid: spotifyRedirectUriValid,
+        ready: spotifyClientId && spotifyRedirectUriValid,
       },
       appleMusic: {
         authBaseUrlConfigured: Boolean(appleMusicAuthBaseUrl),
@@ -840,22 +870,47 @@ export class AuthService {
       headers.Authorization = `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`;
     }
 
+    const tokenBody = new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: redirectUri,
+      ...(oauthState.codeVerifier ? { code_verifier: oauthState.codeVerifier } : {}),
+      ...(!clientSecret ? { client_id: clientId } : {}),
+    });
     const tokenResponse = await fetch("https://accounts.spotify.com/api/token", {
       method: "POST",
       headers,
       signal: AbortSignal.timeout(12_000),
-      body: new URLSearchParams({
-        grant_type: "authorization_code",
-        code,
-        redirect_uri: redirectUri,
-        client_id: clientId,
-        ...(oauthState.codeVerifier ? { code_verifier: oauthState.codeVerifier } : {}),
-      }).toString(),
+      body: tokenBody.toString(),
     });
 
     if (!tokenResponse.ok) {
-      this.logger.error(`Spotify token exchange failed with status ${tokenResponse.status}`);
-      throw new BadRequestException("Failed to exchange authorization code for tokens");
+      const providerError = await tokenResponse
+        .json()
+        .catch(() => ({})) as { error?: string; error_description?: string };
+      const providerErrorCode = typeof providerError.error === "string"
+        ? providerError.error.slice(0, 80)
+        : "unknown";
+      this.logger.error(
+        `Spotify token exchange failed status=${tokenResponse.status} providerError=${providerErrorCode}`,
+      );
+
+      if (providerErrorCode === "invalid_client") {
+        throw new BadRequestException({
+          errorCode: "SPOTIFY_CONFIGURATION_INVALID",
+          message: "Spotify is not configured correctly for this environment.",
+        });
+      }
+      if (providerErrorCode === "invalid_grant") {
+        throw new BadRequestException({
+          errorCode: "SPOTIFY_AUTHORIZATION_EXPIRED",
+          message: "This Spotify authorization expired or was already used. Start the connection again.",
+        });
+      }
+      throw new BadRequestException({
+        errorCode: "SPOTIFY_TOKEN_EXCHANGE_FAILED",
+        message: "Spotify could not complete the authorization. Please try again.",
+      });
     }
 
     const tokenData = (await tokenResponse.json()) as {
@@ -876,6 +931,9 @@ export class AuthService {
     } catch (err) {
       if (err instanceof NotFoundException) {
         throw new BadRequestException("Invalid state parameter");
+      }
+      if (err instanceof HttpException) {
+        throw err;
       }
       this.logger.error(`Failed to save Spotify authorization for user ${oauthState.userId}: ${(err as Error).message}`);
       throw new BadRequestException("Failed to connect Spotify account");
