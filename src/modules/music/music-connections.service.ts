@@ -83,12 +83,22 @@ export class MusicConnectionsService {
       throw new NotFoundException("Music account connections are not available.");
     }
 
+    // Open-beta semantics: an EMPTY allowlist means "no per-email restriction" —
+    // any authenticated user may connect (still gated by the enabled flag above).
+    // A populated allowlist restricts access to exactly those emails. This lets a
+    // TestFlight beta connect without maintaining a per-tester email list, while
+    // still allowing a hard restriction to be re-imposed by setting the env var.
+    const allowlist = this.providerConnectionAllowlist();
+    if (allowlist.size === 0) {
+      return;
+    }
+
     const user = await this.userRepo.findOne({
       where: { id: userId },
       select: { id: true, email: true },
     });
     const email = user?.email?.trim().toLowerCase();
-    if (!email || !this.providerConnectionAllowlist().has(email)) {
+    if (!email || !allowlist.has(email)) {
       throw new NotFoundException("Music account connections are not available.");
     }
   }
