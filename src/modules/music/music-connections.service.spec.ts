@@ -92,6 +92,14 @@ describe("MusicConnectionsService", () => {
     expect(connectionRepo.createQueryBuilder).not.toHaveBeenCalled();
   });
 
+  it("allows any authenticated user when the allowlist is empty (open beta)", async () => {
+    configValues.MUSIC_PROVIDER_CONNECTION_ALLOWLIST = "";
+
+    // Resolves rather than throwing the 404 the populated-allowlist path raises
+    // for a non-listed user — i.e. the empty allowlist opens access to all.
+    await expect(service.listConnections("user-1")).resolves.toBeDefined();
+  });
+
   it("stores Spotify authorization encrypted and returns only shaped account metadata", async () => {
     fetchSpy = jest.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(JSON.stringify({ id: "spotify-user", display_name: "Listener" }), { status: 200 }))
