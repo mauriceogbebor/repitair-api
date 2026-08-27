@@ -287,12 +287,42 @@ export class MusicConnectionsService {
     token: SpotifyTokenResponse,
   ): Promise<void> {
     await this.assertProviderAccess(userId);
-    const profileResponse = await fetch("https://api.spotify.com/v1/me", {
-      headers: { Authorization: `Bearer ${token.access_token}` },
-      signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
-    });
+    let profileResponse: Response;
+    try {
+      profileResponse = await fetch("https://api.spotify.com/v1/me", {
+        headers: { Authorization: `Bearer ${token.access_token}` },
+        signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
+      });
+    } catch {
+      throw new ServiceUnavailableException({
+        errorCode: "SPOTIFY_PROVIDER_UNAVAILABLE",
+        message: "Spotify could not be reached. Please try again in a moment.",
+      });
+    }
     if (!profileResponse.ok) {
-      throw new BadRequestException("Spotify did not authorize this account.");
+      if (profileResponse.status === 403) {
+        throw new BadRequestException({
+          errorCode: "SPOTIFY_ACCOUNT_NOT_ALLOWED",
+          message:
+            "This Spotify account is not approved for the staging Spotify app. Ask the staging administrator to add it as an approved tester, then try again.",
+        });
+      }
+      if (profileResponse.status === 401) {
+        throw new BadRequestException({
+          errorCode: "SPOTIFY_AUTHORIZATION_INVALID",
+          message: "Spotify rejected this authorization. Start the connection again.",
+        });
+      }
+      if (profileResponse.status === 429) {
+        throw new ServiceUnavailableException({
+          errorCode: "SPOTIFY_RATE_LIMITED",
+          message: "Spotify is temporarily limiting connection requests. Please try again shortly.",
+        });
+      }
+      throw new ServiceUnavailableException({
+        errorCode: "SPOTIFY_PROFILE_UNAVAILABLE",
+        message: "Spotify could not verify this account. Please try again.",
+      });
     }
     const profile = await profileResponse.json() as { id: string; display_name?: string | null };
 

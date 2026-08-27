@@ -20,6 +20,9 @@ export class Spotlight {
   @Column({ type: "varchar", nullable: true })
   song?: string | null;
 
+  @Column({ type: "varchar", nullable: true })
+  songLink?: string | null;
+
   @Column()
   albumArt!: string;
 

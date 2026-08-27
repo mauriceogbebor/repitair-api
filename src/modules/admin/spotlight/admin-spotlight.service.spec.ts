@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException } from "@nestjs/common";
 import { AdminSpotlightService } from "./admin-spotlight.service";
 import { isSupportedSpotlightDestination } from "./spotlight-destination";
+import { isSupportedSpotlightSongLink } from "./spotlight-song-link";
 
 function campaign(overrides: Record<string, unknown> = {}) {
   return {
@@ -9,6 +10,7 @@ function campaign(overrides: Record<string, unknown> = {}) {
     subtitle: null,
     artist: "Artist",
     song: null,
+    songLink: "https://open.spotify.com/track/test-track",
     albumArt: "https://cdn.example/art.jpg",
     backgroundImage: null,
     campaignType: "editorial",
@@ -71,6 +73,7 @@ describe("AdminSpotlightService lifecycle", () => {
       title: "Campaign",
       artist: "Artist",
       albumArt: "https://cdn.example/art.jpg",
+      songLink: "https://open.spotify.com/track/test-track",
     });
 
     expect(setupResult.transactionRepository.create).toHaveBeenCalledWith(
@@ -78,6 +81,7 @@ describe("AdminSpotlightService lifecycle", () => {
         status: "draft",
         buttonLabel: "Create Repit",
         deepLink: "/create/pick-template?fresh=1",
+        songLink: "https://open.spotify.com/track/test-track",
       }),
     );
     expect(setupResult.auditLogsService.append).toHaveBeenCalledWith(
@@ -120,6 +124,19 @@ describe("AdminSpotlightService lifecycle", () => {
 
     expect(setupResult.transactionRepository.save).not.toHaveBeenCalled();
   });
+
+  it("requires a supported song link before publishing", async () => {
+    const setupResult = setup(campaign({ songLink: null }));
+
+    await expect(
+      setupResult.service.publishCampaign("spotlight-1", {}),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({ error: "SpotlightSongLinkRequired" }),
+    });
+
+    expect(setupResult.transactionRepository.save).not.toHaveBeenCalled();
+    expect(setupResult.auditLogsService.append).not.toHaveBeenCalled();
+  });
 });
 
 describe("Spotlight destination policy", () => {
@@ -132,5 +149,16 @@ describe("Spotlight destination policy", () => {
     expect(isSupportedSpotlightDestination("https://")).toBe(false);
     expect(isSupportedSpotlightDestination("https://user:secret@example.com/path")).toBe(false);
     expect(isSupportedSpotlightDestination("/repit/")).toBe(false);
+  });
+});
+
+describe("Spotlight song-link policy", () => {
+  it("accepts Spotify and Apple Music track URLs only", () => {
+    expect(isSupportedSpotlightSongLink("https://open.spotify.com/track/track-id")).toBe(true);
+    expect(isSupportedSpotlightSongLink("https://music.apple.com/gb/song/song-name/123456789")).toBe(true);
+    expect(isSupportedSpotlightSongLink("https://music.apple.com/gb/album/album-name/123456789?i=987654321")).toBe(true);
+    expect(isSupportedSpotlightSongLink("https://open.spotify.com/playlist/playlist-id")).toBe(false);
+    expect(isSupportedSpotlightSongLink("https://music.apple.com/gb/album/album-name/123456789")).toBe(false);
+    expect(isSupportedSpotlightSongLink("https://example.com/track/track-id")).toBe(false);
   });
 });
