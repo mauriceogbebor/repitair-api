@@ -256,6 +256,7 @@ describe("music provider OAuth", () => {
         redirectUriHttps: true,
         redirectUriCallbackPath: true,
         redirectUriValid: true,
+        redirectUriProblem: null,
         ready: true,
       });
       // The fake ES256 key in this suite cannot actually sign, so token
