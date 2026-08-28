@@ -6,6 +6,7 @@ import { DocumentBuilder, SwaggerModule } from "@nestjs/swagger";
 import { AppModule } from "./app.module";
 import { resolveCorsOrigins } from "./common/config/cors-origins";
 import { GlobalExceptionFilter } from "./common/filters/global-exception.filter";
+import { spotifyRedirectUriProblem } from "./modules/auth/spotify-redirect-uri";
 
 function setupSwagger(app: NestExpressApplication): void {
   const isEnabled =
@@ -114,6 +115,12 @@ function validateEnvironment(): void {
 
   if (!process.env.SPOTIFY_CLIENT_ID) {
     warnings.push("Spotify credentials missing (SPOTIFY_CLIENT_ID) — Spotify song lookup and account connection will fail");
+  }
+  {
+    const redirectProblem = spotifyRedirectUriProblem(process.env.SPOTIFY_REDIRECT_URI);
+    if (process.env.SPOTIFY_CLIENT_ID && redirectProblem) {
+      warnings.push(`Spotify account connection will fail — ${redirectProblem}`);
+    }
   }
   if (!process.env.APPLE_MUSIC_TEAM_ID || !process.env.APPLE_MUSIC_KEY_ID || !process.env.APPLE_MUSIC_PRIVATE_KEY) {
     warnings.push("Apple Music credentials missing (APPLE_MUSIC_TEAM_ID, APPLE_MUSIC_KEY_ID, APPLE_MUSIC_PRIVATE_KEY) — Apple Music lookup will fail");

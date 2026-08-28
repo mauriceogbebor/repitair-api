@@ -26,6 +26,7 @@ import { AppleIdentityService } from "./apple-identity.service";
 import { SocialIdentityService, type SocialConnection } from "./social-identity.service";
 import { AnalyticsService, ANALYTICS_EVENTS } from "../analytics/analytics.service";
 import type { SocialAuthProvider } from "../../entities";
+import { spotifyRedirectUriProblem } from "./spotify-redirect-uri";
 
 @Injectable()
 export class AuthService {
@@ -688,6 +689,7 @@ export class AuthService {
       redirectUriHttps: boolean;
       redirectUriCallbackPath: boolean;
       redirectUriValid: boolean;
+      redirectUriProblem: string | null;
       ready: boolean;
     };
     appleMusic: {
@@ -709,22 +711,18 @@ export class AuthService {
     const spotifyRedirectUri = this.configService.get<string>("SPOTIFY_REDIRECT_URI") ?? null;
     let spotifyRedirectUriHttps = false;
     let spotifyRedirectUriCallbackPath = false;
-    let spotifyRedirectUriValid = false;
     if (spotifyRedirectUri) {
       try {
         const parsed = new URL(spotifyRedirectUri);
-        const isLoopback = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
         spotifyRedirectUriHttps = parsed.protocol === "https:";
         spotifyRedirectUriCallbackPath = parsed.pathname === "/api/auth/spotify/callback";
-        spotifyRedirectUriValid =
-          (spotifyRedirectUriHttps || (isLoopback && parsed.protocol === "http:"))
-          && spotifyRedirectUriCallbackPath
-          && !parsed.search
-          && !parsed.hash;
       } catch {
-        // Invalid URLs remain not ready and are reported through the booleans.
+        // Invalid URLs are reported through redirectUriProblem below.
       }
     }
+    // Single source of truth for validity (also catches comma-separated lists).
+    const spotifyRedirectUriProblemMessage = spotifyRedirectUriProblem(spotifyRedirectUri);
+    const spotifyRedirectUriValid = spotifyRedirectUriProblemMessage === null;
 
     const teamId = Boolean(this.configService.get<string>("APPLE_MUSIC_TEAM_ID"));
     const keyId = Boolean(this.configService.get<string>("APPLE_MUSIC_KEY_ID"));
@@ -758,6 +756,7 @@ export class AuthService {
         redirectUriHttps: spotifyRedirectUriHttps,
         redirectUriCallbackPath: spotifyRedirectUriCallbackPath,
         redirectUriValid: spotifyRedirectUriValid,
+        redirectUriProblem: spotifyRedirectUriProblemMessage,
         ready: spotifyClientId && spotifyRedirectUriValid,
       },
       appleMusic: {
@@ -818,6 +817,10 @@ export class AuthService {
         "Spotify OAuth is not available. SPOTIFY_CLIENT_ID and SPOTIFY_REDIRECT_URI must be configured.",
       );
     }
+    const redirectProblem = spotifyRedirectUriProblem(redirectUri);
+    if (redirectProblem) {
+      throw new ServiceUnavailableException(`Spotify OAuth is misconfigured: ${redirectProblem}`);
+    }
 
     const codeVerifier = randomBytes(64).toString("base64url");
     const codeChallenge = require("crypto")
@@ -857,6 +860,12 @@ export class AuthService {
       throw new ServiceUnavailableException(
         "Spotify OAuth is not available. SPOTIFY_CLIENT_ID and SPOTIFY_REDIRECT_URI must be configured.",
       );
+    }
+    const redirectProblem = spotifyRedirectUriProblem(redirectUri);
+    if (redirectProblem) {
+      // Must match the authorize call byte-for-byte; fail fast rather than let
+      // Spotify reject the token exchange with an opaque error.
+      throw new ServiceUnavailableException(`Spotify OAuth is misconfigured: ${redirectProblem}`);
     }
 
     const oauthState = this.musicConnections
