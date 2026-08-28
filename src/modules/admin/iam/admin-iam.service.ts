@@ -287,6 +287,11 @@ export class AdminIamService {
   async setStatus(adminId: string, status: "active" | "suspended" | "inactive", reason: string, actor: AdminRequestActor, context?: AdminRequestContext | null) {
     const admin = await this.requireAdmin(adminId);
     if (admin.id === actor.id && status !== "active") throw new ForbiddenException("You cannot suspend or deactivate your own account");
+    // Mirror the role-change continuity guard: never leave the platform with zero
+    // active super administrators by suspending/deactivating the last one.
+    if (status !== "active" && admin.roles.some((role) => role.key === "super-admin") && (await this.countActiveSuperAdmins()) <= 1) {
+      throw new ForbiddenException("The last active super administrator cannot be suspended or deactivated");
+    }
     const before = this.auditAdminState(admin);
     admin.status = status;
     admin.suspendedAt = status === "suspended" ? new Date() : null;
@@ -378,10 +383,17 @@ export class AdminIamService {
     if (uncontrolled.length) throw new ForbiddenException("You cannot assign or remove permissions you do not hold");
   }
 
+  private countActiveSuperAdmins(): Promise<number> {
+    return this.adminUsers
+      .createQueryBuilder("admin")
+      .innerJoin("admin.roles", "role", "role.key = :role", { role: "super-admin" })
+      .where("admin.status = :status", { status: "active" })
+      .getCount();
+  }
+
   private async assertSuperAdminContinuity(admin: AdminUser, nextRoles: AdminRole[]) {
     if (!admin.roles.some((role) => role.key === "super-admin") || nextRoles.some((role) => role.key === "super-admin")) return;
-    const count = await this.adminUsers.createQueryBuilder("admin").innerJoin("admin.roles", "role", "role.key = :role", { role: "super-admin" }).where("admin.status = :status", { status: "active" }).getCount();
-    if (count <= 1) throw new ForbiddenException("The last active super administrator cannot lose the super-admin role");
+    if ((await this.countActiveSuperAdmins()) <= 1) throw new ForbiddenException("The last active super administrator cannot lose the super-admin role");
   }
 
   private directoryItem(admin: AdminUser) {
