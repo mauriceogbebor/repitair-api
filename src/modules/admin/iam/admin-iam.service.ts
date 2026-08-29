@@ -6,7 +6,6 @@ import {
   Injectable,
   Logger,
   NotFoundException,
-  ServiceUnavailableException,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
@@ -171,29 +170,38 @@ export class AdminIamService {
 
     const origin = this.config.get<string>("ADMIN_FRONTEND_ORIGIN");
     if (!origin) throw new BadRequestException("ADMIN_FRONTEND_ORIGIN is required to send invitations");
+    const acceptUrl = `${origin}/accept-invite?token=${token}`;
+
+    let emailDelivered = true;
     try {
       await this.mail.sendRaw({
         to: email,
         subject: "You are invited to Repitair Admin",
-        html: `<p>Hello ${this.escapeHtml(admin.fullName)},</p><p>You have been invited to Repitair Admin. This link expires in ${INVITATION_TTL_HOURS} hours.</p><p><a href="${this.escapeHtml(`${origin}/accept-invite?token=${token}`)}">Accept invitation</a></p>`,
+        html: `<p>Hello ${this.escapeHtml(admin.fullName)},</p><p>You have been invited to Repitair Admin. This link expires in ${INVITATION_TTL_HOURS} hours.</p><p><a href="${this.escapeHtml(acceptUrl)}">Accept invitation</a></p>`,
         sensitive: true,
       });
     } catch (error) {
-      invitation.status = "revoked";
-      invitation.revokedAt = new Date();
-      admin.status = "inactive";
-      admin.inactiveAt = new Date();
-      await Promise.all([this.invitations.save(invitation), this.adminUsers.save(admin)]);
-      // Log the real cause server-side (SMTP error), but return a clean,
-      // actionable 503 instead of leaking a raw error as a masked 500.
+      // Email could not be delivered (e.g. SMTP mid-delivery failure, or an
+      // undeliverable recipient). Rather than failing the whole invite with a
+      // 500, keep the invitation usable and hand the one-time accept link back
+      // to the inviting super administrator to share securely. The raw cause is
+      // logged server-side for diagnosis.
+      emailDelivered = false;
       this.logger.error(`Failed to email admin invitation to ${email}: ${error instanceof Error ? error.message : String(error)}`);
-      throw new ServiceUnavailableException(
-        "The invitation was not sent because the email could not be delivered. Verify the SMTP configuration and the recipient address, then try again.",
-      );
     }
 
-    await this.audit.append({ action: "admin.iam.invited", actor, context, targetType: "admin_user", targetId: admin.id, afterState: this.auditAdminState(admin), metadata: { roleIds: roles.map((role) => role.id), expiresAt: expiresAt.toISOString() } });
-    return { id: admin.id, email: admin.email, status: admin.status, invitationExpiresAt: expiresAt };
+    await this.audit.append({ action: "admin.iam.invited", actor, context, targetType: "admin_user", targetId: admin.id, afterState: this.auditAdminState(admin), metadata: { roleIds: roles.map((role) => role.id), expiresAt: expiresAt.toISOString(), emailDelivered } });
+    return {
+      id: admin.id,
+      email: admin.email,
+      status: admin.status,
+      invitationExpiresAt: expiresAt,
+      emailDelivered,
+      // Only surface the token-bearing link when email delivery failed — a
+      // fallback channel for the trusted inviter. When email succeeds the
+      // invitee already has it, so we never expose the token needlessly.
+      acceptUrl: emailDelivered ? null : acceptUrl,
+    };
   }
 
   async getInvitation(token: string) {
