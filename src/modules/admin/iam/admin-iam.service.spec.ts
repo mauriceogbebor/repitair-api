@@ -37,4 +37,12 @@ describe("AdminIamService security boundaries", () => {
   it("prevents emergency access from being activated for another administrator", async () => {
     await expect(service.activateBreakGlass("target", { reason: "Production incident response", durationMinutes: 30 }, { id: "actor", email: "actor@example.com", fullName: "Actor", status: "active", roleKeys: [], permissionKeys: ["admins.break_glass"] })).rejects.toBeInstanceOf(ForbiddenException);
   });
+
+  it("prevents suspending or deactivating the last active super administrator", async () => {
+    adminUsers.findOne.mockResolvedValue({ id: "target", roles: [{ key: "super-admin" }], status: "active" });
+    const qb = { innerJoin: jest.fn().mockReturnThis(), where: jest.fn().mockReturnThis(), getCount: jest.fn().mockResolvedValue(1) };
+    adminUsers.createQueryBuilder.mockReturnValue(qb);
+    await expect(service.setStatus("target", "inactive", "off-boarding", { id: "actor", email: "actor@example.com", fullName: "Actor", status: "active", roleKeys: ["super-admin"], permissionKeys: ["admins.manage"] })).rejects.toBeInstanceOf(ForbiddenException);
+    expect(adminUsers.save).not.toHaveBeenCalled();
+  });
 });

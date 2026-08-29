@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   GoneException,
   Injectable,
+  Logger,
   NotFoundException,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
@@ -37,6 +38,8 @@ const DEFAULT_REVIEW_DAYS = 90;
 
 @Injectable()
 export class AdminIamService {
+  private readonly logger = new Logger(AdminIamService.name);
+
   constructor(
     @InjectRepository(AdminUser) private readonly adminUsers: Repository<AdminUser>,
     @InjectRepository(AdminRole) private readonly roles: Repository<AdminRole>,
@@ -167,24 +170,85 @@ export class AdminIamService {
 
     const origin = this.config.get<string>("ADMIN_FRONTEND_ORIGIN");
     if (!origin) throw new BadRequestException("ADMIN_FRONTEND_ORIGIN is required to send invitations");
+    const acceptUrl = `${origin}/accept-invite?token=${token}`;
+    // Email delivery is best-effort: a failure keeps the invitation usable and
+    // returns the one-time link so the inviter can share it (see the helper).
+    const emailDelivered = await this.tryEmailInvitation(email, admin.fullName, acceptUrl);
+
+    await this.audit.append({ action: "admin.iam.invited", actor, context, targetType: "admin_user", targetId: admin.id, afterState: this.auditAdminState(admin), metadata: { roleIds: roles.map((role) => role.id), expiresAt: expiresAt.toISOString(), emailDelivered } });
+    return {
+      id: admin.id,
+      email: admin.email,
+      status: admin.status,
+      invitationExpiresAt: expiresAt,
+      emailDelivered,
+      // Only surface the token-bearing link when email delivery failed — a
+      // fallback channel for the trusted inviter. When email succeeds the
+      // invitee already has it, so we never expose the token needlessly.
+      acceptUrl: emailDelivered ? null : acceptUrl,
+    };
+  }
+
+  /**
+   * Regenerate and re-send the invitation for an administrator who has not yet
+   * accepted (pending / MFA-enrolling, or deactivated by an earlier failed
+   * invite). Mints a fresh token, revives the pending state, and returns the
+   * one-time link when email cannot be delivered — so an admin stuck on email
+   * delivery can still be onboarded without touching the database.
+   */
+  async resendInvitation(adminId: string, actor: AdminRequestActor, context?: AdminRequestContext | null) {
+    const admin = await this.requireAdmin(adminId);
+    const invitation = await this.invitations.findOne({ where: { adminUserId: adminId }, order: { createdAt: "DESC" } });
+    if (!invitation || invitation.status === "accepted") {
+      throw new ConflictException("This administrator has already accepted an invitation, so there is nothing to resend.");
+    }
+
+    const origin = this.config.get<string>("ADMIN_FRONTEND_ORIGIN");
+    if (!origin) throw new BadRequestException("ADMIN_FRONTEND_ORIGIN is required to send invitations");
+
+    const token = randomBytes(32).toString("base64url");
+    const expiresAt = new Date(Date.now() + INVITATION_TTL_HOURS * 60 * 60_000);
+    invitation.tokenHash = this.hashToken(token);
+    invitation.status = "pending";
+    invitation.expiresAt = expiresAt;
+    invitation.acceptedAt = null;
+    invitation.revokedAt = null;
+    await this.invitations.save(invitation);
+
+    if (admin.status !== "pending_invitation") {
+      admin.status = "pending_invitation";
+      admin.inactiveAt = null;
+      admin.mfaResetRequired = true;
+      await this.adminUsers.save(admin);
+    }
+
+    const acceptUrl = `${origin}/accept-invite?token=${token}`;
+    const emailDelivered = await this.tryEmailInvitation(admin.email, admin.fullName, acceptUrl);
+    await this.audit.append({ action: "admin.iam.invitation.resent", actor, context, targetType: "admin_user", targetId: admin.id, afterState: this.auditAdminState(admin), metadata: { expiresAt: expiresAt.toISOString(), emailDelivered } });
+    return {
+      id: admin.id,
+      email: admin.email,
+      status: admin.status,
+      invitationExpiresAt: expiresAt,
+      emailDelivered,
+      acceptUrl: emailDelivered ? null : acceptUrl,
+    };
+  }
+
+  /** Best-effort invitation email; returns false (and logs the cause) on failure. */
+  private async tryEmailInvitation(email: string, fullName: string, acceptUrl: string): Promise<boolean> {
     try {
       await this.mail.sendRaw({
         to: email,
         subject: "You are invited to Repitair Admin",
-        html: `<p>Hello ${this.escapeHtml(admin.fullName)},</p><p>You have been invited to Repitair Admin. This link expires in ${INVITATION_TTL_HOURS} hours.</p><p><a href="${this.escapeHtml(`${origin}/accept-invite?token=${token}`)}">Accept invitation</a></p>`,
+        html: `<p>Hello ${this.escapeHtml(fullName)},</p><p>You have been invited to Repitair Admin. This link expires in ${INVITATION_TTL_HOURS} hours.</p><p><a href="${this.escapeHtml(acceptUrl)}">Accept invitation</a></p>`,
         sensitive: true,
       });
+      return true;
     } catch (error) {
-      invitation.status = "revoked";
-      invitation.revokedAt = new Date();
-      admin.status = "inactive";
-      admin.inactiveAt = new Date();
-      await Promise.all([this.invitations.save(invitation), this.adminUsers.save(admin)]);
-      throw error;
+      this.logger.error(`Failed to email admin invitation to ${email}: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
     }
-
-    await this.audit.append({ action: "admin.iam.invited", actor, context, targetType: "admin_user", targetId: admin.id, afterState: this.auditAdminState(admin), metadata: { roleIds: roles.map((role) => role.id), expiresAt: expiresAt.toISOString() } });
-    return { id: admin.id, email: admin.email, status: admin.status, invitationExpiresAt: expiresAt };
   }
 
   async getInvitation(token: string) {
@@ -287,6 +351,11 @@ export class AdminIamService {
   async setStatus(adminId: string, status: "active" | "suspended" | "inactive", reason: string, actor: AdminRequestActor, context?: AdminRequestContext | null) {
     const admin = await this.requireAdmin(adminId);
     if (admin.id === actor.id && status !== "active") throw new ForbiddenException("You cannot suspend or deactivate your own account");
+    // Mirror the role-change continuity guard: never leave the platform with zero
+    // active super administrators by suspending/deactivating the last one.
+    if (status !== "active" && admin.roles.some((role) => role.key === "super-admin") && (await this.countActiveSuperAdmins()) <= 1) {
+      throw new ForbiddenException("The last active super administrator cannot be suspended or deactivated");
+    }
     const before = this.auditAdminState(admin);
     admin.status = status;
     admin.suspendedAt = status === "suspended" ? new Date() : null;
@@ -378,10 +447,17 @@ export class AdminIamService {
     if (uncontrolled.length) throw new ForbiddenException("You cannot assign or remove permissions you do not hold");
   }
 
+  private countActiveSuperAdmins(): Promise<number> {
+    return this.adminUsers
+      .createQueryBuilder("admin")
+      .innerJoin("admin.roles", "role", "role.key = :role", { role: "super-admin" })
+      .where("admin.status = :status", { status: "active" })
+      .getCount();
+  }
+
   private async assertSuperAdminContinuity(admin: AdminUser, nextRoles: AdminRole[]) {
     if (!admin.roles.some((role) => role.key === "super-admin") || nextRoles.some((role) => role.key === "super-admin")) return;
-    const count = await this.adminUsers.createQueryBuilder("admin").innerJoin("admin.roles", "role", "role.key = :role", { role: "super-admin" }).where("admin.status = :status", { status: "active" }).getCount();
-    if (count <= 1) throw new ForbiddenException("The last active super administrator cannot lose the super-admin role");
+    if ((await this.countActiveSuperAdmins()) <= 1) throw new ForbiddenException("The last active super administrator cannot lose the super-admin role");
   }
 
   private directoryItem(admin: AdminUser) {

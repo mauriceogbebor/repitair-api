@@ -37,6 +37,11 @@ export class AdminIamController {
   @HttpCode(200)
   revokeInvitation(@Param("id", ParseUUIDPipe) id: string, @Body() dto: AdminReasonDto, @Req() request: AdminRequest) { return this.iam.revokeInvitation(id, dto.reason, request.adminUser!, request.adminRequestContext); }
 
+  @Post("admins/:id/invitation/resend")
+  @AdminPermissions("admins.invite")
+  @HttpCode(200)
+  resendInvitation(@Param("id", ParseUUIDPipe) id: string, @Req() request: AdminRequest) { return this.iam.resendInvitation(id, request.adminUser!, request.adminRequestContext); }
+
   @Patch("admins/:id/roles")
   @AdminPermissions("roles.manage")
   updateRoles(@Param("id", ParseUUIDPipe) id: string, @Body() dto: AdminUpdateRolesDto, @Req() request: AdminRequest) { return this.iam.updateRoles(id, dto.roleIds, request.adminUser!, request.adminRequestContext); }
