@@ -4,7 +4,9 @@ import {
   ForbiddenException,
   GoneException,
   Injectable,
+  Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
@@ -37,6 +39,8 @@ const DEFAULT_REVIEW_DAYS = 90;
 
 @Injectable()
 export class AdminIamService {
+  private readonly logger = new Logger(AdminIamService.name);
+
   constructor(
     @InjectRepository(AdminUser) private readonly adminUsers: Repository<AdminUser>,
     @InjectRepository(AdminRole) private readonly roles: Repository<AdminRole>,
@@ -180,7 +184,12 @@ export class AdminIamService {
       admin.status = "inactive";
       admin.inactiveAt = new Date();
       await Promise.all([this.invitations.save(invitation), this.adminUsers.save(admin)]);
-      throw error;
+      // Log the real cause server-side (SMTP error), but return a clean,
+      // actionable 503 instead of leaking a raw error as a masked 500.
+      this.logger.error(`Failed to email admin invitation to ${email}: ${error instanceof Error ? error.message : String(error)}`);
+      throw new ServiceUnavailableException(
+        "The invitation was not sent because the email could not be delivered. Verify the SMTP configuration and the recipient address, then try again.",
+      );
     }
 
     await this.audit.append({ action: "admin.iam.invited", actor, context, targetType: "admin_user", targetId: admin.id, afterState: this.auditAdminState(admin), metadata: { roleIds: roles.map((role) => role.id), expiresAt: expiresAt.toISOString() } });
