@@ -25,6 +25,7 @@ import {
 } from "../../../entities";
 import { createHash } from "node:crypto";
 import { MailService } from "../../../common/services/mail.service";
+import { renderBrandedEmail } from "../../../common/services/email-template";
 import { AdminAuditLogsService } from "../audit-logs/admin-audit-logs.service";
 import type { AdminRequestActor, AdminRequestContext } from "../admin.types";
 import { createCsv } from "../utils/csv";
@@ -482,7 +483,16 @@ export class AdminSupportService {
   private async deliverResponse(ticketId: string, ticket: ContactSubmission, response: SupportTicketResponse, dto: AdminRespondSupportTicketDto, actor: AdminRequestActor | null | undefined, context: AdminRequestContext | null | undefined, mode: "initial" | "retry") {
     // STEP 1 — provider outcome only.
     try {
-      await this.mailService.sendRaw({ to: ticket.email, subject: `Re: ${ticket.subject}`, html: `<div style="font-family: sans-serif; line-height: 1.6">${escapeHtml(dto.body.trim()).replace(/\n/g, "<br />")}</div>`, sensitive: true });
+      await this.mailService.sendRaw({
+        to: ticket.email,
+        subject: `Re: ${ticket.subject}`,
+        html: renderBrandedEmail({
+          preheader: `A reply to your Repitair support request: ${ticket.subject}`,
+          heading: "Repitair Support",
+          intro: dto.body.trim().split(/\n/).map((line) => line.trim()).filter(Boolean),
+        }),
+        sensitive: true,
+      });
     } catch {
       response.status = "failed";
       response.failureCategory = "provider_failure";

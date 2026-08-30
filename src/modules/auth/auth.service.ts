@@ -27,6 +27,7 @@ import { SocialIdentityService, type SocialConnection } from "./social-identity.
 import { AnalyticsService, ANALYTICS_EVENTS } from "../analytics/analytics.service";
 import type { SocialAuthProvider } from "../../entities";
 import { spotifyRedirectUriProblem } from "./spotify-redirect-uri";
+import { renderBrandedEmail } from "../../common/services/email-template";
 
 @Injectable()
 export class AuthService {
@@ -479,14 +480,17 @@ export class AuthService {
         await this.mailService.sendRaw({
           to: email,
           subject: "Verify your Repitair email",
-          html: `
-            <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 400px; margin: 0 auto; padding: 24px;">
-              <h2 style="color: #111;">Verify your email</h2>
-              <p>Hi ${user?.fullName ?? "there"}, use this code to verify your email address:</p>
-              <div style="background: #f0f0f0; border-radius: 8px; padding: 16px; text-align: center; font-size: 32px; font-weight: 700; letter-spacing: 4px;">${code}</div>
-              <p style="color: #888; font-size: 13px; margin-top: 16px;">This code expires in 30 minutes.</p>
-            </div>
-          `,
+          html: renderBrandedEmail({
+            preheader: "Your Repitair email verification code (expires in 30 minutes).",
+            heading: "Verify your email",
+            intro: [
+              `Hi ${user?.fullName?.trim() || "there"},`,
+              "Use this code to verify your email address:",
+            ],
+            code,
+            note: "This code expires in 30 minutes. If you didn't request this, you can ignore this email.",
+          }),
+          sensitive: true,
         });
       } catch (err) {
         this.logger.error(`Failed to send verification email to ${email}: ${(err as Error).message}`);
