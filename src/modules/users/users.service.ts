@@ -15,6 +15,7 @@ import { User } from "../../entities";
 import { UploadsService } from "../uploads/uploads.service";
 import { PrivacyService } from "../privacy/privacy.service";
 import { MailService } from "../../common/services/mail.service";
+import { renderBrandedEmail } from "../../common/services/email-template";
 
 export type { User as UserRecord };
 
@@ -412,14 +413,13 @@ export class UsersService {
       await this.mailService.sendRaw({
         to: newEmail,
         subject: "Confirm your new Repitair email",
-        html: `
-          <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 400px; margin: 0 auto; padding: 24px;">
-            <h2 style="color: #111;">Confirm your new email</h2>
-            <p>Use this code to confirm this address on your Repitair account:</p>
-            <div style="background: #f0f0f0; border-radius: 8px; padding: 16px; text-align: center; font-size: 32px; font-weight: 700; letter-spacing: 4px;">${code}</div>
-            <p style="color: #888; font-size: 13px; margin-top: 16px;">This code expires in 30 minutes. If you didn't request this, you can ignore it — your current email stays unchanged.</p>
-          </div>
-        `,
+        html: renderBrandedEmail({
+          preheader: "Confirm your new Repitair email address (code expires in 30 minutes).",
+          heading: "Confirm your new email",
+          intro: "Use this code to confirm this address on your Repitair account:",
+          code,
+          note: "This code expires in 30 minutes. If you didn't request this, you can ignore it — your current email stays unchanged.",
+        }),
         sensitive: true,
       });
     } catch (err) {

@@ -2,6 +2,8 @@ import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import * as nodemailer from "nodemailer";
 
+import { renderBrandedEmail } from "./email-template";
+
 type MailOptions = {
   to: string;
   subject: string;
@@ -63,24 +65,18 @@ export class MailService {
   }
 
   async sendPasswordResetCode(to: string, code: string, fullName: string): Promise<void> {
-    const subject = "Repitair — Your Password Reset Code";
-    const safeFullName = this.escapeHtml(fullName);
-    const safeCode = this.escapeHtml(code);
-    const html = `
-      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px;">
-        <h2 style="color: #111; margin-bottom: 8px;">Reset your password</h2>
-        <p style="color: #555; font-size: 15px;">Hi ${safeFullName},</p>
-        <p style="color: #555; font-size: 15px;">You requested a password reset. Use the code below to verify your identity:</p>
-        <div style="background: #f4f4f4; border-radius: 12px; padding: 24px; text-align: center; margin: 24px 0;">
-          <span style="font-size: 32px; font-weight: 700; letter-spacing: 8px; color: #111;">${safeCode}</span>
-        </div>
-        <p style="color: #888; font-size: 13px;">This code expires in 10 minutes. If you didn't request this, you can safely ignore this email.</p>
-        <hr style="border: none; border-top: 1px solid #eee; margin: 24px 0;" />
-        <p style="color: #aaa; font-size: 12px;">Repitair — Share your music, your way.</p>
-      </div>
-    `;
+    const html = renderBrandedEmail({
+      preheader: "Your Repitair password reset code (expires in 10 minutes).",
+      heading: "Reset your password",
+      intro: [
+        `Hi ${fullName?.trim() || "there"},`,
+        "You requested a password reset. Use the code below to verify your identity:",
+      ],
+      code,
+      note: "This code expires in 10 minutes. If you didn't request this, you can safely ignore this email.",
+    });
 
-    await this.send({ to, subject, html });
+    await this.send({ to, subject: "Repitair — Your Password Reset Code", html, sensitive: true });
   }
 
   async sendPrivacyExportReady(
@@ -93,20 +89,17 @@ export class MailService {
       throw new Error("Email delivery is required to deliver privacy data exports.");
     }
 
-    const safeFullName = this.escapeHtml(fullName);
-    const safeDownloadUrl = this.escapeHtml(downloadUrl);
-    const safeExpiry = this.escapeHtml(expiresAt.toUTCString());
-    const html = `
-      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 520px; margin: 0 auto; padding: 32px;">
-        <h2 style="color: #111; margin-bottom: 8px;">Your Repitair data export is ready</h2>
-        <p style="color: #555; font-size: 15px;">Hi ${safeFullName},</p>
-        <p style="color: #555; font-size: 15px;">Your requested data export is available from the secure link below.</p>
-        <p style="margin: 24px 0;">
-          <a href="${safeDownloadUrl}" style="display: inline-block; border-radius: 10px; background: #004f71; color: #fff; padding: 12px 18px; text-decoration: none; font-weight: 600;">Download your data</a>
-        </p>
-        <p style="color: #888; font-size: 13px;">This link expires on ${safeExpiry}. Do not forward it. If you did not request this export, contact Repitair Support.</p>
-      </div>
-    `;
+    const html = renderBrandedEmail({
+      preheader: "Your Repitair data export is ready to download.",
+      heading: "Your data export is ready",
+      intro: [
+        `Hi ${fullName?.trim() || "there"},`,
+        "Your requested data export is available from the secure link below.",
+      ],
+      cta: { label: "Download your data", url: downloadUrl },
+      fallbackUrl: downloadUrl,
+      note: `This link expires on ${expiresAt.toUTCString()}. Do not forward it. If you did not request this export, contact Repitair Support.`,
+    });
 
     await this.send({
       to,

@@ -13,6 +13,7 @@ import * as bcrypt from "bcryptjs";
 import { createHash, randomBytes } from "crypto";
 import { In, LessThanOrEqual, MoreThan, Repository } from "typeorm";
 import { MailService } from "../../../common/services/mail.service";
+import { renderBrandedEmail } from "../../../common/services/email-template";
 import {
   AdminAccessReview,
   AdminAuditLog,
@@ -240,8 +241,8 @@ export class AdminIamService {
     try {
       await this.mail.sendRaw({
         to: email,
-        subject: "You are invited to Repitair Admin",
-        html: `<p>Hello ${this.escapeHtml(fullName)},</p><p>You have been invited to Repitair Admin. This link expires in ${INVITATION_TTL_HOURS} hours.</p><p><a href="${this.escapeHtml(acceptUrl)}">Accept invitation</a></p>`,
+        subject: "You're invited to Repitair Admin",
+        html: this.buildInvitationEmail(fullName, acceptUrl),
         sensitive: true,
       });
       return true;
@@ -249,6 +250,19 @@ export class AdminIamService {
       this.logger.error(`Failed to email admin invitation to ${email}: ${error instanceof Error ? error.message : String(error)}`);
       return false;
     }
+  }
+
+  /** Branded, email-client-safe invitation HTML (shared Repitair email shell). */
+  private buildInvitationEmail(fullName: string, acceptUrl: string): string {
+    const name = fullName?.trim() || "there";
+    return renderBrandedEmail({
+      preheader: `Accept your invitation to Repitair Admin. This secure link expires in ${INVITATION_TTL_HOURS} hours.`,
+      heading: "You've been invited",
+      intro: `Hi ${name}, you've been invited to the Repitair Admin console. Set your password and enroll multi-factor authentication to activate your account.`,
+      cta: { label: "Accept invitation", url: acceptUrl },
+      fallbackUrl: acceptUrl,
+      note: `This secure link expires in ${INVITATION_TTL_HOURS} hours and can be used once. If you weren't expecting this invitation, you can safely ignore this email — no account is created until you accept.`,
+    });
   }
 
   async getInvitation(token: string) {
