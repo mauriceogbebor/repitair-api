@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { UsersService } from "./users.service";
 import { UploadsService } from "../uploads/uploads.service";
 import { PrivacyService } from "../privacy/privacy.service";
+import { MailService } from "../../common/services/mail.service";
 import { User } from "../../entities";
 
 /** Mirror the service's hash function for test setup */
@@ -41,6 +42,11 @@ describe("UsersService", () => {
     emailVerified: false,
     emailVerifyCode: undefined,
     emailVerifyCodeExpiresAt: undefined,
+    pendingEmail: null,
+    pendingEmailCodeHash: null,
+    pendingEmailExpiresAt: null,
+    pendingEmailAttempts: 0,
+    pendingEmailRequestedAt: null,
   };
 
   const mockUploadsService = {
@@ -49,6 +55,10 @@ describe("UsersService", () => {
 
   const mockPrivacyService = {
     recordAccountDeletion: jest.fn().mockResolvedValue(undefined),
+  };
+
+  const mockMailService = {
+    sendRaw: jest.fn().mockResolvedValue(undefined),
   };
 
   const mockRepository = {
@@ -86,6 +96,10 @@ describe("UsersService", () => {
         {
           provide: PrivacyService,
           useValue: mockPrivacyService,
+        },
+        {
+          provide: MailService,
+          useValue: mockMailService,
         },
       ],
     }).compile();
@@ -334,16 +348,6 @@ describe("UsersService", () => {
       expect(findByEmailSpy).not.toHaveBeenCalled();
     });
 
-    it("should throw ConflictException when email changes to another user's email", async () => {
-      const otherUser = { ...mockUser, id: "user_2", email: "other@example.com" };
-      mockRepository.findOne.mockResolvedValueOnce(mockUser);
-      mockRepository.findOne.mockResolvedValueOnce(otherUser);
-
-      await expect(
-        service.updateProfile("user_1", { email: "other@example.com" })
-      ).rejects.toThrow(ConflictException);
-    });
-
     it("should update fullName individually", async () => {
       mockRepository.findOne.mockResolvedValue(mockUser);
       const updatedUser = { ...mockUser, fullName: "Updated Name" };
@@ -354,14 +358,18 @@ describe("UsersService", () => {
       expect(result).toEqual(updatedUser);
     });
 
-    it("should update email individually", async () => {
+    it("IGNORES any email passed to updateProfile — email only changes via the verified workflow", async () => {
       mockRepository.findOne.mockResolvedValue(mockUser);
-      const updatedUser = { ...mockUser, email: "newemail@example.com" };
-      mockRepository.save.mockResolvedValue(updatedUser);
+      mockRepository.save.mockImplementation(async (u: unknown) => u);
 
-      const result = await service.updateProfile("user_1", { email: "newemail@example.com" });
+      const result = await service.updateProfile("user_1", {
+        // @ts-expect-error — email is intentionally not part of the signature
+        email: "newemail@example.com",
+        fullName: "Renamed",
+      });
 
-      expect(result).toEqual(updatedUser);
+      expect((result as User).email).toBe("john@example.com"); // unchanged
+      expect((result as User).fullName).toBe("Renamed");
     });
 
     it("should update country individually", async () => {
@@ -394,6 +402,156 @@ describe("UsersService", () => {
       const result = await service.changePassword("nonexistent", "newpassword");
 
       expect(result).toBe(false);
+    });
+  });
+
+  describe("email change workflow (Finding 2)", () => {
+    const pgUnique = () =>
+      Object.assign(new QueryFailedError("q", [], new Error("dup")), { code: "23505" });
+
+    it("requestEmailChange stages the new email + code hash after a valid password proof", async () => {
+      mockRepository.findOne
+        .mockResolvedValueOnce({ ...mockUser }) // findById(user)
+        .mockResolvedValueOnce(null); // findByEmail(newEmail) → free
+      mockRepository.save.mockImplementation(async (u: unknown) => u);
+
+      const result = await service.requestEmailChange("user_1", "New@Example.com", "password123");
+
+      expect(result.staged).toBe(true);
+      expect(result.code).toMatch(/^\d{6}$/);
+      const saved = mockRepository.save.mock.calls.at(-1)![0];
+      expect(saved.pendingEmail).toBe("new@example.com"); // normalized
+      expect(saved.pendingEmailCodeHash).toBe(hashCode(result.code!));
+      expect(saved.pendingEmailCodeHash).not.toBe(result.code); // never raw
+      expect(mockMailService.sendRaw).toHaveBeenCalledWith(
+        expect.objectContaining({ to: "new@example.com", sensitive: true }),
+      );
+    });
+
+    it("requestEmailChange rejects a wrong current password (recent-auth proof)", async () => {
+      mockRepository.findOne.mockResolvedValueOnce({ ...mockUser });
+      await expect(
+        service.requestEmailChange("user_1", "new@example.com", "wrong"),
+      ).rejects.toThrow(/current password/i);
+    });
+
+    it("requestEmailChange is enumeration-safe: taken address stages nothing but does not error", async () => {
+      mockRepository.findOne
+        .mockResolvedValueOnce({ ...mockUser })
+        .mockResolvedValueOnce({ ...mockUser, id: "user_2", email: "taken@example.com" });
+      mockRepository.save.mockImplementation(async (u: unknown) => u);
+
+      const result = await service.requestEmailChange("user_1", "taken@example.com", "password123");
+
+      expect(result).toEqual({ staged: false, code: null });
+      expect(mockMailService.sendRaw).not.toHaveBeenCalled();
+    });
+
+    it("requestEmailChange for a social-only account requires a recent login, not a password", async () => {
+      const social = { ...mockUser, hasUsablePassword: false, lastLoginAt: null };
+      mockRepository.findOne.mockResolvedValueOnce(social);
+      await expect(
+        service.requestEmailChange("user_1", "new@example.com"),
+      ).rejects.toThrow(/sign in again/i);
+
+      const recentSocial = { ...mockUser, hasUsablePassword: false, lastLoginAt: new Date() };
+      mockRepository.findOne
+        .mockResolvedValueOnce(recentSocial)
+        .mockResolvedValueOnce(null);
+      mockRepository.save.mockImplementation(async (u: unknown) => u);
+      const ok = await service.requestEmailChange("user_1", "new@example.com");
+      expect(ok.staged).toBe(true);
+    });
+
+    it("confirmEmailChange swaps email, marks verified, clears pending, bumps sessionVersion", async () => {
+      const code = "123456";
+      const pending = {
+        ...mockUser,
+        emailVerified: false,
+        sessionVersion: 3,
+        pendingEmail: "new@example.com",
+        pendingEmailCodeHash: hashCode(code),
+        pendingEmailExpiresAt: new Date(Date.now() + 60_000),
+        pendingEmailAttempts: 0,
+      };
+      mockRepository.findOne.mockResolvedValueOnce(pending);
+      mockRepository.save.mockImplementation(async (u: unknown) => u);
+
+      const result = await service.confirmEmailChange("user_1", code);
+
+      expect(result.email).toBe("new@example.com");
+      expect(result.emailVerified).toBe(true);
+      expect(result.sessionVersion).toBe(4);
+      expect(result.pendingEmail).toBeNull();
+      expect(result.pendingEmailCodeHash).toBeNull();
+    });
+
+    it("confirmEmailChange rejects a wrong code and counts the attempt", async () => {
+      const pending = {
+        ...mockUser,
+        pendingEmail: "new@example.com",
+        pendingEmailCodeHash: hashCode("123456"),
+        pendingEmailExpiresAt: new Date(Date.now() + 60_000),
+        pendingEmailAttempts: 0,
+      };
+      mockRepository.findOne.mockResolvedValueOnce(pending);
+      mockRepository.save.mockImplementation(async (u: unknown) => u);
+
+      await expect(service.confirmEmailChange("user_1", "000000")).rejects.toThrow(/incorrect/i);
+      expect(mockRepository.save.mock.calls.at(-1)![0].pendingEmailAttempts).toBe(1);
+    });
+
+    it("confirmEmailChange rejects an expired code and clears the pending change (no replay)", async () => {
+      const pending = {
+        ...mockUser,
+        pendingEmail: "new@example.com",
+        pendingEmailCodeHash: hashCode("123456"),
+        pendingEmailExpiresAt: new Date(Date.now() - 1000),
+      };
+      mockRepository.findOne.mockResolvedValueOnce(pending);
+      mockRepository.save.mockImplementation(async (u: unknown) => u);
+
+      await expect(service.confirmEmailChange("user_1", "123456")).rejects.toThrow(/expired/i);
+      expect(mockRepository.save.mock.calls.at(-1)![0].pendingEmail).toBeNull();
+    });
+
+    it("confirmEmailChange voids after too many attempts", async () => {
+      const pending = {
+        ...mockUser,
+        pendingEmail: "new@example.com",
+        pendingEmailCodeHash: hashCode("123456"),
+        pendingEmailExpiresAt: new Date(Date.now() + 60_000),
+        pendingEmailAttempts: 5,
+      };
+      mockRepository.findOne.mockResolvedValueOnce(pending);
+      mockRepository.save.mockImplementation(async (u: unknown) => u);
+
+      await expect(service.confirmEmailChange("user_1", "123456")).rejects.toThrow(/too many/i);
+      expect(mockRepository.save.mock.calls.at(-1)![0].pendingEmail).toBeNull();
+    });
+
+    it("confirmEmailChange surfaces a uniqueness collision (concurrent claim) — never false success", async () => {
+      const code = "123456";
+      const pending = {
+        ...mockUser,
+        pendingEmail: "new@example.com",
+        pendingEmailCodeHash: hashCode(code),
+        pendingEmailExpiresAt: new Date(Date.now() + 60_000),
+        pendingEmailAttempts: 0,
+      };
+      mockRepository.findOne
+        .mockResolvedValueOnce(pending) // initial load
+        .mockResolvedValueOnce({ ...pending }); // reload to clear after clash
+      mockRepository.save
+        .mockRejectedValueOnce(pgUnique()) // the swap loses to a concurrent claim
+        .mockImplementation(async (u: unknown) => u);
+
+      await expect(service.confirmEmailChange("user_1", code)).rejects.toThrow(ConflictException);
+    });
+
+    it("confirmEmailChange with no pending change is a clean bad request", async () => {
+      mockRepository.findOne.mockResolvedValueOnce({ ...mockUser, pendingEmail: null });
+      await expect(service.confirmEmailChange("user_1", "123456")).rejects.toThrow(/no pending/i);
     });
   });
 

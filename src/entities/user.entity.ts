@@ -96,4 +96,29 @@ export class User {
   /** Incrementing this invalidates every previously issued consumer access and refresh token. */
   @Column({ type: "int", default: 0 })
   sessionVersion!: number;
+
+  // --- Pending email-change workflow (Finding 2) --------------------------
+  // The primary `email` is only replaced AFTER the user proves control of the
+  // new address via a code sent to it. Until then the requested address lives
+  // here, and only a HASH of the confirmation code is stored (never the raw
+  // code) so a DB read leak cannot be replayed into an email takeover.
+
+  /** The new address awaiting confirmation (normalized lower-case). */
+  @Column({ type: "varchar", nullable: true })
+  pendingEmail?: string | null;
+
+  /** SHA-256 hash of the single-use confirmation code for `pendingEmail`. */
+  @Column({ type: "varchar", nullable: true })
+  pendingEmailCodeHash?: string | null;
+
+  @Column({ type: "timestamp", nullable: true })
+  pendingEmailExpiresAt?: Date | null;
+
+  /** Failed confirmation attempts; the pending change is voided after 5. */
+  @Column({ type: "int", default: 0 })
+  pendingEmailAttempts!: number;
+
+  /** When the current pending change was requested — powers the request cooldown. */
+  @Column({ type: "timestamp", nullable: true })
+  pendingEmailRequestedAt?: Date | null;
 }

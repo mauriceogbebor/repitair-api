@@ -10,9 +10,8 @@ class UpdateProfileDto {
   @IsString()
   fullName?: string;
 
-  @IsOptional()
-  @IsEmail()
-  email?: string;
+  // NOTE: email is deliberately NOT accepted here. Changing the primary email
+  // goes through the verified pending-email workflow below.
 
   @IsOptional()
   @IsString()
@@ -21,6 +20,21 @@ class UpdateProfileDto {
   @IsOptional()
   @IsString()
   avatarUrl?: string;
+}
+
+class RequestEmailChangeDto {
+  @IsEmail()
+  newEmail!: string;
+
+  /** Required for password accounts; social-only accounts prove recency via a fresh login. */
+  @IsOptional()
+  @IsString()
+  currentPassword?: string;
+}
+
+class ConfirmEmailChangeDto {
+  @IsString()
+  code!: string;
 }
 
 class ChangePasswordDto {
@@ -68,6 +82,8 @@ export class UsersController {
       id: foundUser.id,
       fullName: foundUser.fullName,
       email: foundUser.email,
+      emailVerified: foundUser.emailVerified,
+      pendingEmail: foundUser.pendingEmail ?? null,
       country: foundUser.country,
       connectedPlatforms: foundUser.connectedPlatforms,
       avatarUrl: foundUser.avatarUrl ?? null,
@@ -85,9 +101,44 @@ export class UsersController {
       id: foundUser.id,
       fullName: foundUser.fullName,
       email: foundUser.email,
+      emailVerified: foundUser.emailVerified,
+      pendingEmail: foundUser.pendingEmail ?? null,
       country: foundUser.country,
       connectedPlatforms: foundUser.connectedPlatforms,
       avatarUrl: foundUser.avatarUrl ?? null,
+    };
+  }
+
+  /**
+   * Request an email change. Requires a recent-authentication proof and sends a
+   * single-use confirmation code to the NEW address. The response never reveals
+   * whether the address already belongs to another account.
+   */
+  @Post("email/change-request")
+  async requestEmailChange(
+    @CurrentUser() user: CurrentUserPayload,
+    @Body() body: RequestEmailChangeDto,
+  ) {
+    await this.usersService.requestEmailChange(user.sub, body.newEmail, body.currentPassword);
+    return {
+      message:
+        "If that address is available, we've sent a confirmation code to it. Enter the code to finish changing your email.",
+    };
+  }
+
+  /** Confirm a pending email change with the code sent to the new address. */
+  @Post("email/change-confirm")
+  async confirmEmailChange(
+    @CurrentUser() user: CurrentUserPayload,
+    @Body() body: ConfirmEmailChangeDto,
+  ) {
+    const updated = await this.usersService.confirmEmailChange(user.sub, body.code);
+    return {
+      id: updated.id,
+      email: updated.email,
+      emailVerified: updated.emailVerified,
+      pendingEmail: updated.pendingEmail ?? null,
+      message: "Your email address has been updated. Please sign in again.",
     };
   }
 
