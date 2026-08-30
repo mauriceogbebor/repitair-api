@@ -240,8 +240,8 @@ export class AdminIamService {
     try {
       await this.mail.sendRaw({
         to: email,
-        subject: "You are invited to Repitair Admin",
-        html: `<p>Hello ${this.escapeHtml(fullName)},</p><p>You have been invited to Repitair Admin. This link expires in ${INVITATION_TTL_HOURS} hours.</p><p><a href="${this.escapeHtml(acceptUrl)}">Accept invitation</a></p>`,
+        subject: "You're invited to Repitair Admin",
+        html: this.buildInvitationEmail(fullName, acceptUrl),
         sensitive: true,
       });
       return true;
@@ -249,6 +249,88 @@ export class AdminIamService {
       this.logger.error(`Failed to email admin invitation to ${email}: ${error instanceof Error ? error.message : String(error)}`);
       return false;
     }
+  }
+
+  /**
+   * Branded, email-client-safe invitation HTML. Mail clients strip <style>, CSS
+   * variables, and external CSS, so everything is inline hex on a table layout.
+   * Colours mirror the admin dark theme (charcoal surfaces, neon-green action).
+   */
+  private buildInvitationEmail(fullName: string, acceptUrl: string): string {
+    const name = this.escapeHtml(fullName?.trim() || "there");
+    const url = this.escapeHtml(acceptUrl);
+    const expiryHours = INVITATION_TTL_HOURS;
+    return `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Repitair Admin invitation</title>
+  </head>
+  <body style="margin:0;padding:0;background-color:#0e0f12;">
+    <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:#0e0f12;font-size:1px;line-height:1px;">
+      Accept your invitation to Repitair Admin. This secure link expires in ${expiryHours} hours.
+    </div>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#0e0f12;padding:32px 16px;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="480" cellpadding="0" cellspacing="0" style="width:480px;max-width:100%;background-color:#141619;border:1px solid #23262b;border-radius:16px;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Inter,sans-serif;">
+            <tr>
+              <td style="padding:32px 32px 8px 32px;">
+                <span style="display:inline-block;font-size:12px;font-weight:600;letter-spacing:0.14em;text-transform:uppercase;color:#17cf59;">
+                  <span style="display:inline-block;width:8px;height:8px;background-color:#1df166;border-radius:9999px;vertical-align:middle;margin-right:8px;"></span>Repitair Admin
+                </span>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:8px 32px 0 32px;">
+                <h1 style="margin:0;font-size:22px;line-height:1.3;font-weight:600;color:#f2f4f6;letter-spacing:-0.01em;">You've been invited</h1>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:16px 32px 0 32px;">
+                <p style="margin:0;font-size:15px;line-height:1.6;color:#a7adb5;">
+                  Hi ${name}, you've been invited to the Repitair Admin console. Set your password and enroll multi-factor authentication to activate your account.
+                </p>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:28px 32px 8px 32px;">
+                <table role="presentation" cellpadding="0" cellspacing="0">
+                  <tr>
+                    <td style="border-radius:10px;background-color:#17cf59;">
+                      <a href="${url}" style="display:inline-block;padding:14px 28px;font-size:15px;font-weight:600;color:#08090b;text-decoration:none;border-radius:10px;">Accept invitation</a>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:16px 32px 0 32px;">
+                <p style="margin:0;font-size:13px;line-height:1.5;color:#6b7178;">
+                  This secure link expires in ${expiryHours} hours and can be used once. If the button doesn't work, paste this link into your browser:
+                </p>
+                <p style="margin:8px 0 0 0;font-size:12px;line-height:1.5;word-break:break-all;">
+                  <a href="${url}" style="color:#17cf59;text-decoration:none;">${url}</a>
+                </p>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:24px 32px 32px 32px;">
+                <hr style="border:none;border-top:1px solid #23262b;margin:0 0 16px 0;" />
+                <p style="margin:0;font-size:12px;line-height:1.5;color:#6b7178;">
+                  If you weren't expecting this invitation, you can safely ignore this email — no account is created until you accept.
+                </p>
+                <p style="margin:12px 0 0 0;font-size:12px;color:#4b5158;">Repitair — Share your music, your way.</p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`;
   }
 
   async getInvitation(token: string) {
