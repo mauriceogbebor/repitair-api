@@ -118,6 +118,7 @@ export class AuthService {
       provider: dto.provider,
       subject: identity.subject,
       email: identity.email,
+      emailVerified: identity.emailVerified,
       fullName: dto.fullName || identity.name || undefined,
       picture: identity.picture,
     });
@@ -140,6 +141,7 @@ export class AuthService {
       provider: dto.provider,
       subject: identity.subject,
       email: identity.email,
+      emailVerified: identity.emailVerified,
       fullName: dto.fullName || identity.name || undefined,
       picture: identity.picture,
     });
@@ -216,20 +218,64 @@ export class AuthService {
     return this.getLinkedAuthProviders(userId);
   }
 
+  /**
+   * Whether a nonce is mandatory for social auth right now. Nonce binding is the
+   * replay defense for OAuth. Older released clients do not send one, so we allow
+   * a single, explicit, time-bounded compatibility window controlled by config —
+   * never an indefinitely-optional nonce:
+   *   - `SOCIAL_AUTH_REQUIRE_NONCE=true` forces enforcement immediately, OR
+   *   - the current date is on/after `SOCIAL_AUTH_NONCE_REQUIRED_AFTER` (ISO date).
+   * Once either trips, a request without a verifiable nonce is rejected.
+   */
+  private nonceRequired(): boolean {
+    if (this.configService.get<string>("SOCIAL_AUTH_REQUIRE_NONCE") === "true") {
+      return true;
+    }
+    const cutoff = this.configService.get<string>("SOCIAL_AUTH_NONCE_REQUIRED_AFTER");
+    if (cutoff) {
+      const cutoffTime = Date.parse(cutoff);
+      if (!Number.isNaN(cutoffTime) && Date.now() >= cutoffTime) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   private async verifySocialToken(
     dto: SocialAuthDto,
-  ): Promise<{ subject: string; email: string | null; name?: string | null; picture?: string | null }> {
+  ): Promise<{
+    subject: string;
+    email: string | null;
+    emailVerified: boolean;
+    name?: string | null;
+    picture?: string | null;
+  }> {
+    const requireNonce = this.nonceRequired();
     if (dto.provider === "google") {
-      const payload = await this.verifyGoogleIdToken(dto.idToken);
-      return { subject: payload.sub, email: payload.email, name: payload.name, picture: payload.picture };
+      const payload = await this.verifyGoogleIdToken(dto.idToken, dto.nonce, requireNonce);
+      return {
+        subject: payload.sub,
+        email: payload.email,
+        emailVerified: payload.emailVerified,
+        name: payload.name,
+        picture: payload.picture,
+      };
     }
-    const payload = await this.verifyAppleIdToken(dto.idToken, dto.nonce);
-    return { subject: payload.sub, email: payload.email, name: null, picture: null };
+    const payload = await this.verifyAppleIdToken(dto.idToken, dto.nonce, requireNonce);
+    return {
+      subject: payload.sub,
+      email: payload.email,
+      emailVerified: payload.emailVerified,
+      name: null,
+      picture: null,
+    };
   }
 
   private async verifyGoogleIdToken(
     idToken: string,
-  ): Promise<{ email: string; name?: string; sub: string; picture?: string | null }> {
+    expectedNonce?: string,
+    requireNonce = false,
+  ): Promise<{ email: string; emailVerified: boolean; name?: string; sub: string; picture?: string | null }> {
     // The token's `aud` is the client ID that INITIATED the OAuth request. On
     // iOS that is the iOS client ID, on Android the Android client ID — NOT the
     // web `GOOGLE_CLIENT_ID`. All client IDs the app can use must therefore be
@@ -262,10 +308,12 @@ export class AuthService {
       }
       const payload = (await response.json()) as {
         email?: string;
+        email_verified?: boolean | string;
         name?: string;
         aud?: string;
         sub?: string;
         picture?: string;
+        nonce?: string;
       };
 
       if (!payload.aud || !expectedClientIds.includes(payload.aud)) {
@@ -287,7 +335,24 @@ export class AuthService {
         throw new UnauthorizedException("Google token missing subject");
       }
 
-      return { email: payload.email, name: payload.name, sub: payload.sub, picture: payload.picture ?? null };
+      // Nonce binding (replay defense). Enforce when required; when a nonce is
+      // supplied it must match the token's `nonce` claim regardless.
+      if (requireNonce && !expectedNonce) {
+        throw new UnauthorizedException("Google token missing required nonce");
+      }
+      if (expectedNonce && payload.nonce !== expectedNonce) {
+        this.logger.warn("provider=google nonce_mismatch");
+        throw new UnauthorizedException("Google token nonce mismatch");
+      }
+
+      return {
+        email: payload.email,
+        emailVerified:
+          payload.email_verified === true || payload.email_verified === "true",
+        name: payload.name,
+        sub: payload.sub,
+        picture: payload.picture ?? null,
+      };
     } catch (error) {
       if (error instanceof UnauthorizedException || error instanceof ServiceUnavailableException) throw error;
       this.logger.error("Google token verification failed", error);
@@ -305,11 +370,13 @@ export class AuthService {
   private async verifyAppleIdToken(
     idToken: string,
     nonce?: string,
-  ): Promise<{ email: string; sub: string }> {
-    const { email, sub } = await this.appleIdentity.verifyIdentityToken(idToken, {
-      expectedNonce: nonce,
-    });
-    return { email, sub };
+    requireNonce = false,
+  ): Promise<{ email: string; emailVerified: boolean; sub: string }> {
+    const { email, sub, emailVerified } = await this.appleIdentity.verifyIdentityToken(
+      idToken,
+      { expectedNonce: nonce, requireNonce },
+    );
+    return { email, sub, emailVerified };
   }
 
   async forgotPassword(email: string) {
