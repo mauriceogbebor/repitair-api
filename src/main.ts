@@ -127,8 +127,14 @@ function validateEnvironment(): void {
   } else if (!process.env.APPLE_MUSIC_PRIVATE_KEY.includes("BEGIN PRIVATE KEY")) {
     warnings.push("APPLE_MUSIC_PRIVATE_KEY does not look like a PEM private key — Apple Music lookup may fail");
   }
-  if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
-    warnings.push("SMTP credentials missing (SMTP_HOST, SMTP_USER, SMTP_PASS) — email sending will fail");
+  const hasSendGridEmail = Boolean(process.env.SENDGRID_API_KEY);
+  const hasSmtpEmail = Boolean(
+    process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS,
+  );
+  if (!hasSendGridEmail && !hasSmtpEmail) {
+    warnings.push(
+      "Email delivery credentials missing (SENDGRID_API_KEY or SMTP_HOST, SMTP_USER, SMTP_PASS) — email sending will fail",
+    );
   }
   if (!process.env.ADMIN_BOOTSTRAP_EMAIL || !process.env.ADMIN_BOOTSTRAP_PASSWORD || !process.env.ADMIN_BOOTSTRAP_MFA_SECRET) {
     warnings.push("Admin bootstrap credentials missing (ADMIN_BOOTSTRAP_EMAIL, ADMIN_BOOTSTRAP_PASSWORD, ADMIN_BOOTSTRAP_MFA_SECRET) — the first admin account will not be auto-created");

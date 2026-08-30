@@ -111,7 +111,37 @@ describe("AppleIdentityService", () => {
 
       const result = await service.verifyIdentityToken(signToken());
 
-      expect(result).toEqual({ email: "user@example.com", sub: "apple-sub-1" });
+      expect(result).toEqual({ email: "user@example.com", sub: "apple-sub-1", emailVerified: false });
+    });
+
+    it("surfaces Apple's email_verified claim (string \"true\") as emailVerified", async () => {
+      const { service } = makeService();
+      mockJwks([jwkFor("kidA", appleKeyPair.publicKey)]);
+
+      const result = await service.verifyIdentityToken(signToken({ email_verified: "true" }));
+
+      expect(result.emailVerified).toBe(true);
+    });
+
+    it("requires a nonce when requireNonce is set and none is supplied", async () => {
+      const { service } = makeService();
+      mockJwks([jwkFor("kidA", appleKeyPair.publicKey)]);
+
+      await expect(
+        service.verifyIdentityToken(signToken({ nonce: "abc" }), { requireNonce: true }),
+      ).rejects.toThrow(UnauthorizedException);
+      expect(loggedCode()).toBe("nonce_required");
+    });
+
+    it("accepts a matching nonce when requireNonce is set", async () => {
+      const { service } = makeService();
+      mockJwks([jwkFor("kidA", appleKeyPair.publicKey)]);
+
+      const result = await service.verifyIdentityToken(
+        signToken({ nonce: "abc" }),
+        { requireNonce: true, expectedNonce: "abc" },
+      );
+      expect(result.sub).toBe("apple-sub-1");
     });
 
     it("accepts a token whose aud is a secondary configured client (Services ID)", async () => {
