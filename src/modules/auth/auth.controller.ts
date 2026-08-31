@@ -159,7 +159,7 @@ export class AuthController {
   @Post("upgrade-session")
   @UseGuards(JwtAuthGuard)
   upgradeSession(@CurrentUser() user: CurrentUserPayload) {
-    return this.authService.upgradeSession(user.token, user.sub);
+    return this.authService.upgradeSession(user.token, user.sub, user.authTime);
   }
 
   /**

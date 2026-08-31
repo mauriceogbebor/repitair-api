@@ -65,6 +65,7 @@ describe("AuthService", () => {
     const mockTokenBlacklist = {
       add: jest.fn(),
       isBlacklisted: jest.fn().mockReturnValue(false),
+      consumeOnce: jest.fn().mockResolvedValue(true),
     };
 
     const mockAppleIdentity = {
@@ -611,6 +612,15 @@ describe("AuthService", () => {
       expect((authService as any).nonceRequired()).toBe(false); // cutoff in the future
     });
 
+    it("requires nonces by default in production", () => {
+      mockConfigService.get.mockImplementation((key: string) => {
+        if (key === "NODE_ENV") return "production";
+        return undefined;
+      });
+
+      expect((authService as any).nonceRequired()).toBe(true);
+    });
+
     it("rejects a Google token whose aud is not in the accepted set", async () => {
       mockConfigService.get.mockImplementation((key: string) => {
         if (key === "GOOGLE_CLIENT_ID") return "web.apps.googleusercontent.com";
@@ -697,6 +707,26 @@ describe("AuthService", () => {
       expect(result).toEqual(
         expect.objectContaining({ token: mockToken, refreshToken: expect.any(String) }),
       );
+    });
+
+    it("rejects a replayed social nonce before resolving an account", async () => {
+      appleIdentity.verifyIdentityToken.mockResolvedValue({
+        email: "john@example.com",
+        sub: "apple-sub-replay",
+        emailVerified: true,
+        exp: Math.floor(Date.now() / 1000) + 300,
+      });
+      (tokenBlacklist.consumeOnce as jest.Mock).mockResolvedValueOnce(false);
+
+      await expect(
+        authService.socialAuth({
+          provider: "apple",
+          idToken: "replayed-identity-token",
+          nonce: "already-used",
+        }),
+      ).rejects.toThrow(new UnauthorizedException("Social sign-in nonce has already been used"));
+
+      expect(socialIdentity.resolveUser).not.toHaveBeenCalled();
     });
 
     it("socialAuth resolves Google by provider subject and passes the picture through", async () => {

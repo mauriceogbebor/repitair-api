@@ -111,7 +111,12 @@ describe("AppleIdentityService", () => {
 
       const result = await service.verifyIdentityToken(signToken());
 
-      expect(result).toEqual({ email: "user@example.com", sub: "apple-sub-1", emailVerified: false });
+      expect(result).toEqual({
+        email: "user@example.com",
+        sub: "apple-sub-1",
+        emailVerified: false,
+        exp: expect.any(Number),
+      });
     });
 
     it("surfaces Apple's email_verified claim (string \"true\") as emailVerified", async () => {

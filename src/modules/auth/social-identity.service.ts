@@ -1,6 +1,7 @@
 import { ConflictException, Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { QueryFailedError, Repository } from "typeorm";
+import { createHash } from "node:crypto";
 
 import { SocialIdentity, type SocialAuthProvider, User } from "../../entities";
 import { UsersService } from "../users/users.service";
@@ -113,7 +114,8 @@ export class SocialIdentityService {
           );
         } else {
           // Conflict with an untrusted local account — keep them separate.
-          user = await this.usersService.createSocialUser({
+          user = await this.createIsolatedSocialUser({
+            subject: input.subject,
             fullName: input.fullName?.trim() || this.deriveName(email),
             email: this.syntheticEmail(input.provider, input.subject),
             avatarUrl: input.picture ?? undefined,
@@ -127,7 +129,8 @@ export class SocialIdentityService {
       // 3. No linkable local account (or relay / no email): create a new user.
       //    Use the real email only when it is a non-relay address with no
       //    pre-existing owner; otherwise a stable synthetic address.
-      user = await this.usersService.createSocialUser({
+      user = await this.createIsolatedSocialUser({
+        subject: input.subject,
         fullName: input.fullName?.trim() || this.deriveName(email),
         email:
           email && !isRelay
@@ -292,9 +295,61 @@ export class SocialIdentityService {
     return words.length ? words.join(" ") : "Repitair User";
   }
 
+  /**
+   * Create a social user without ever adopting the owner of a colliding real
+   * email. If that address is claimed after our lookup, retry with the reserved
+   * provider-subject address. A collision on the reserved address is safe to
+   * reuse only when it is already a social-only account for the same provider.
+   */
+  private async createIsolatedSocialUser(data: {
+    subject: string;
+    fullName: string;
+    email: string;
+    avatarUrl?: string;
+    signupSource: SocialAuthProvider;
+  }): Promise<User> {
+    const { subject, ...userData } = data;
+    const synthetic = this.syntheticEmail(data.signupSource, subject);
+
+    try {
+      return await this.usersService.createSocialUser(userData);
+    } catch (error) {
+      if (!(error instanceof ConflictException)) throw error;
+    }
+
+    // A real email was claimed after the preceding lookup. Never adopt its
+    // owner; isolate this identity behind its provider-subject address.
+    if (userData.email !== synthetic) {
+      try {
+        return await this.usersService.createSocialUser({
+          ...userData,
+          email: synthetic,
+        });
+      } catch (error) {
+        if (!(error instanceof ConflictException)) throw error;
+      }
+    }
+
+    // Concurrent requests for the same provider subject may both reach the
+    // synthetic insert. Reuse only an account that is provably the matching
+    // social-only account; a password account can never claim this namespace.
+    const existing = await this.usersService.findByEmail(synthetic);
+    if (
+      existing &&
+      existing.signupSource === data.signupSource &&
+      existing.hasUsablePassword === false
+    ) {
+      return existing;
+    }
+    throw new ConflictException("Could not safely create the social account");
+  }
+
   /** Stable placeholder email when a provider genuinely supplies none. */
   private syntheticEmail(provider: SocialAuthProvider, subject: string): string {
-    const safe = subject.replace(/[^a-zA-Z0-9]/g, "").slice(0, 40) || "user";
-    return `${provider}_${safe}@users.repitair.com`;
+    const digest = createHash("sha256")
+      .update(`${provider}:${subject}`)
+      .digest("hex")
+      .slice(0, 40);
+    return `${provider}_${digest}@social.repitair.invalid`;
   }
 }

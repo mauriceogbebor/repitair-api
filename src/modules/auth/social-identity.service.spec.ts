@@ -145,6 +145,33 @@ describe("SocialIdentityService", () => {
     expect(result).toBe(createdUser);
   });
 
+  it("PRE-HIJACK RACE: retries with a synthetic address instead of adopting the real-email winner", async () => {
+    repo.findOne.mockResolvedValue(null);
+    users.findByEmail.mockResolvedValue(null);
+    users.createSocialUser
+      .mockRejectedValueOnce(new ConflictException("email claimed"))
+      .mockResolvedValueOnce({
+        id: "isolated-social-user",
+        email: "google_hash@social.repitair.invalid",
+        signupSource: "google",
+        hasUsablePassword: false,
+      });
+
+    const result = await service.resolveUser({
+      provider: "google",
+      subject: "google-racing-victim",
+      email: "victim@example.com",
+      emailVerified: true,
+    });
+
+    expect(users.createSocialUser).toHaveBeenCalledTimes(2);
+    expect(users.createSocialUser.mock.calls[0][0].email).toBe("victim@example.com");
+    expect(users.createSocialUser.mock.calls[1][0].email).toMatch(
+      /^google_[a-f0-9]{40}@social\.repitair\.invalid$/,
+    );
+    expect(result).toEqual(expect.objectContaining({ id: "isolated-social-user" }));
+  });
+
   it("CONCURRENCY: resolveUser loses the insert race and returns the WINNING row's user (no false success)", async () => {
     const pgUnique = Object.assign(new (require("typeorm").QueryFailedError)("q", [], new Error("dup")), { code: "23505" });
     repo.findOne

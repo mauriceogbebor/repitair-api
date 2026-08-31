@@ -3,7 +3,7 @@ import { ConfigService } from "@nestjs/config";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import { v4 as uuid } from "uuid";
+import { randomUUID } from "crypto";
 import { UploadResponseDto } from "./dto/upload-response.dto";
 
 // S3 types — only used when UPLOAD_PROVIDER=s3. The actual @aws-sdk/client-s3
@@ -177,7 +177,7 @@ export class UploadsService {
 
     // Generate unique filename
     const ext = this.getFileExtension(filename, mimetype);
-    const uniqueFilename = `${uuid()}${ext}`;
+    const uniqueFilename = `${randomUUID()}${ext}`;
 
     try {
       if (this.uploadProvider === "s3") {

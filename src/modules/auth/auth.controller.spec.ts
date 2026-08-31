@@ -409,12 +409,17 @@ describe("AuthController", () => {
         sub: "user_1",
         email: "john@example.com",
         token: "legacy-access-token",
+        authTime: 1_700_000_000,
       };
       const response = { token: "next-access", refreshToken: "next-refresh" };
       (authService.upgradeSession as jest.Mock).mockResolvedValue(response);
 
       await expect(authController.upgradeSession(user)).resolves.toEqual(response);
-      expect(authService.upgradeSession).toHaveBeenCalledWith(user.token, user.sub);
+      expect(authService.upgradeSession).toHaveBeenCalledWith(
+        user.token,
+        user.sub,
+        user.authTime,
+      );
     });
   });
 
