@@ -45,20 +45,23 @@ export interface BrandedEmailOptions {
   /** Optional small muted note (expiry, safety guidance). */
   note?: string;
   /**
-   * Logo image URL. Falls back to EMAIL_LOGO_URL, then the admin brand asset at
-   * ADMIN_FRONTEND_ORIGIN, then a text wordmark. Must be reachable over HTTPS
-   * and legible on a dark background.
+   * Logo image URL. Falls back to EMAIL_LOGO_URL, then the public marketing
+   * asset. Must be a PUBLICLY reachable HTTPS image (mail clients like Gmail
+   * proxy-fetch it): auth-gated hosts such as the admin app will render a broken
+   * image, which is why the default is the marketing domain — not
+   * ADMIN_FRONTEND_ORIGIN. Set EMAIL_LOGO_URL="" to force the text wordmark.
    */
   logoUrl?: string | null;
 }
 
+/** Public, dark-background-safe Repitair wordmark on the marketing domain. */
+const DEFAULT_LOGO_URL = "https://repitair.com/images/logo.png";
+
 function resolveLogoUrl(explicit?: string | null): string | null {
-  if (explicit) return explicit;
-  const fromEnv = process.env.EMAIL_LOGO_URL?.trim();
-  if (fromEnv) return fromEnv;
-  const adminOrigin = process.env.ADMIN_FRONTEND_ORIGIN?.trim();
-  if (adminOrigin) return `${adminOrigin.replace(/\/$/, "")}/brand/repitair-logo.png`;
-  return null;
+  if (explicit !== undefined && explicit !== null) return explicit || null;
+  const fromEnv = process.env.EMAIL_LOGO_URL;
+  if (fromEnv !== undefined) return fromEnv.trim() || null;
+  return DEFAULT_LOGO_URL;
 }
 
 function renderHeader(logoUrl: string | null): string {
