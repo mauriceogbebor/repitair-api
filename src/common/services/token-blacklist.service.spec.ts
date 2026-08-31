@@ -29,6 +29,36 @@ describe("TokenBlacklistService", () => {
     });
   });
 
+  describe("consumeOnce", () => {
+    it("accepts the first claim and rejects a replay", async () => {
+      const expiresAt = Math.floor(Date.now() / 1000) + 60;
+
+      await expect(service.consumeOnce("one-time-key", expiresAt)).resolves.toBe(true);
+      await expect(service.consumeOnce("one-time-key", expiresAt)).resolves.toBe(false);
+    });
+
+    it("claims a Redis key atomically with NX and mirrors it locally", async () => {
+      const redis = {
+        status: "ready",
+        set: jest.fn().mockResolvedValue("OK"),
+      };
+      await service.onModuleDestroy();
+      service = new TokenBlacklistService(redis);
+      const expiresAt = Math.floor(Date.now() / 1000) + 60;
+
+      await expect(service.consumeOnce("redis-one-time-key", expiresAt)).resolves.toBe(true);
+      expect(redis.set).toHaveBeenCalledWith(
+        "token:blacklist:redis-one-time-key",
+        "1",
+        "EX",
+        expect.any(Number),
+        "NX",
+      );
+      await expect(service.consumeOnce("redis-one-time-key", expiresAt)).resolves.toBe(false);
+      expect(redis.set).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe("add with past-expiry timestamp", () => {
     it("should return false when token is already expired", async () => {
       const token = "expired.token";

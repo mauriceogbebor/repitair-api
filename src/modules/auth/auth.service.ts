@@ -12,7 +12,7 @@ import {
 } from "@nestjs/common";
 import { JwtService, type JwtSignOptions } from "@nestjs/jwt";
 import { ConfigService } from "@nestjs/config";
-import { createHmac, createPublicKey, randomBytes, randomUUID, timingSafeEqual } from "crypto";
+import { createHash, createHmac, createPublicKey, randomBytes, randomUUID, timingSafeEqual } from "crypto";
 import * as jwt from "jsonwebtoken";
 
 import { UsersService } from "../users/users.service";
@@ -239,7 +239,10 @@ export class AuthService {
         return true;
       }
     }
-    return false;
+    // New production deployments fail closed. A compatibility window must be
+    // explicit and future-dated; development/test remain permissive so provider
+    // fixtures that predate nonce support can still run.
+    return this.configService.get<string>("NODE_ENV") === "production";
   }
 
   private async verifySocialToken(
@@ -254,6 +257,7 @@ export class AuthService {
     const requireNonce = this.nonceRequired();
     if (dto.provider === "google") {
       const payload = await this.verifyGoogleIdToken(dto.idToken, dto.nonce, requireNonce);
+      await this.consumeSocialNonce(dto.provider, dto.nonce, payload.exp);
       return {
         subject: payload.sub,
         email: payload.email,
@@ -263,6 +267,7 @@ export class AuthService {
       };
     }
     const payload = await this.verifyAppleIdToken(dto.idToken, dto.nonce, requireNonce);
+    await this.consumeSocialNonce(dto.provider, dto.nonce, payload.exp);
     return {
       subject: payload.sub,
       email: payload.email,
@@ -272,11 +277,25 @@ export class AuthService {
     };
   }
 
+  private async consumeSocialNonce(
+    provider: SocialAuthProvider,
+    nonce?: string,
+    expiresAt?: number,
+  ): Promise<void> {
+    if (!nonce) return;
+    const digest = createHash("sha256").update(`${provider}:${nonce}`).digest("hex");
+    const accepted = await this.tokenBlacklist.consumeOnce(`social-nonce:${digest}`, expiresAt);
+    if (!accepted) {
+      this.logger.warn(`provider=${provider} nonce_replay`);
+      throw new UnauthorizedException("Social sign-in nonce has already been used");
+    }
+  }
+
   private async verifyGoogleIdToken(
     idToken: string,
     expectedNonce?: string,
     requireNonce = false,
-  ): Promise<{ email: string; emailVerified: boolean; name?: string; sub: string; picture?: string | null }> {
+  ): Promise<{ email: string; emailVerified: boolean; name?: string; sub: string; picture?: string | null; exp?: number }> {
     // The token's `aud` is the client ID that INITIATED the OAuth request. On
     // iOS that is the iOS client ID, on Android the Android client ID — NOT the
     // web `GOOGLE_CLIENT_ID`. All client IDs the app can use must therefore be
@@ -315,6 +334,7 @@ export class AuthService {
         sub?: string;
         picture?: string;
         nonce?: string;
+        exp?: string | number;
       };
 
       if (!payload.aud || !expectedClientIds.includes(payload.aud)) {
@@ -353,6 +373,7 @@ export class AuthService {
         name: payload.name,
         sub: payload.sub,
         picture: payload.picture ?? null,
+        exp: payload.exp == null ? undefined : Number(payload.exp),
       };
     } catch (error) {
       if (error instanceof UnauthorizedException || error instanceof ServiceUnavailableException) throw error;
@@ -372,12 +393,12 @@ export class AuthService {
     idToken: string,
     nonce?: string,
     requireNonce = false,
-  ): Promise<{ email: string; emailVerified: boolean; sub: string }> {
-    const { email, sub, emailVerified } = await this.appleIdentity.verifyIdentityToken(
+  ): Promise<{ email: string; emailVerified: boolean; sub: string; exp?: number }> {
+    const { email, sub, emailVerified, exp } = await this.appleIdentity.verifyIdentityToken(
       idToken,
       { expectedNonce: nonce, requireNonce },
     );
-    return { email, sub, emailVerified };
+    return { email, sub, emailVerified, exp };
   }
 
   async forgotPassword(email: string) {
@@ -427,7 +448,7 @@ export class AuthService {
   }
 
   async refresh(refreshToken: string) {
-    let payload: { sub: string; email: string; jti: string; type: string; sessionVersion?: number; exp?: number };
+    let payload: { sub: string; email: string; jti: string; type: string; sessionVersion?: number; authTime?: number; exp?: number };
     try {
       payload = this.jwtService.verify(refreshToken, { secret: this.getRefreshSecret() }) as typeof payload;
     } catch (error) {
@@ -459,17 +480,17 @@ export class AuthService {
     }
 
     await this.tokenBlacklist.add(blacklistKey, payload.exp);
-    return this.issueSession(user);
+    return this.issueSession(user, payload.authTime);
   }
 
-  async upgradeSession(currentToken: string, userId: string) {
+  async upgradeSession(currentToken: string, userId: string, authTime?: number) {
     const user = await this.usersService.findById(userId);
     if (!user) {
       throw this.sessionUnauthorized("SESSION_INVALID", "The user session no longer exists.");
     }
     this.assertUserCanSignIn(user);
     await this.revokeAccessToken(currentToken);
-    return this.issueSession(user);
+    return this.issueSession(user, authTime);
   }
 
   async sendEmailVerification(userId: string, email: string) {
@@ -508,8 +529,19 @@ export class AuthService {
     return { verified: true };
   }
 
-  private signToken(userId: string, email: string, sessionVersion: number): string {
-    return this.jwtService.sign({ sub: userId, email, sessionVersion, jti: randomUUID() });
+  private signToken(
+    userId: string,
+    email: string,
+    sessionVersion: number,
+    authTime: number,
+  ): string {
+    return this.jwtService.sign({
+      sub: userId,
+      email,
+      sessionVersion,
+      authTime,
+      jti: randomUUID(),
+    });
   }
 
   private issueSession(user: {
@@ -520,13 +552,21 @@ export class AuthService {
     connectedPlatforms: string[];
     avatarUrl?: string | null;
     sessionVersion?: number;
-  }) {
+  }, existingAuthTime?: number) {
     const sessionVersion = user.sessionVersion ?? 0;
-    const token = this.signToken(user.id, user.email, sessionVersion);
+    const authTime = existingAuthTime ?? Math.floor(Date.now() / 1000);
+    const token = this.signToken(user.id, user.email, sessionVersion, authTime);
     const accessPayload = this.jwtService.decode(token) as { exp?: number } | null;
     const refreshJti = randomUUID();
     const refreshToken = this.jwtService.sign(
-      { sub: user.id, email: user.email, sessionVersion, jti: refreshJti, type: "refresh" },
+      {
+        sub: user.id,
+        email: user.email,
+        sessionVersion,
+        authTime,
+        jti: refreshJti,
+        type: "refresh",
+      },
       {
         secret: this.getRefreshSecret(),
         expiresIn: (this.configService.get<string>("JWT_REFRESH_EXPIRES_IN") ?? "30d") as JwtSignOptions["expiresIn"],

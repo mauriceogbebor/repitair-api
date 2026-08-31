@@ -77,6 +77,38 @@ export class TokenBlacklistService {
     return locallyBlacklisted;
   }
 
+  /** Atomically claim a one-time key until expiry. Returns false on replay. */
+  async consumeOnce(token: string, expiresAt?: number): Promise<boolean> {
+    const now = Math.floor(Date.now() / 1000);
+    const expiry = expiresAt ?? now + 10 * 60;
+    if (expiry <= now || this.isLocallyBlacklisted(token)) return false;
+    const ttl = expiry - now;
+
+    if (isRedisReady(this.redis)) {
+      try {
+        const result = await this.redis.set(
+          this.keyPrefix + token,
+          "1",
+          "EX",
+          ttl,
+          "NX",
+        );
+        if (result !== "OK") return false;
+        this.blacklist.set(token, expiry);
+        this.hasLoggedRedisFailure = false;
+        return true;
+      } catch (error) {
+        this.logRedisFailure("consume one-time key in", error);
+      }
+    }
+
+    // No await between the check above and this write: within one process this
+    // is an atomic claim on the JavaScript event loop.
+    if (this.isLocallyBlacklisted(token)) return false;
+    this.blacklist.set(token, expiry);
+    return true;
+  }
+
   private isLocallyBlacklisted(token: string): boolean {
     const expiry = this.blacklist.get(token);
     if (!expiry) return false;

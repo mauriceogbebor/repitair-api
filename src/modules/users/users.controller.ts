@@ -119,7 +119,12 @@ export class UsersController {
     @CurrentUser() user: CurrentUserPayload,
     @Body() body: RequestEmailChangeDto,
   ) {
-    await this.usersService.requestEmailChange(user.sub, body.newEmail, body.currentPassword);
+    await this.usersService.requestEmailChange(
+      user.sub,
+      body.newEmail,
+      body.currentPassword,
+      user.authTime,
+    );
     return {
       message:
         "If that address is available, we've sent a confirmation code to it. Enter the code to finish changing your email.",

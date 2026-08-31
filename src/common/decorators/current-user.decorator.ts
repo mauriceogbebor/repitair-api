@@ -4,6 +4,8 @@ export interface CurrentUserPayload {
   sub: string;
   email: string;
   token: string;
+  /** Unix seconds when this session completed primary authentication. */
+  authTime?: number;
 }
 
 export const CurrentUser = createParamDecorator(

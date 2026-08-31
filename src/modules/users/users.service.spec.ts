@@ -447,19 +447,23 @@ describe("UsersService", () => {
       expect(mockMailService.sendRaw).not.toHaveBeenCalled();
     });
 
-    it("requestEmailChange for a social-only account requires a recent login, not a password", async () => {
-      const social = { ...mockUser, hasUsablePassword: false, lastLoginAt: null };
+    it("requestEmailChange for a social-only account requires this session's recent authTime", async () => {
+      const social = { ...mockUser, hasUsablePassword: false, lastLoginAt: new Date() };
       mockRepository.findOne.mockResolvedValueOnce(social);
       await expect(
         service.requestEmailChange("user_1", "new@example.com"),
       ).rejects.toThrow(/sign in again/i);
 
-      const recentSocial = { ...mockUser, hasUsablePassword: false, lastLoginAt: new Date() };
       mockRepository.findOne
-        .mockResolvedValueOnce(recentSocial)
+        .mockResolvedValueOnce(social)
         .mockResolvedValueOnce(null);
       mockRepository.save.mockImplementation(async (u: unknown) => u);
-      const ok = await service.requestEmailChange("user_1", "new@example.com");
+      const ok = await service.requestEmailChange(
+        "user_1",
+        "new@example.com",
+        undefined,
+        Math.floor(Date.now() / 1000),
+      );
       expect(ok.staged).toBe(true);
     });
 

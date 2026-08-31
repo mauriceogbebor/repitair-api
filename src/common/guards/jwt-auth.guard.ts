@@ -57,6 +57,7 @@ export class JwtAuthGuard implements CanActivate {
       request.user = {
         sub: payload.sub,
         email: user.email,
+        authTime: typeof payload.authTime === "number" ? payload.authTime : undefined,
         token, // expose raw token so controllers (e.g. logout) can blacklist it
       };
       return true;

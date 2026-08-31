@@ -62,6 +62,7 @@ export interface AppleIdentity {
    * account (account pre-hijacking defense).
    */
   emailVerified: boolean;
+  exp?: number;
 }
 
 /**
@@ -159,6 +160,7 @@ export class AppleIdentityService {
         nonce?: string;
         nonce_supported?: boolean;
         email_verified?: boolean | string;
+        exp?: number;
       };
       try {
         payload = verifyJwt(idToken, publicKeyPem, {
@@ -204,6 +206,7 @@ export class AppleIdentityService {
         sub: payload.sub,
         emailVerified:
           payload.email_verified === true || payload.email_verified === "true",
+        exp: payload.exp,
       };
     } catch (error) {
       if (error instanceof ServiceUnavailableException) {

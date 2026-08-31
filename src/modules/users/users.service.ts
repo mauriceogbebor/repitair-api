@@ -27,12 +27,13 @@ const EMAIL_CHANGE_REQUEST_COOLDOWN_MS = 60 * 1000;
 const EMAIL_CHANGE_TTL_MS = 30 * 60 * 1000;
 /** Failed confirmation attempts that void the pending change. */
 const EMAIL_CHANGE_MAX_ATTEMPTS = 5;
-/**
- * For social-only accounts (no usable password) the recent-authentication proof
- * is a fresh login: the change is only accepted if they signed in within this
- * window. Password accounts prove recency with their current password instead.
+/** Password accounts reauthenticate with their password. Social-only accounts
+ * must present an access token whose authTime was established by their own
+ * provider login inside this window. A user-wide lastLoginAt timestamp is not a
+ * valid proof because a different session can refresh it.
  */
 const SOCIAL_RECENT_AUTH_WINDOW_MS = 15 * 60 * 1000;
+const RESERVED_SOCIAL_EMAIL_SUFFIXES = ["@users.repitair.com", "@social.repitair.invalid"];
 
 function isUniqueViolation(err: unknown): boolean {
   return err instanceof QueryFailedError && (err as QueryFailedError & { code?: string }).code === PG_UNIQUE_VIOLATION;
@@ -149,7 +150,11 @@ export class UsersService {
     password: string;
     signupSource?: string | null;
   }): Promise<User> {
-    const existing = await this.findByEmail(data.email);
+    const normalizedEmail = data.email.trim().toLowerCase();
+    if (RESERVED_SOCIAL_EMAIL_SUFFIXES.some((suffix) => normalizedEmail.endsWith(suffix))) {
+      throw new BadRequestException("Please use a valid personal email address");
+    }
+    const existing = await this.findByEmail(normalizedEmail);
     if (existing) {
       throw new ConflictException("An account with this email already exists");
     }
@@ -158,7 +163,7 @@ export class UsersService {
 
     const user = this.usersRepo.create({
       fullName: data.fullName,
-      email: data.email.toLowerCase(),
+      email: normalizedEmail,
       country: data.country,
       passwordHash,
       connectedPlatforms: [],
@@ -208,8 +213,10 @@ export class UsersService {
       return await this.usersRepo.save(user);
     } catch (err) {
       if (isUniqueViolation(err)) {
-        const existing = await this.findByEmail(data.email);
-        if (existing) return existing;
+        // Never return the row that won an email race. The caller may be in the
+        // middle of linking a provider subject, and adopting that row would
+        // recreate the social-account pre-hijacking vulnerability.
+        throw new ConflictException("An account with this email already exists");
       }
       throw err;
     }
@@ -360,6 +367,7 @@ export class UsersService {
     userId: string,
     rawNewEmail: string,
     currentPassword?: string,
+    sessionAuthTimeSeconds?: number,
   ): Promise<{ staged: boolean; code: string | null }> {
     const user = await this.findById(userId);
     if (!user) throw new NotFoundException("User not found");
@@ -375,9 +383,12 @@ export class UsersService {
         throw new UnauthorizedException("Your current password is required to change your email.");
       }
     } else {
-      // Social-only account: require a fresh login instead of a nonexistent password.
-      const lastLogin = user.lastLoginAt ? new Date(user.lastLoginAt).getTime() : 0;
-      if (Date.now() - lastLogin > SOCIAL_RECENT_AUTH_WINDOW_MS) {
+      // Social-only account: the proof must belong to THIS bearer session. Do
+      // not consult user.lastLoginAt: another session can update that value.
+      const authTimeMs = Number.isFinite(sessionAuthTimeSeconds)
+        ? Number(sessionAuthTimeSeconds) * 1000
+        : 0;
+      if (authTimeMs <= 0 || Date.now() - authTimeMs > SOCIAL_RECENT_AUTH_WINDOW_MS) {
         throw new UnauthorizedException("Please sign in again before changing your email.");
       }
     }
