@@ -65,6 +65,8 @@ describe("MusicConnectionsService", () => {
     rows.splice(0);
     user.connectedPlatforms = [];
     configValues.MUSIC_PROVIDER_CONNECTIONS_ENABLED = "true";
+    configValues.SPOTIFY_CONNECTIONS_ENABLED = "true";
+    configValues.APPLE_MUSIC_CONNECTIONS_ENABLED = "true";
     configValues.MUSIC_PROVIDER_CONNECTION_ALLOWLIST = "tester@repitair.com";
     jest.clearAllMocks();
     service = new MusicConnectionsService(
@@ -83,6 +85,16 @@ describe("MusicConnectionsService", () => {
 
     await expect(service.listConnections("user-1")).rejects.toMatchObject({ status: 404 });
     expect(connectionRepo.find).not.toHaveBeenCalled();
+  });
+
+  it("can release Apple Music while Spotify remains quota-gated", async () => {
+    configValues.SPOTIFY_CONNECTIONS_ENABLED = "false";
+    configValues.APPLE_MUSIC_CONNECTIONS_ENABLED = "true";
+
+    await expect(service.listConnections("user-1")).resolves.toEqual([
+      expect.objectContaining({ provider: "apple-music" }),
+    ]);
+    await expect(service.spotifyAccessToken("user-1")).rejects.toMatchObject({ status: 404 });
   });
 
   it("rejects authenticated users who are not in the staging allowlist", async () => {
@@ -136,7 +148,7 @@ describe("MusicConnectionsService", () => {
       status: 400,
       response: {
         errorCode: "SPOTIFY_ACCOUNT_NOT_ALLOWED",
-        message: expect.stringContaining("approved tester"),
+        message: expect.stringContaining("approve the account"),
       },
     });
     expect(rows).toHaveLength(0);

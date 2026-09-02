@@ -1530,7 +1530,7 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
     // browse flow reads fine — it always passes ?fields=), so mirror that here.
     // Only the fields the parser consumes are requested (first 100 items, which
     // comfortably exceeds any template's song capacity).
-    const fields = "name,tracks.items(track(id,name,duration_ms,artists(name),album(images)))";
+    const fields = "name,items.items(item(id,name,duration_ms,artists(name),album(images)))";
     const url = `https://api.spotify.com/v1/playlists/${playlistId}?fields=${encodeURIComponent(fields)}`;
 
     // Try user token first if available.
@@ -1631,27 +1631,47 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async parseSpotifyPlaylistResponse(response: Response): Promise<ParsedCollection> {
+    type SpotifyPlaylistTrack = {
+      album?: { images?: Array<{ url: string }> };
+      artists?: Array<{ name: string }>;
+      duration_ms?: number;
+      id?: string;
+      name?: string;
+    };
+    type SpotifyPlaylistItem = {
+      item?: SpotifyPlaylistTrack | null;
+      track?: SpotifyPlaylistTrack | null;
+    };
     const data = await response.json() as {
       name: string;
-      tracks: { items: Array<{ track: { album?: { images?: Array<{ url: string }> }; artists: Array<{ name: string }>; duration_ms: number; id: string; name: string } | null }> };
+      items?: { items?: SpotifyPlaylistItem[] };
+      tracks?: { items?: SpotifyPlaylistItem[] };
     };
 
     // Playlists can contain podcast episodes and local/unavailable items whose
     // `track` is truthy but has no `id`/`artists` — accessing `.artists.map` on
     // those threw a TypeError that surfaced as a generic 503. Only keep real
     // songs and null-safe every field.
-    const items = Array.isArray(data?.tracks?.items) ? data.tracks.items : [];
+    const wrappers = Array.isArray(data?.items?.items)
+      ? data.items.items
+      : Array.isArray(data?.tracks?.items)
+        ? data.tracks.items
+        : [];
+    const tracks = wrappers
+      .map((wrapper) => wrapper.item ?? wrapper.track)
+      .filter((track): track is SpotifyPlaylistTrack => Boolean(
+        track?.id && Array.isArray(track.artists),
+      ));
     return {
       name: data?.name ?? "Playlist",
-      tracks: items
-        .filter((item) => item.track && item.track.id && Array.isArray(item.track.artists))
-        .map((item) => ({
-          albumArt: item.track?.album?.images?.[0]?.url,
-          artist: (item.track!.artists ?? []).map((artist) => artist.name).filter(Boolean).join(", ") || "Unknown artist",
-          durationMs: item.track!.duration_ms,
+      tracks: tracks
+        .map((track) => ({
+          albumArt: track.album?.images?.[0]?.url,
+          artist: (track.artists ?? []).map((artist) => artist.name).filter(Boolean).join(", ") || "Unknown artist",
+          durationMs: track.duration_ms,
           platform: "spotify" as const,
-          sourceLink: `https://open.spotify.com/track/${item.track!.id}`,
-          title: item.track!.name ?? "Untitled track",
+          sourceLink: `https://open.spotify.com/track/${track.id}`,
+          title: track.name ?? "Untitled track",
         })),
       type: "playlist",
     };

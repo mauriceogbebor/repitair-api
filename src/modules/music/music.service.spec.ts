@@ -107,11 +107,11 @@ describe("MusicService", () => {
       const fakeResponse = {
         json: async () => ({
           name: "Mixed playlist",
-          tracks: {
+          items: {
             items: [
-              { track: { id: "t1", name: "Song One", duration_ms: 1000, artists: [{ name: "Artist" }], album: { images: [{ url: "art" }] } } },
-              { track: null }, // unavailable/local track
-              { track: { id: "e1", name: "Episode", duration_ms: 2000 } }, // podcast episode: no artists
+              { item: { id: "t1", name: "Song One", duration_ms: 1000, artists: [{ name: "Artist" }], album: { images: [{ url: "art" }] } } },
+              { item: null }, // unavailable/local track
+              { item: { id: "e1", name: "Episode", duration_ms: 2000 } }, // podcast episode: no artists
             ],
           },
         }),

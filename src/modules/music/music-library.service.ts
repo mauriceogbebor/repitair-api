@@ -68,6 +68,8 @@ type SpotifyPlaylist = {
   name?: string;
   owner?: { id?: string | null; display_name?: string | null };
   images?: SpotifyImage[];
+  items?: { total?: number };
+  /** Pre-February-2026 response compatibility for cached/provider fixtures. */
   tracks?: { total?: number };
   collaborative?: boolean;
   public?: boolean | null;
@@ -280,7 +282,7 @@ export class MusicLibraryService {
           name: playlist.name?.trim() || "Untitled playlist",
           owner: playlist.owner?.display_name?.trim() || null,
           artworkUrl: playlist.images?.find((image) => image.url)?.url ?? null,
-          songCount: Number(playlist.tracks?.total ?? 0),
+          songCount: Number(playlist.items?.total ?? playlist.tracks?.total ?? 0),
           lastUpdated: null,
           provider: "spotify" as const,
           isCollaborative,
@@ -365,7 +367,7 @@ export class MusicLibraryService {
     ]);
     const headers = { Authorization: `Bearer ${token}` };
     const playlist = await this.requestJson<SpotifyPlaylist>(
-      `https://api.spotify.com/v1/playlists/${encodeURIComponent(playlistId)}?fields=id,name,owner(id,display_name),images,tracks(total),collaborative,public`,
+      `https://api.spotify.com/v1/playlists/${encodeURIComponent(playlistId)}?fields=id,name,owner(id,display_name),images,items(total),collaborative,public`,
       "spotify",
       headers,
       true,
@@ -409,7 +411,7 @@ export class MusicLibraryService {
         name: playlist.name?.trim() || "Untitled playlist",
         owner: playlist.owner?.display_name?.trim() || null,
         artworkUrl: playlist.images?.find((image) => image.url)?.url ?? null,
-        songCount: Number(playlist.tracks?.total ?? tracks.length),
+        songCount: Number(playlist.items?.total ?? playlist.tracks?.total ?? tracks.length),
         lastUpdated: null,
         provider: "spotify" as const,
         isCollaborative: Boolean(playlist.collaborative),

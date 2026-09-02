@@ -50,7 +50,7 @@ describe("MusicLibraryService", () => {
         name: "My private mix",
         owner: { display_name: "Owner" },
         images: [{ url: "https://images.example/private.jpg" }],
-        tracks: { total: 14 },
+        items: { total: 14 },
         collaborative: false,
       }],
       total: 1,

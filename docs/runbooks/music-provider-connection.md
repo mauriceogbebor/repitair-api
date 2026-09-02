@@ -10,11 +10,12 @@ A user can only connect a provider when **all** of these hold:
 
 1. The **app build** has the feature flag on (`EXPO_PUBLIC_MUSIC_PROVIDER_CONNECTIONS_ENABLED=true`).
 2. The **backend** has the feature enabled (`MUSIC_PROVIDER_CONNECTIONS_ENABLED=true`).
-3. The user's **Repitair account email** passes the allowlist (`MUSIC_PROVIDER_CONNECTION_ALLOWLIST` — empty means "allow everyone").
-4. The **provider OAuth app** is configured correctly (redirect URI registered + client credentials) and permits that user (Spotify mode — see below).
+3. That provider is enabled (`SPOTIFY_CONNECTIONS_ENABLED` or `APPLE_MUSIC_CONNECTIONS_ENABLED`).
+4. The user's **Repitair account email** passes the allowlist (`MUSIC_PROVIDER_CONNECTION_ALLOWLIST` — empty means "allow everyone").
+5. The **provider OAuth app** is configured correctly (redirect URI registered + client credentials) and permits that user (Spotify mode — see below).
 
-If a user "can't connect," walk these four in order. Gates 1–3 are Repitair-side
-and show as a locked/"not available" screen; gate 4 is where the provider (Spotify)
+If a user "can't connect," walk these five in order. Gates 1–4 are Repitair-side
+and show as a locked/"not available" screen; gate 5 is where the provider (Spotify)
 takes over and shows its own error.
 
 ## Environment variables
@@ -24,6 +25,8 @@ Set on the API service (Railway) for each environment.
 | Variable | Purpose | Notes |
 | --- | --- | --- |
 | `MUSIC_PROVIDER_CONNECTIONS_ENABLED` | Master on/off for provider connections | Must be `"true"`. If unset/false, every connect attempt 404s → app shows "Music account connections are not available." |
+| `SPOTIFY_CONNECTIONS_ENABLED` | Spotify account-connection rollout | Keep `"false"` in production until Spotify Extended Quota is approved. Public Spotify links still work. |
+| `APPLE_MUSIC_CONNECTIONS_ENABLED` | Apple Music account-connection rollout | Set `"true"` after the production MusicKit smoke test passes. |
 | `MUSIC_PROVIDER_CONNECTION_ALLOWLIST` | Comma-separated **Repitair login emails** allowed to connect | **Empty = open to all authenticated users.** A populated list restricts to exactly those emails. This one **is** a list (split on comma). |
 | `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` | Spotify app credentials | From the Spotify developer dashboard app. |
 | `SPOTIFY_REDIRECT_URI` | The single OAuth callback URL | **Exactly one URL**, e.g. `https://api-staging.repitair.com/api/auth/spotify/callback`. NOT a comma-separated list (see gotcha below). |
@@ -74,13 +77,14 @@ host, path, and no trailing slash difference.
 This determines **which Spotify accounts** may authorize, independently of the
 Repitair allowlist:
 
-- **Development mode** — only the app **owner** and **collaborators**, plus up to
-  **25** accounts explicitly added under the app's **User Management**, may
+- **Development mode** — only the app **owner** and up to **5** authenticated
+  accounts explicitly added under the app's **User Management** may
   authorize. The owner can always connect without being listed, which is why an
   owner test can succeed while a fresh tester still fails with "not approved"
   (`SPOTIFY_ACCOUNT_NOT_ALLOWED`, a 403 from `GET /v1/me`).
-- **Extended quota mode** — any Spotify user may authorize; no User Management step.
-  Request this from the Spotify dashboard to remove the 25-user cap for a wider beta.
+- **Extended quota mode** — approved apps can authorize users outside the
+  development allowlist. Request this from the Spotify dashboard before a
+  public connection rollout; approval is not an automatic launch entitlement.
 
 Check the app's mode in the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard).
 If it's Extended Quota, ignore Spotify user management entirely and manage access
@@ -93,7 +97,7 @@ purely via the Repitair allowlist. If it's Development, each non-owner tester's
    (`staging-testflight` / `preview`, or `production` once its flag is flipped).
 2. Add the tester's **Repitair login email** to `MUSIC_PROVIDER_CONNECTION_ALLOWLIST`
    (or leave the allowlist empty to open it to all). Redeploy for env changes.
-3. Ensure `MUSIC_PROVIDER_CONNECTIONS_ENABLED=true`.
+3. Ensure `MUSIC_PROVIDER_CONNECTIONS_ENABLED=true` and the provider-specific flag is true.
 4. If the Spotify app is in **Development mode**, add the tester's **Spotify**
    account under the dashboard's User Management (skip if Extended Quota).
 

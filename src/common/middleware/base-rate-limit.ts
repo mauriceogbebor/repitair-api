@@ -137,4 +137,33 @@ export abstract class BaseRateLimiter implements OnModuleDestroy {
     if (Array.isArray(req.ips) && req.ips.length > 0) return req.ips[0];
     return req.ip ?? req.socket.remoteAddress ?? "unknown";
   }
+
+  /**
+   * Authenticated mobile traffic is bucketed by the JWT subject rather than IP.
+   * Carrier-grade NAT can put thousands of legitimate devices behind one IP;
+   * sharing that budget caused unrelated users to throttle each other.
+   *
+   * Middleware runs before guards, so callers must supply the same JWT verifier
+   * used by the guard. Invalid bearer values remain in the IP bucket instead of
+   * being allowed to choose arbitrary user buckets.
+   */
+  static authenticatedOrIpKey(
+    req: Request,
+    namespace: string,
+    verifyToken: (token: string) => { sub?: unknown },
+  ): string {
+    const auth = req.headers.authorization;
+    if (auth?.startsWith("Bearer ")) {
+      const token = auth.slice(7);
+      try {
+        const payload = verifyToken(token);
+        if (typeof payload.sub === "string" && payload.sub.length > 0) {
+          return `${namespace}:user:${payload.sub}`;
+        }
+      } catch {
+        // Invalid credentials share the anonymous IP budget.
+      }
+    }
+    return `${namespace}:ip:${BaseRateLimiter.defaultKeyExtractor(req)}`;
+  }
 }
