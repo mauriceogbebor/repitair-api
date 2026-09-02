@@ -40,11 +40,11 @@ EXPOSE 4000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:4000/api/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"
+  CMD node -e "require('http').get('http://localhost:4000/api/health/ready', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"
 
 # Use dumb-init to handle signals properly
 ENTRYPOINT ["dumb-init", "--"]
 
 # Start application — runs migrations first, then boots the server.
 # Using `sh -c` so Docker's shell form evaluates `&&`.
-CMD ["sh", "-c", "node node_modules/typeorm/cli.js migration:run -d dist/data-source.js && node dist/main.js"]
+CMD ["sh", "-c", "node tools/run-migrations-locked.js && exec node dist/main.js"]

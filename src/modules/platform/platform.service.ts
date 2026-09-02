@@ -1,15 +1,20 @@
 import { Injectable } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
-import { DataSource, Repository } from "typeorm";
+import { DataSource, MoreThan, Repository } from "typeorm";
 import { FeatureFlag } from "../../entities/feature-flag.entity";
+import { PlatformJob } from "../../entities/platform-job.entity";
 import {
   IncidentBanner,
   MaintenanceState,
   PlatformSetting,
   UpdatePolicy,
 } from "../../entities/platform-setting.entity";
+import { PlatformWorkerHeartbeat } from "../../entities/platform-worker-heartbeat.entity";
+import { UploadsService } from "../uploads/uploads.service";
 
 const SINGLETON_ID = "singleton";
+const WORKER_STALE_AFTER_MS = 45_000;
 
 /**
  * Canonical feature flags. `enabled` here is the DEFAULT used when no DB row
@@ -38,7 +43,13 @@ export class PlatformService {
     private readonly flagRepo: Repository<FeatureFlag>,
     @InjectRepository(PlatformSetting)
     private readonly settingRepo: Repository<PlatformSetting>,
+    @InjectRepository(PlatformJob)
+    private readonly jobs: Repository<PlatformJob>,
+    @InjectRepository(PlatformWorkerHeartbeat)
+    private readonly workerHeartbeats: Repository<PlatformWorkerHeartbeat>,
     private readonly dataSource: DataSource,
+    private readonly config: ConfigService,
+    private readonly uploads: UploadsService,
   ) {}
 
   // ── Feature flags ───────────────────────────────────────────────────────
@@ -133,16 +144,22 @@ export class PlatformService {
 
   // ── Read-only operational health (honest) ───────────────────────────────
   async getHealth(): Promise<Record<string, HealthComponent>> {
-    const database = await this.checkDatabase();
-    // We do not yet run monitoring for these providers, so we report honestly.
-    const unavailable: HealthComponent = { status: "unavailable", detail: "No monitoring configured" };
+    const [database, storage, emailProvider, backgroundWorkers] = await Promise.all([
+      this.checkDatabase(),
+      this.checkStorage(),
+      this.checkEmailProvider(),
+      this.checkBackgroundWorkers(),
+    ]);
+    const pushProvider: HealthComponent = this.config.get<string>("EXPO_ACCESS_TOKEN")
+      ? { status: "degraded", detail: "Configured; delivery receipts are monitored separately" }
+      : { status: "unavailable", detail: "EXPO_ACCESS_TOKEN is not configured" };
     return {
       api: { status: "operational", detail: "Serving this request" },
       database,
-      storage: unavailable,
-      pushProvider: unavailable,
-      emailProvider: unavailable,
-      backgroundWorkers: unavailable,
+      storage,
+      pushProvider,
+      emailProvider,
+      backgroundWorkers,
     };
   }
 
@@ -152,6 +169,66 @@ export class PlatformService {
       return { status: "operational", detail: "Connection healthy" };
     } catch (err) {
       return { status: "unavailable", detail: (err as Error).message };
+    }
+  }
+
+  private async checkStorage(): Promise<HealthComponent> {
+    try {
+      const health = await this.uploads.healthCheck();
+      return health.connected
+        ? { status: "operational", detail: `${health.provider.toUpperCase()} storage reachable` }
+        : { status: "unavailable", detail: `${health.provider.toUpperCase()} storage unavailable` };
+    } catch (err) {
+      return { status: "unavailable", detail: `Storage probe failed: ${(err as Error).message}` };
+    }
+  }
+
+  private async checkEmailProvider(): Promise<HealthComponent> {
+    const apiKey = this.config.get<string>("SENDGRID_API_KEY")?.trim();
+    if (apiKey) {
+      try {
+        const response = await fetch("https://api.sendgrid.com/v3/scopes", {
+          headers: { Authorization: `Bearer ${apiKey}` },
+          signal: AbortSignal.timeout(4_000),
+        });
+        if (!response.ok) {
+          return { status: "unavailable", detail: `SendGrid credential probe returned HTTP ${response.status}` };
+        }
+        const payload = await response.json() as { scopes?: unknown };
+        const canSend = Array.isArray(payload.scopes) && payload.scopes.includes("mail.send");
+        return canSend
+          ? { status: "operational", detail: "SendGrid API key has mail.send permission" }
+          : { status: "unavailable", detail: "SendGrid API key is missing mail.send permission" };
+      } catch (err) {
+        return { status: "unavailable", detail: `SendGrid probe failed: ${(err as Error).message}` };
+      }
+    }
+
+    const smtpConfigured = Boolean(
+      this.config.get<string>("SMTP_HOST")
+      && this.config.get<string>("SMTP_USER")
+      && this.config.get<string>("SMTP_PASS"),
+    );
+    return smtpConfigured
+      ? { status: "degraded", detail: "SMTP configured without a live delivery probe" }
+      : { status: "unavailable", detail: "Email delivery is not configured" };
+  }
+
+  private async checkBackgroundWorkers(): Promise<HealthComponent> {
+    try {
+      const cutoff = new Date(Date.now() - WORKER_STALE_AFTER_MS);
+      const [activeWorkers, queuedJobs] = await Promise.all([
+        this.workerHeartbeats.count({ where: { state: "running", heartbeatAt: MoreThan(cutoff) } }),
+        this.jobs.count({ where: { status: "queued" } }),
+      ]);
+      if (activeWorkers > 0) {
+        return { status: "operational", detail: `${activeWorkers} active worker(s); ${queuedJobs} queued job(s)` };
+      }
+      return queuedJobs > 0
+        ? { status: "unavailable", detail: `No active workers; ${queuedJobs} job(s) are queued` }
+        : { status: "degraded", detail: "No active workers; queue is currently empty" };
+    } catch (err) {
+      return { status: "unavailable", detail: `Worker probe failed: ${(err as Error).message}` };
     }
   }
 }

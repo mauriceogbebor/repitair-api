@@ -51,6 +51,8 @@ function validateEnvironment(): void {
     if (!process.env.ADMIN_JWT_SECRET) errors.push("ADMIN_JWT_SECRET is required");
     if (!process.env.ADMIN_FRONTEND_ORIGIN) errors.push("ADMIN_FRONTEND_ORIGIN is required");
     if (!process.env.PUBLIC_URL) errors.push("PUBLIC_URL is required");
+    if (!process.env.API_BASE_URL) errors.push("API_BASE_URL is required");
+    if (!process.env.REDIS_URL) errors.push("REDIS_URL is required for distributed production state");
     if (!process.env.MUSIC_TOKEN_ENCRYPTION_KEY) {
       errors.push("MUSIC_TOKEN_ENCRYPTION_KEY is required for encrypted music-provider authorization");
     } else {
@@ -91,8 +93,24 @@ function validateEnvironment(): void {
       if (publicUrl.origin !== normalized || publicUrl.protocol !== "https:") {
         errors.push("PUBLIC_URL must be an HTTPS origin without a path in production");
       }
+      if (publicUrl.hostname.endsWith(".up.railway.app")) {
+        errors.push("PUBLIC_URL must use the stable production custom domain, not a Railway service domain");
+      }
     } catch {
       errors.push("PUBLIC_URL must be a valid URL origin");
+    }
+
+    try {
+      const apiBaseUrl = new URL(process.env.API_BASE_URL ?? "");
+      const normalized = (process.env.API_BASE_URL ?? "").replace(/\/+$/, "");
+      if (apiBaseUrl.origin !== normalized || apiBaseUrl.protocol !== "https:") {
+        errors.push("API_BASE_URL must be an HTTPS origin without a path in production");
+      }
+      if (apiBaseUrl.hostname.endsWith(".up.railway.app")) {
+        errors.push("API_BASE_URL must use the stable production custom domain");
+      }
+    } catch {
+      errors.push("API_BASE_URL must be a valid URL origin");
     }
 
     if ((process.env.CORS_ORIGINS ?? "").split(",").some((origin) => origin.trim() === "*")) {
@@ -132,9 +150,22 @@ function validateEnvironment(): void {
     process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS,
   );
   if (!hasSendGridEmail && !hasSmtpEmail) {
-    warnings.push(
-      "Email delivery credentials missing (SENDGRID_API_KEY or SMTP_HOST, SMTP_USER, SMTP_PASS) — email sending will fail",
-    );
+    const message = "Email delivery credentials missing (SENDGRID_API_KEY or SMTP_HOST, SMTP_USER, SMTP_PASS)";
+    if (isProduction) errors.push(message);
+    else warnings.push(`${message} — email sending will fail`);
+  }
+
+  if (isProduction && process.env.MUSIC_PROVIDER_CONNECTIONS_ENABLED !== "true") {
+    errors.push("MUSIC_PROVIDER_CONNECTIONS_ENABLED must be true for the production Apple Music rollout");
+  }
+  if (isProduction && process.env.APPLE_MUSIC_CONNECTIONS_ENABLED !== "true") {
+    errors.push("APPLE_MUSIC_CONNECTIONS_ENABLED must be true for the production Apple Music rollout");
+  }
+  if (process.env.APPLE_MUSIC_CONNECTIONS_ENABLED === "true" && !process.env.APPLE_MUSIC_AUTH_BASE_URL) {
+    errors.push("APPLE_MUSIC_AUTH_BASE_URL is required when Apple Music connections are enabled");
+  }
+  if (process.env.SPOTIFY_CONNECTIONS_ENABLED === "true" && !process.env.SPOTIFY_REDIRECT_URI) {
+    errors.push("SPOTIFY_REDIRECT_URI is required when Spotify connections are enabled");
   }
   if (!process.env.ADMIN_BOOTSTRAP_EMAIL || !process.env.ADMIN_BOOTSTRAP_PASSWORD || !process.env.ADMIN_BOOTSTRAP_MFA_SECRET) {
     warnings.push("Admin bootstrap credentials missing (ADMIN_BOOTSTRAP_EMAIL, ADMIN_BOOTSTRAP_PASSWORD, ADMIN_BOOTSTRAP_MFA_SECRET) — the first admin account will not be auto-created");

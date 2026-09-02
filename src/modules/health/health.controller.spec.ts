@@ -1,5 +1,6 @@
 import { Test, TestingModule } from "@nestjs/testing";
 import { getDataSourceToken } from "@nestjs/typeorm";
+import { REDIS_CLIENT } from "../../common/modules/redis.module";
 import { HealthController } from "./health.controller";
 
 describe("HealthController", () => {
@@ -7,12 +8,17 @@ describe("HealthController", () => {
   const mockDataSource = {
     query: jest.fn(),
   };
+  const mockRedis = {
+    status: "ready",
+    ping: jest.fn(),
+  };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [HealthController],
       providers: [
         { provide: getDataSourceToken(), useValue: mockDataSource },
+        { provide: REDIS_CLIENT, useValue: mockRedis },
       ],
     }).compile();
 
@@ -42,6 +48,31 @@ describe("HealthController", () => {
     it("should return ok", () => {
       const result = controller.getLive();
       expect(result).toEqual({ status: "ok" });
+    });
+  });
+
+  describe("getReady", () => {
+    it("returns ok when dependencies are ready", async () => {
+      mockDataSource.query.mockResolvedValue([{ "?column?": 1 }]);
+      mockRedis.ping.mockResolvedValue("PONG");
+      await expect(controller.getReady()).resolves.toEqual({
+        status: "ok",
+        database: "ok",
+        redis: "ok",
+      });
+    });
+
+    it("returns 503 when the database is unavailable", async () => {
+      mockDataSource.query.mockRejectedValue(new Error("connection refused"));
+      await expect(controller.getReady()).rejects.toMatchObject({ status: 503 });
+    });
+
+    it("returns 503 when Redis is unavailable", async () => {
+      mockDataSource.query.mockResolvedValue([{ "?column?": 1 }]);
+      mockRedis.status = "reconnecting";
+
+      await expect(controller.getReady()).rejects.toMatchObject({ status: 503 });
+      mockRedis.status = "ready";
     });
   });
 });
