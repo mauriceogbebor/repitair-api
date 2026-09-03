@@ -13,6 +13,7 @@ import { buildTotpUri, verifyTotpCode } from "../utils/totp";
 import { AdminSessionRegistryService } from "../iam/admin-session-registry.service";
 import { AdminLoginDto } from "./dto/admin-login.dto";
 import { AdminVerifyMfaDto } from "./dto/admin-verify-mfa.dto";
+import { AdminMfaTicketStoreService } from "./admin-mfa-ticket-store.service";
 import { AdminTokenService } from "./admin-token.service";
 
 @Injectable()
@@ -27,6 +28,7 @@ export class AdminAuthService {
     private readonly auditLogsService: AdminAuditLogsService,
     private readonly tokenBlacklistService: TokenBlacklistService,
     private readonly sessionRegistry: AdminSessionRegistryService,
+    private readonly mfaTicketStore: AdminMfaTicketStoreService,
   ) {}
 
   async login(dto: AdminLoginDto, context?: AdminRequestContext | null) {
@@ -77,7 +79,7 @@ export class AdminAuthService {
     return { secret: adminUser.mfaSecret, otpauthUri: buildTotpUri({ secret: adminUser.mfaSecret, email: adminUser.email, issuer: "Repitair Admin" }) };
   }
 
-  async verifyMfa(dto: AdminVerifyMfaDto, context?: AdminRequestContext | null) {
+  async verifyMfa(dto: AdminVerifyMfaDto & { ticket: string }, context?: AdminRequestContext | null) {
     const ticketPayload = this.tokenService.verifyMfaTicket(dto.ticket);
     const adminUser = await this.findByIdForLogin(ticketPayload.sub);
 
@@ -101,6 +103,10 @@ export class AdminAuthService {
       });
       throw new UnauthorizedException("Invalid MFA code");
     }
+
+    // Consume only after a valid TOTP so a typo does not invalidate the login,
+    // while concurrent successful submissions still yield exactly one session.
+    await this.mfaTicketStore.consume(ticketPayload);
 
     adminUser.lastLoginAt = new Date();
     adminUser.lastActivityAt = new Date();

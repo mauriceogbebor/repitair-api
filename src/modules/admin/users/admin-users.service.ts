@@ -206,9 +206,9 @@ export class AdminUsersService {
     const [repitCount, openCaseCount, activeRestrictionCount] = await Promise.all([
       this.repitRepository.count({ where: { userId } }),
       this.supportTicketRepository
-        .createQueryBuilder("supportCase")
-        .where('supportCase."relatedUserId" = :userId', { userId })
-        .andWhere("supportCase.status NOT IN (:...closedStatuses)", { closedStatuses: ["resolved", "closed"] })
+        .createQueryBuilder("support_case")
+        .where('support_case."relatedUserId" = :userId', { userId })
+        .andWhere("support_case.status NOT IN (:...closedStatuses)", { closedStatuses: ["resolved", "closed"] })
         .getCount(),
       this.restrictionRepository.count({ where: { userId, status: "active" } }),
     ]);

@@ -345,6 +345,10 @@ export class MediaProcessingService {
           ...jobState,
           processingStatus: asset.processingStatus,
           statusUrl: `/media/assets/${assetId}`,
+          // Opt-in subject-fit inputs (Ice Girl). Null-safe for legacy derivatives.
+          derivativeWidth: transparent.width ?? null,
+          derivativeHeight: transparent.height ?? null,
+          visibleBounds: transparent.visibleBounds ?? null,
         };
         await this.assetService.emit("media.template_resolved", {
           assetId, templateId, purpose, requiresBackgroundRemoval: true, imageSource: "derivative", status: "ready",

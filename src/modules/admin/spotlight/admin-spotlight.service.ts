@@ -1,25 +1,37 @@
-import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
+import { DataSource, EntityManager, Repository } from "typeorm";
 import { AdminAuditLog, Spotlight } from "../../../entities";
+import type { SpotlightStatus } from "../../../entities/spotlight.entity";
 import { AdminAuditLogsService } from "../audit-logs/admin-audit-logs.service";
 import type { AdminRequestActor, AdminRequestContext } from "../admin.types";
+import { resolveDateRange } from "../utils/date-range";
 import { AdminCreateSpotlightDto } from "./dto/admin-create-spotlight.dto";
 import { AdminListSpotlightQueryDto } from "./dto/admin-list-spotlight-query.dto";
 import { AdminScheduleSpotlightDto } from "./dto/admin-schedule-spotlight.dto";
 import { AdminSpotlightActionDto } from "./dto/admin-spotlight-action.dto";
 import { AdminUpdateSpotlightDto } from "./dto/admin-update-spotlight.dto";
+import { SPOTLIGHT_CREATE_DESTINATION } from "./spotlight-destination";
+import { isSupportedSpotlightSongLink } from "./spotlight-song-link";
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
+const EDITABLE_STATUSES: SpotlightStatus[] = ["draft", "paused"];
+const PUBLISHABLE_STATUSES: SpotlightStatus[] = ["draft", "paused"];
+const PAUSABLE_STATUSES: SpotlightStatus[] = ["active", "scheduled"];
 
 function parseDate(value?: string | null) {
   if (!value) return null;
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) {
-    throw new BadRequestException(`Invalid date value: ${value}`);
+    throw new BadRequestException({ statusCode: 400, error: "InvalidSpotlightDate", message: `Invalid date value: ${value}` });
   }
   return parsed;
+}
+
+function nullableText(value?: string | null) {
+  if (value === undefined) return undefined;
+  return value?.trim() || null;
 }
 
 @Injectable()
@@ -29,12 +41,13 @@ export class AdminSpotlightService {
     private readonly spotlightRepository: Repository<Spotlight>,
     @InjectRepository(AdminAuditLog)
     private readonly auditLogRepository: Repository<AdminAuditLog>,
+    private readonly dataSource: DataSource,
     private readonly auditLogsService: AdminAuditLogsService,
   ) {}
 
   async listCampaigns(query: AdminListSpotlightQueryDto) {
     const page = Math.max(query.page ?? 1, 1);
-    const pageSize = Math.min(query.pageSize ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
+    const pageSize = Math.min(Math.max(query.pageSize ?? DEFAULT_PAGE_SIZE, 1), MAX_PAGE_SIZE);
     const qb = this.spotlightRepository.createQueryBuilder("spotlight");
     const search = query.search?.trim() ?? "";
 
@@ -49,26 +62,29 @@ export class AdminSpotlightService {
       qb.andWhere("spotlight.status = :status", { status: query.status });
     }
 
-    if (query.priority) {
-      qb.andWhere("spotlight.priority = :priority", { priority: Number(query.priority) });
+    if (query.priority !== undefined && query.priority !== "") {
+      const priority = Number(query.priority);
+      if (!Number.isInteger(priority) || priority < 0) {
+        throw new BadRequestException({ statusCode: 400, error: "InvalidPriority", message: "priority must be a non-negative integer" });
+      }
+      qb.andWhere("spotlight.priority = :priority", { priority });
     }
 
-    const dateFrom = query.dateFrom ? parseDate(query.dateFrom) : null;
-    const dateTo = query.dateTo ? parseDate(query.dateTo) : null;
-    if (dateFrom) qb.andWhere("spotlight.createdAt >= :dateFrom", { dateFrom: dateFrom.toISOString() });
-    if (dateTo) qb.andWhere("spotlight.createdAt <= :dateTo", { dateTo: dateTo.toISOString() });
+    const dateRange = resolveDateRange(query.dateFrom, query.dateTo, "spotlight createdAt");
+    if (dateRange.start) qb.andWhere("spotlight.createdAt >= :dateFrom", { dateFrom: dateRange.start.toISOString() });
+    if (dateRange.endExclusive) qb.andWhere("spotlight.createdAt < :dateTo", { dateTo: dateRange.endExclusive.toISOString() });
 
     const now = new Date();
     if (query.active === "true") {
-      qb.andWhere("spotlight.status = 'active'")
+      qb.andWhere("spotlight.status IN (:...deliveryStatuses)", { deliveryStatuses: ["active", "scheduled"] })
         .andWhere("(spotlight.startsAt IS NULL OR spotlight.startsAt <= :now)", { now: now.toISOString() })
-        .andWhere("(spotlight.expiresAt IS NULL OR spotlight.expiresAt >= :now)", { now: now.toISOString() });
+        .andWhere("(spotlight.expiresAt IS NULL OR spotlight.expiresAt > :now)", { now: now.toISOString() });
     }
     if (query.scheduled === "true") {
       qb.andWhere("spotlight.status = 'scheduled'");
     }
     if (query.expired === "true") {
-      qb.andWhere("spotlight.status = 'expired' OR (spotlight.expiresAt IS NOT NULL AND spotlight.expiresAt < :nowExpired)", {
+      qb.andWhere("spotlight.status = 'expired' OR (spotlight.expiresAt IS NOT NULL AND spotlight.expiresAt <= :nowExpired)", {
         nowExpired: now.toISOString(),
       });
     }
@@ -108,184 +124,299 @@ export class AdminSpotlightService {
   }
 
   async createCampaign(dto: AdminCreateSpotlightDto, actor?: AdminRequestActor | null, context?: AdminRequestContext | null) {
-    const entity = this.spotlightRepository.create({
-      title: dto.title,
-      subtitle: dto.subtitle ?? null,
-      artist: dto.artist,
-      song: dto.song ?? null,
-      albumArt: dto.albumArt,
-      backgroundImage: dto.backgroundImage ?? null,
-      campaignType: dto.campaignType ?? "editorial",
-      buttonLabel: dto.buttonLabel ?? null,
-      deepLink: dto.deepLink ?? null,
-      tag: (dto.tag as any) ?? "NEW_SINGLE",
-      priority: dto.priority ?? 0,
-      status: (dto.status as any) ?? "draft",
-      startsAt: parseDate(dto.startsAt),
-      expiresAt: parseDate(dto.expiresAt),
-      submitterEmail: dto.submitterEmail ?? null,
-      createdByAdminUserId: actor?.id ?? null,
-      createdByAdminEmail: actor?.email ?? null,
-      updatedByAdminUserId: actor?.id ?? null,
-      updatedByAdminEmail: actor?.email ?? null,
+    const startsAt = parseDate(dto.startsAt);
+    const expiresAt = parseDate(dto.expiresAt);
+    this.validateWindow(startsAt, expiresAt);
+
+    const campaignId = await this.dataSource.transaction(async (manager) => {
+      const repository = manager.getRepository(Spotlight);
+      const entity = repository.create({
+        title: dto.title.trim(),
+        subtitle: nullableText(dto.subtitle) ?? null,
+        artist: dto.artist.trim(),
+        song: nullableText(dto.song) ?? null,
+        songLink: nullableText(dto.songLink) ?? null,
+        albumArt: dto.albumArt,
+        backgroundImage: nullableText(dto.backgroundImage) ?? null,
+        campaignType: dto.campaignType ?? "editorial",
+        buttonLabel: "Create Repit",
+        deepLink: SPOTLIGHT_CREATE_DESTINATION,
+        tag: (dto.tag as Spotlight["tag"]) ?? "NEW_SINGLE",
+        priority: dto.priority ?? 0,
+        status: "draft",
+        startsAt,
+        expiresAt,
+        submitterEmail: nullableText(dto.submitterEmail) ?? null,
+        createdByAdminUserId: actor?.id ?? null,
+        createdByAdminEmail: actor?.email ?? null,
+        updatedByAdminUserId: actor?.id ?? null,
+        updatedByAdminEmail: actor?.email ?? null,
+      });
+      const saved = await repository.save(entity);
+      await this.auditLogsService.append({
+        action: "admin.spotlight.created",
+        actor,
+        context,
+        targetType: "spotlight",
+        targetId: saved.id,
+        afterState: this.buildAuditSnapshot(saved),
+      }, manager);
+      return saved.id;
     });
-    const saved = await this.spotlightRepository.save(entity);
-    await this.auditLogsService.append({
-      action: "admin.spotlight.created",
-      actor,
-      context,
-      targetType: "spotlight",
-      targetId: saved.id,
-      afterState: this.buildAuditSnapshot(saved),
-    });
-    return this.getCampaignDetail(saved.id);
+    return this.getCampaignDetail(campaignId);
   }
 
   async updateCampaign(campaignId: string, dto: AdminUpdateSpotlightDto, actor?: AdminRequestActor | null, context?: AdminRequestContext | null) {
-    const campaign = await this.requireCampaign(campaignId);
-    const beforeState = this.buildAuditSnapshot(campaign);
-    Object.assign(campaign, {
-      title: dto.title ?? campaign.title,
-      subtitle: dto.subtitle ?? campaign.subtitle,
-      artist: dto.artist ?? campaign.artist,
-      song: dto.song ?? campaign.song,
-      albumArt: dto.albumArt ?? campaign.albumArt,
-      backgroundImage: dto.backgroundImage ?? campaign.backgroundImage,
-      campaignType: dto.campaignType ?? campaign.campaignType,
-      buttonLabel: dto.buttonLabel ?? campaign.buttonLabel,
-      deepLink: dto.deepLink ?? campaign.deepLink,
-      tag: (dto.tag as any) ?? campaign.tag,
-      priority: dto.priority ?? campaign.priority,
-      status: (dto.status as any) ?? campaign.status,
-      startsAt: dto.startsAt !== undefined ? parseDate(dto.startsAt) : campaign.startsAt,
-      expiresAt: dto.expiresAt !== undefined ? parseDate(dto.expiresAt) : campaign.expiresAt,
-      submitterEmail: dto.submitterEmail ?? campaign.submitterEmail,
-      updatedByAdminUserId: actor?.id ?? null,
-      updatedByAdminEmail: actor?.email ?? null,
+    await this.dataSource.transaction(async (manager) => {
+      const repository = manager.getRepository(Spotlight);
+      const campaign = await this.requireCampaign(campaignId, manager);
+      this.assertStatus(campaign, EDITABLE_STATUSES, "edit");
+      const beforeState = this.buildAuditSnapshot(campaign);
+
+      if (dto.title !== undefined) campaign.title = dto.title.trim();
+      if (dto.subtitle !== undefined) campaign.subtitle = nullableText(dto.subtitle) ?? null;
+      if (dto.artist !== undefined) campaign.artist = dto.artist.trim();
+      if (dto.song !== undefined) campaign.song = nullableText(dto.song) ?? null;
+      if (dto.songLink !== undefined) campaign.songLink = nullableText(dto.songLink) ?? null;
+      if (dto.albumArt !== undefined) campaign.albumArt = dto.albumArt;
+      if (dto.backgroundImage !== undefined) campaign.backgroundImage = nullableText(dto.backgroundImage) ?? null;
+      if (dto.campaignType !== undefined) campaign.campaignType = dto.campaignType;
+      if (dto.buttonLabel !== undefined) campaign.buttonLabel = nullableText(dto.buttonLabel) ?? null;
+      if (dto.deepLink !== undefined) campaign.deepLink = nullableText(dto.deepLink) ?? null;
+      campaign.buttonLabel = "Create Repit";
+      campaign.deepLink = SPOTLIGHT_CREATE_DESTINATION;
+      if (dto.tag !== undefined) campaign.tag = dto.tag as Spotlight["tag"];
+      if (dto.priority !== undefined) campaign.priority = dto.priority;
+      if (dto.startsAt !== undefined) campaign.startsAt = parseDate(dto.startsAt);
+      if (dto.expiresAt !== undefined) campaign.expiresAt = parseDate(dto.expiresAt);
+      if (dto.submitterEmail !== undefined) campaign.submitterEmail = nullableText(dto.submitterEmail) ?? null;
+      this.validateWindow(campaign.startsAt ?? null, campaign.expiresAt ?? null);
+      campaign.updatedByAdminUserId = actor?.id ?? null;
+      campaign.updatedByAdminEmail = actor?.email ?? null;
+
+      const saved = await repository.save(campaign);
+      await this.auditLogsService.append({
+        action: "admin.spotlight.updated",
+        actor,
+        context,
+        targetType: "spotlight",
+        targetId: saved.id,
+        beforeState,
+        afterState: this.buildAuditSnapshot(saved),
+      }, manager);
     });
-    const saved = await this.spotlightRepository.save(campaign);
-    await this.auditLogsService.append({
-      action: "admin.spotlight.updated",
-      actor,
-      context,
-      targetType: "spotlight",
-      targetId: saved.id,
-      beforeState,
-      afterState: this.buildAuditSnapshot(saved),
-    });
-    return this.getCampaignDetail(saved.id);
+    return this.getCampaignDetail(campaignId);
   }
 
   async publishCampaign(campaignId: string, dto: AdminSpotlightActionDto, actor?: AdminRequestActor | null, context?: AdminRequestContext | null) {
-    const campaign = await this.requireCampaign(campaignId);
-    const beforeState = this.buildAuditSnapshot(campaign);
-    campaign.status = "active";
-    campaign.publishedAt = new Date();
-    campaign.archivedAt = null;
-    campaign.updatedByAdminUserId = actor?.id ?? null;
-    campaign.updatedByAdminEmail = actor?.email ?? null;
-    const saved = await this.spotlightRepository.save(campaign);
-    await this.auditLogsService.append({
-      action: "admin.spotlight.published",
-      actor,
-      context,
-      targetType: "spotlight",
-      targetId: saved.id,
-      beforeState,
-      afterState: this.buildAuditSnapshot(saved),
-      metadata: dto.note ? { note: dto.note } : null,
+    await this.dataSource.transaction(async (manager) => {
+      const repository = manager.getRepository(Spotlight);
+      const campaign = await this.requireCampaign(campaignId, manager);
+      this.assertStatus(campaign, PUBLISHABLE_STATUSES, "publish");
+      const beforeState = this.buildAuditSnapshot(campaign);
+      const now = new Date();
+      this.validateForDelivery(campaign, now);
+      if (campaign.startsAt && campaign.startsAt > now) {
+        throw new ConflictException({ statusCode: 409, error: "SpotlightStartsInFuture", message: "Use Schedule for a campaign with a future start time." });
+      }
+
+      campaign.status = "active";
+      campaign.publishedAt = now;
+      campaign.archivedAt = null;
+      campaign.updatedByAdminUserId = actor?.id ?? null;
+      campaign.updatedByAdminEmail = actor?.email ?? null;
+      const saved = await repository.save(campaign);
+      await this.auditLogsService.append({
+        action: "admin.spotlight.published",
+        actor,
+        context,
+        targetType: "spotlight",
+        targetId: saved.id,
+        beforeState,
+        afterState: this.buildAuditSnapshot(saved),
+        metadata: dto.note ? { note: dto.note } : null,
+      }, manager);
     });
-    return this.getCampaignDetail(saved.id);
+    return this.getCampaignDetail(campaignId);
+  }
+
+  async pauseCampaign(campaignId: string, dto: AdminSpotlightActionDto, actor?: AdminRequestActor | null, context?: AdminRequestContext | null) {
+    await this.dataSource.transaction(async (manager) => {
+      const repository = manager.getRepository(Spotlight);
+      const campaign = await this.requireCampaign(campaignId, manager);
+      this.assertStatus(campaign, PAUSABLE_STATUSES, "pause");
+      const beforeState = this.buildAuditSnapshot(campaign);
+      campaign.status = "paused";
+      campaign.updatedByAdminUserId = actor?.id ?? null;
+      campaign.updatedByAdminEmail = actor?.email ?? null;
+      const saved = await repository.save(campaign);
+      await this.auditLogsService.append({
+        action: "admin.spotlight.paused",
+        actor,
+        context,
+        targetType: "spotlight",
+        targetId: saved.id,
+        beforeState,
+        afterState: this.buildAuditSnapshot(saved),
+        metadata: dto.note ? { note: dto.note } : null,
+      }, manager);
+    });
+    return this.getCampaignDetail(campaignId);
   }
 
   async archiveCampaign(campaignId: string, dto: AdminSpotlightActionDto, actor?: AdminRequestActor | null, context?: AdminRequestContext | null) {
-    const campaign = await this.requireCampaign(campaignId);
-    const beforeState = this.buildAuditSnapshot(campaign);
-    campaign.status = "archived";
-    campaign.archivedAt = new Date();
-    campaign.updatedByAdminUserId = actor?.id ?? null;
-    campaign.updatedByAdminEmail = actor?.email ?? null;
-    const saved = await this.spotlightRepository.save(campaign);
-    await this.auditLogsService.append({
-      action: "admin.spotlight.archived",
-      actor,
-      context,
-      targetType: "spotlight",
-      targetId: saved.id,
-      beforeState,
-      afterState: this.buildAuditSnapshot(saved),
-      metadata: dto.note ? { note: dto.note } : null,
+    await this.dataSource.transaction(async (manager) => {
+      const repository = manager.getRepository(Spotlight);
+      const campaign = await this.requireCampaign(campaignId, manager);
+      if (campaign.status === "archived") {
+        throw new ConflictException({ statusCode: 409, error: "SpotlightAlreadyArchived", message: "Spotlight campaign is already archived." });
+      }
+      const beforeState = this.buildAuditSnapshot(campaign);
+      campaign.status = "archived";
+      campaign.archivedAt = new Date();
+      campaign.updatedByAdminUserId = actor?.id ?? null;
+      campaign.updatedByAdminEmail = actor?.email ?? null;
+      const saved = await repository.save(campaign);
+      await this.auditLogsService.append({
+        action: "admin.spotlight.archived",
+        actor,
+        context,
+        targetType: "spotlight",
+        targetId: saved.id,
+        beforeState,
+        afterState: this.buildAuditSnapshot(saved),
+        metadata: dto.note ? { note: dto.note } : null,
+      }, manager);
     });
-    return this.getCampaignDetail(saved.id);
+    return this.getCampaignDetail(campaignId);
   }
 
   async scheduleCampaign(campaignId: string, dto: AdminScheduleSpotlightDto, actor?: AdminRequestActor | null, context?: AdminRequestContext | null) {
-    const campaign = await this.requireCampaign(campaignId);
-    const beforeState = this.buildAuditSnapshot(campaign);
-    campaign.startsAt = parseDate(dto.startsAt) ?? campaign.startsAt;
-    campaign.expiresAt = parseDate(dto.expiresAt) ?? campaign.expiresAt;
-    campaign.status = "scheduled";
-    campaign.scheduledAt = new Date();
-    campaign.updatedByAdminUserId = actor?.id ?? null;
-    campaign.updatedByAdminEmail = actor?.email ?? null;
-    const saved = await this.spotlightRepository.save(campaign);
-    await this.auditLogsService.append({
-      action: "admin.spotlight.scheduled",
-      actor,
-      context,
-      targetType: "spotlight",
-      targetId: saved.id,
-      beforeState,
-      afterState: this.buildAuditSnapshot(saved),
-      metadata: { startsAt: saved.startsAt?.toISOString?.() ?? null, expiresAt: saved.expiresAt?.toISOString?.() ?? null },
+    const startsAt = parseDate(dto.startsAt);
+    const expiresAt = parseDate(dto.expiresAt);
+    if (!startsAt) throw new BadRequestException("A start time is required");
+    const now = new Date();
+    if (startsAt <= now) {
+      throw new BadRequestException({ statusCode: 400, error: "InvalidSpotlightSchedule", message: "Start time must be in the future." });
+    }
+    this.validateWindow(startsAt, expiresAt);
+
+    await this.dataSource.transaction(async (manager) => {
+      const repository = manager.getRepository(Spotlight);
+      const campaign = await this.requireCampaign(campaignId, manager);
+      this.assertStatus(campaign, EDITABLE_STATUSES, "schedule");
+      this.validateForDelivery({ ...campaign, startsAt, expiresAt } as Spotlight, now);
+      const beforeState = this.buildAuditSnapshot(campaign);
+      campaign.startsAt = startsAt;
+      campaign.expiresAt = expiresAt;
+      campaign.status = "scheduled";
+      campaign.scheduledAt = now;
+      campaign.updatedByAdminUserId = actor?.id ?? null;
+      campaign.updatedByAdminEmail = actor?.email ?? null;
+      const saved = await repository.save(campaign);
+      await this.auditLogsService.append({
+        action: "admin.spotlight.scheduled",
+        actor,
+        context,
+        targetType: "spotlight",
+        targetId: saved.id,
+        beforeState,
+        afterState: this.buildAuditSnapshot(saved),
+        metadata: { startsAt: startsAt.toISOString(), expiresAt: expiresAt?.toISOString() ?? null },
+      }, manager);
     });
-    return this.getCampaignDetail(saved.id);
+    return this.getCampaignDetail(campaignId);
   }
 
   async duplicateCampaign(campaignId: string, actor?: AdminRequestActor | null, context?: AdminRequestContext | null) {
-    const campaign = await this.requireCampaign(campaignId);
-    const duplicate = this.spotlightRepository.create({
-      title: `${campaign.title} (Copy)`,
-      subtitle: campaign.subtitle,
-      artist: campaign.artist,
-      song: campaign.song,
-      albumArt: campaign.albumArt,
-      backgroundImage: campaign.backgroundImage,
-      campaignType: campaign.campaignType,
-      buttonLabel: campaign.buttonLabel,
-      deepLink: campaign.deepLink,
-      tag: campaign.tag,
-      priority: campaign.priority,
-      status: "draft",
-      startsAt: null,
-      expiresAt: null,
-      scheduledAt: null,
-      submitterEmail: campaign.submitterEmail,
-      createdByAdminUserId: actor?.id ?? null,
-      createdByAdminEmail: actor?.email ?? null,
-      updatedByAdminUserId: actor?.id ?? null,
-      updatedByAdminEmail: actor?.email ?? null,
-      duplicateOfSpotlightId: campaign.id,
+    const duplicateId = await this.dataSource.transaction(async (manager) => {
+      const repository = manager.getRepository(Spotlight);
+      const campaign = await this.requireCampaign(campaignId, manager);
+      const duplicate = repository.create({
+        title: `${campaign.title} (Copy)`,
+        subtitle: campaign.subtitle,
+        artist: campaign.artist,
+        song: campaign.song,
+        songLink: campaign.songLink,
+        albumArt: campaign.albumArt,
+        backgroundImage: campaign.backgroundImage,
+        campaignType: campaign.campaignType,
+        buttonLabel: "Create Repit",
+        deepLink: SPOTLIGHT_CREATE_DESTINATION,
+        tag: campaign.tag,
+        priority: campaign.priority,
+        status: "draft",
+        startsAt: null,
+        expiresAt: null,
+        scheduledAt: null,
+        submitterEmail: campaign.submitterEmail,
+        createdByAdminUserId: actor?.id ?? null,
+        createdByAdminEmail: actor?.email ?? null,
+        updatedByAdminUserId: actor?.id ?? null,
+        updatedByAdminEmail: actor?.email ?? null,
+        duplicateOfSpotlightId: campaign.id,
+      });
+      const saved = await repository.save(duplicate);
+      await this.auditLogsService.append({
+        action: "admin.spotlight.duplicated",
+        actor,
+        context,
+        targetType: "spotlight",
+        targetId: saved.id,
+        afterState: this.buildAuditSnapshot(saved),
+        metadata: { sourceCampaignId: campaign.id },
+      }, manager);
+      return saved.id;
     });
-    const saved = await this.spotlightRepository.save(duplicate);
-    await this.auditLogsService.append({
-      action: "admin.spotlight.duplicated",
-      actor,
-      context,
-      targetType: "spotlight",
-      targetId: saved.id,
-      afterState: this.buildAuditSnapshot(saved),
-      metadata: { sourceCampaignId: campaign.id },
-    });
-    return this.getCampaignDetail(saved.id);
+    return this.getCampaignDetail(duplicateId);
   }
 
-  private async requireCampaign(campaignId: string) {
-    const campaign = await this.spotlightRepository.findOne({ where: { id: campaignId } });
+  private async requireCampaign(campaignId: string, manager?: EntityManager) {
+    const repository = manager?.getRepository(Spotlight) ?? this.spotlightRepository;
+    const campaign = await repository.findOne({
+      where: { id: campaignId },
+      ...(manager ? { lock: { mode: "pessimistic_write" as const } } : {}),
+    });
     if (!campaign) {
       throw new NotFoundException("Spotlight campaign not found");
     }
     return campaign;
+  }
+
+  private assertStatus(campaign: Spotlight, allowed: SpotlightStatus[], action: string) {
+    if (!allowed.includes(campaign.status)) {
+      throw new ConflictException({
+        statusCode: 409,
+        error: "InvalidSpotlightTransition",
+        message: `Cannot ${action} a spotlight campaign while it is ${campaign.status}.`,
+      });
+    }
+  }
+
+  private validateWindow(startsAt: Date | null, expiresAt: Date | null) {
+    if (startsAt && expiresAt && expiresAt <= startsAt) {
+      throw new BadRequestException({ statusCode: 400, error: "InvalidSpotlightSchedule", message: "End time must be after start time." });
+    }
+  }
+
+  private validateForDelivery(campaign: Spotlight, now: Date) {
+    if (!campaign.title.trim() || !campaign.artist.trim() || !campaign.albumArt.trim()) {
+      throw new BadRequestException({ statusCode: 400, error: "SpotlightContentIncomplete", message: "Title, artist, and album artwork are required before delivery." });
+    }
+    if (!campaign.albumArt.startsWith("https://") || (campaign.backgroundImage && !campaign.backgroundImage.startsWith("https://"))) {
+      throw new BadRequestException({ statusCode: 400, error: "UnsafeSpotlightMedia", message: "Spotlight media must use HTTPS URLs." });
+    }
+    if (!isSupportedSpotlightSongLink(campaign.songLink)) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: "SpotlightSongLinkRequired",
+        message: "Add a Spotify or Apple Music song URL before publishing or scheduling this campaign.",
+      });
+    }
+    this.validateWindow(campaign.startsAt ?? null, campaign.expiresAt ?? null);
+    if (campaign.expiresAt && campaign.expiresAt <= now) {
+      throw new BadRequestException({ statusCode: 400, error: "SpotlightAlreadyExpired", message: "Campaign expiry must be in the future." });
+    }
   }
 
   private serializeCampaignListItem(campaign: Spotlight) {
@@ -295,6 +426,7 @@ export class AdminSpotlightService {
       subtitle: campaign.subtitle ?? null,
       artist: campaign.artist,
       song: campaign.song ?? null,
+      songLink: campaign.songLink ?? null,
       albumArt: campaign.albumArt,
       priority: campaign.priority,
       campaignType: campaign.campaignType,
@@ -315,11 +447,12 @@ export class AdminSpotlightService {
       subtitle: campaign.subtitle ?? null,
       artist: campaign.artist,
       song: campaign.song ?? null,
+      songLink: campaign.songLink ?? null,
       albumArt: campaign.albumArt,
       backgroundImage: campaign.backgroundImage ?? null,
       tag: campaign.tag,
-      buttonLabel: campaign.buttonLabel ?? null,
-      destination: campaign.deepLink ?? null,
+      buttonLabel: "Create Repit",
+      destination: SPOTLIGHT_CREATE_DESTINATION,
       priority: campaign.priority,
       campaignType: campaign.campaignType,
       status: campaign.status,
@@ -336,10 +469,13 @@ export class AdminSpotlightService {
       preview: {
         title: campaign.title,
         subtitle: campaign.subtitle ?? campaign.artist,
+        artist: campaign.artist,
+        song: campaign.song ?? null,
+        songLink: campaign.songLink ?? null,
         albumArt: campaign.albumArt,
         tag: campaign.tag,
-        destination: campaign.deepLink ?? null,
-        buttonLabel: campaign.buttonLabel ?? null,
+        destination: SPOTLIGHT_CREATE_DESTINATION,
+        buttonLabel: "Create Repit",
         backgroundImage: campaign.backgroundImage ?? null,
       },
       metrics: {
@@ -357,6 +493,7 @@ export class AdminSpotlightService {
       subtitle: campaign.subtitle ?? null,
       artist: campaign.artist,
       song: campaign.song ?? null,
+      songLink: campaign.songLink ?? null,
       albumArt: campaign.albumArt,
       backgroundImage: campaign.backgroundImage ?? null,
       campaignType: campaign.campaignType,

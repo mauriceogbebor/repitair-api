@@ -22,6 +22,7 @@ import {
   SupportTicketEscalation,
   SupportTicketResolution,
   Template,
+  TemplateDraft,
   TemplateVersion,
   User,
   UserOperationalNote,
@@ -30,6 +31,9 @@ import {
   MediaAsset,
   MediaDerivative,
   AnalyticsEvent,
+  MusicCollection,
+  MusicConnection,
+  MusicPlaylistImport,
 } from "../../entities";
 import { AuthModule } from "../auth/auth.module";
 import { NotificationsModule } from "../notifications/notifications.module";
@@ -42,11 +46,14 @@ import { AdminJobsController } from "./jobs/admin-jobs.controller";
 import { AdminAuditLogsService } from "./audit-logs/admin-audit-logs.service";
 import { AdminAuthController } from "./auth/admin-auth.controller";
 import { AdminAuthService } from "./auth/admin-auth.service";
+import { AdminMfaTicketStoreService } from "./auth/admin-mfa-ticket-store.service";
 import { AdminSessionService } from "./auth/admin-session.service";
 import { AdminTokenService } from "./auth/admin-token.service";
 import { AdminBootstrapService } from "./bootstrap/admin-bootstrap.service";
 import { AdminDashboardController } from "./dashboard/admin-dashboard.controller";
 import { AdminDashboardService } from "./dashboard/admin-dashboard.service";
+import { AdminAnalyticsController } from "./analytics/admin-analytics.controller";
+import { AdminAnalyticsService } from "./analytics/admin-analytics.service";
 import { AdminJwtAuthGuard } from "./guards/admin-jwt-auth.guard";
 import { AdminRbacGuard } from "./guards/admin-rbac.guard";
 import { AdminRequestContextMiddleware } from "./middleware/admin-request-context.middleware";
@@ -73,6 +80,9 @@ import { AdminSessionRegistryService } from "./iam/admin-session-registry.servic
 import { AdminMediaController } from "./media/admin-media.controller";
 import { AdminMediaService } from "./media/admin-media.service";
 import { MediaProcessingModule } from "../media/media-processing.module";
+import { MusicConnectionsModule } from "../music/music-connections.module";
+import { AdminMusicController } from "./music/admin-music.controller";
+import { AdminMusicService } from "./music/admin-music.service";
 
 @Module({
   imports: [
@@ -81,6 +91,7 @@ import { MediaProcessingModule } from "../media/media-processing.module";
     PlatformModule,
     PrivacyModule,
     MediaProcessingModule,
+    MusicConnectionsModule,
     TypeOrmModule.forFeature([
       AdminUser,
       AdminRole,
@@ -97,6 +108,7 @@ import { MediaProcessingModule } from "../media/media-processing.module";
       RepitModerationReport,
       PushToken,
       Template,
+      TemplateDraft,
       TemplateVersion,
       Spotlight,
       ContactSubmission,
@@ -111,11 +123,15 @@ import { MediaProcessingModule } from "../media/media-processing.module";
       MediaAsset,
       MediaDerivative,
       AnalyticsEvent,
+      MusicConnection,
+      MusicPlaylistImport,
+      MusicCollection,
     ]),
   ],
   controllers: [
     AdminAuthController,
     AdminDashboardController,
+    AdminAnalyticsController,
     AdminAuditLogsController,
     AdminUsersController,
     AdminRepitsController,
@@ -130,13 +146,16 @@ import { MediaProcessingModule } from "../media/media-processing.module";
     AdminPrivacyController,
     AdminJobsController,
     AdminMediaController,
+    AdminMusicController,
   ],
   providers: [
     AdminAuthService,
+    AdminMfaTicketStoreService,
     AdminSessionService,
     AdminTokenService,
     AdminAuditLogsService,
     AdminDashboardService,
+    AdminAnalyticsService,
     AdminUsersService,
     AdminRepitsService,
     AdminRepitModerationService,
@@ -152,6 +171,7 @@ import { MediaProcessingModule } from "../media/media-processing.module";
     AdminCsrfMiddleware,
     AdminBootstrapService,
     AdminMediaService,
+    AdminMusicService,
   ],
   exports: [
     AdminAuthService,
@@ -161,12 +181,16 @@ import { MediaProcessingModule } from "../media/media-processing.module";
     AdminJwtAuthGuard,
     AdminRbacGuard,
     AdminSessionRegistryService,
+    AdminTemplatesService,
   ],
 })
 export class AdminModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
     consumer
       .apply(AdminRequestContextMiddleware, AdminCsrfMiddleware)
-      .forRoutes({ path: "admin/(.*)", method: RequestMethod.ALL });
+      .forRoutes(
+        { path: "admin/(.*)", method: RequestMethod.ALL },
+        { path: "templates/admin/(.*)", method: RequestMethod.ALL },
+      );
   }
 }

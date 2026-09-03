@@ -17,7 +17,7 @@ describe("SocialIdentityService", () => {
   };
   let service: SocialIdentityService;
 
-  const linkedUser = { id: "user-1", email: "real@example.com" };
+  const linkedUser = { id: "user-1", email: "real@example.com", emailVerified: true };
   const createdUser = { id: "user-new", email: "created@example.com" };
 
   beforeEach(() => {
@@ -73,14 +73,15 @@ describe("SocialIdentityService", () => {
     expect(repo.save).toHaveBeenCalled(); // persists the identity link
   });
 
-  it("links an unknown subject to an existing user when a real (non-relay) email matches", async () => {
+  it("links an unknown subject to an existing user only when BOTH provider and local email are verified", async () => {
     repo.findOne.mockResolvedValue(null);
-    users.findByEmail.mockResolvedValue(linkedUser);
+    users.findByEmail.mockResolvedValue(linkedUser); // emailVerified: true
 
     const result = await service.resolveUser({
       provider: "google",
       subject: "google-sub-7",
       email: "real@example.com",
+      emailVerified: true, // provider asserts verified
       picture: "https://pic",
     });
 
@@ -88,6 +89,46 @@ describe("SocialIdentityService", () => {
     expect(users.createSocialUser).not.toHaveBeenCalled();
     expect(users.setAvatarIfMissing).toHaveBeenCalledWith("user-1", "https://pic");
     expect(result).toBe(linkedUser);
+  });
+
+  it("PRE-HIJACK GUARD: never links to an UNVERIFIED local account, even on a matching verified provider email", async () => {
+    // Attacker pre-registered the victim's email as an unverified password account.
+    repo.findOne.mockResolvedValue(null);
+    users.findByEmail.mockResolvedValue({
+      id: "attacker-1",
+      email: "victim@example.com",
+      emailVerified: false,
+    });
+
+    const result = await service.resolveUser({
+      provider: "google",
+      subject: "google-victim-sub",
+      email: "victim@example.com",
+      emailVerified: true, // Google says the address is verified…
+    });
+
+    // …but the local account is unverified, so we MUST NOT hand the victim's
+    // social login to the attacker's account. A separate account is created.
+    expect(users.createSocialUser).toHaveBeenCalled();
+    const createArg = users.createSocialUser.mock.calls[0][0];
+    expect(createArg.email).not.toBe("victim@example.com"); // synthetic, not the real email
+    expect(result).toBe(createdUser);
+    expect(result).not.toEqual(expect.objectContaining({ id: "attacker-1" }));
+  });
+
+  it("does not link when the PROVIDER email is unverified, even if the local account is verified", async () => {
+    repo.findOne.mockResolvedValue(null);
+    users.findByEmail.mockResolvedValue(linkedUser); // local emailVerified: true
+
+    const result = await service.resolveUser({
+      provider: "google",
+      subject: "google-sub-unverified-provider",
+      email: "real@example.com",
+      emailVerified: false, // provider did NOT assert verification
+    });
+
+    expect(users.createSocialUser).toHaveBeenCalled();
+    expect(result).toBe(createdUser);
   });
 
   it("creates a new user when an unknown subject has no matching account", async () => {
@@ -102,6 +143,64 @@ describe("SocialIdentityService", () => {
 
     expect(users.createSocialUser).toHaveBeenCalled();
     expect(result).toBe(createdUser);
+  });
+
+  it("PRE-HIJACK RACE: retries with a synthetic address instead of adopting the real-email winner", async () => {
+    repo.findOne.mockResolvedValue(null);
+    users.findByEmail.mockResolvedValue(null);
+    users.createSocialUser
+      .mockRejectedValueOnce(new ConflictException("email claimed"))
+      .mockResolvedValueOnce({
+        id: "isolated-social-user",
+        email: "google_hash@social.repitair.invalid",
+        signupSource: "google",
+        hasUsablePassword: false,
+      });
+
+    const result = await service.resolveUser({
+      provider: "google",
+      subject: "google-racing-victim",
+      email: "victim@example.com",
+      emailVerified: true,
+    });
+
+    expect(users.createSocialUser).toHaveBeenCalledTimes(2);
+    expect(users.createSocialUser.mock.calls[0][0].email).toBe("victim@example.com");
+    expect(users.createSocialUser.mock.calls[1][0].email).toMatch(
+      /^google_[a-f0-9]{40}@social\.repitair\.invalid$/,
+    );
+    expect(result).toEqual(expect.objectContaining({ id: "isolated-social-user" }));
+  });
+
+  it("CONCURRENCY: resolveUser loses the insert race and returns the WINNING row's user (no false success)", async () => {
+    const pgUnique = Object.assign(new (require("typeorm").QueryFailedError)("q", [], new Error("dup")), { code: "23505" });
+    repo.findOne
+      .mockResolvedValueOnce(null) // step 1: no known subject yet
+      .mockResolvedValueOnce({ id: "idn-win", userId: "winner-1" }); // reload after conflict
+    users.findByEmail.mockResolvedValue(null);
+    users.findById.mockResolvedValue({ id: "winner-1", email: "brandnew@example.com" });
+    repo.save.mockRejectedValueOnce(pgUnique); // our insert loses the race
+
+    const result = await service.resolveUser({
+      provider: "google",
+      subject: "google-race",
+      email: "brandnew@example.com",
+      emailVerified: true,
+    });
+
+    expect(result).toEqual({ id: "winner-1", email: "brandnew@example.com" });
+  });
+
+  it("CONCURRENCY: linkToUser surfaces a conflict when another user won the race for the same subject", async () => {
+    const pgUnique = Object.assign(new (require("typeorm").QueryFailedError)("q", [], new Error("dup")), { code: "23505" });
+    repo.findOne
+      .mockResolvedValueOnce(null) // no existing link when we check
+      .mockResolvedValueOnce({ id: "idn-other", userId: "other-user" }); // reload: someone else won
+    repo.save.mockRejectedValueOnce(pgUnique);
+
+    await expect(
+      service.linkToUser("user-1", { provider: "google", subject: "google-race-2", email: "real@example.com" }),
+    ).rejects.toBeInstanceOf(ConflictException);
   });
 
   it("linkToUser rejects when the identity is already linked to a different account", async () => {

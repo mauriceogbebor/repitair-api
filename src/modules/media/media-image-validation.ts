@@ -98,12 +98,62 @@ export function validateOriginalBytes(buffer: Buffer, declaredMime?: string): Im
 }
 
 /**
+ * Coarse byte-signature classification of an arbitrary provider response. Used to
+ * turn "not a valid PNG" into a diagnosable message that names WHAT the provider
+ * actually returned (a passthrough JPEG, a JSON/HTML error page, empty, …). This
+ * is diagnosis only — it never widens what we ACCEPT as a valid derivative.
+ */
+export type ProviderPayloadKind =
+  | "png" | "jpeg" | "webp" | "heic" | "gif" | "json" | "html" | "empty" | "unknown";
+
+export function classifyProviderBytes(buffer: Buffer): ProviderPayloadKind {
+  if (!buffer || buffer.length === 0) return "empty";
+  if (buffer.length >= 8 && buffer.slice(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "png";
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return "jpeg";
+  if (buffer.length >= 12 && buffer.slice(0, 4).toString("ascii") === "RIFF" && buffer.slice(8, 12).toString("ascii") === "WEBP") return "webp";
+  if (buffer.length >= 12 && buffer.slice(4, 8).toString("ascii") === "ftyp") return "heic";
+  if (buffer.length >= 4 && buffer.slice(0, 4).toString("ascii") === "GIF8") return "gif";
+  // Text payloads (provider error bodies). Sniff the first non-whitespace byte.
+  const head = buffer.slice(0, 64).toString("utf8").trimStart();
+  if (head.startsWith("{") || head.startsWith("[")) return "json";
+  if (head.startsWith("<")) return "html";
+  return "unknown";
+}
+
+/** First N bytes as hex (safe to log — never image content). */
+export function bytePrefixHex(buffer: Buffer, n = 16): string {
+  return Buffer.from(buffer.slice(0, n)).toString("hex").match(/.{1,2}/g)?.join(" ") ?? "";
+}
+
+/**
  * Validate PROVIDER OUTPUT before persisting it as a derivative. A transparent
  * derivative must be a real PNG with an alpha channel and sane dimensions —
  * otherwise the provider returned junk and we must not cache it.
+ *
+ * The rejection message NAMES what actually came back so a misconfigured provider
+ * (e.g. a stub passing through the original JPEG, or a JSON/HTML error body) is
+ * diagnosable at a glance. Acceptance is unchanged: only a real transparent PNG
+ * passes.
  */
 export function validateTransparentOutput(buffer: Buffer): ImageInspection {
-  if (buffer.length < 67) throw new BadRequestException("Provider returned an empty or truncated image");
+  const kind = classifyProviderBytes(buffer);
+  if (kind === "empty" || buffer.length < 67) {
+    throw new BadRequestException("Provider returned an empty or truncated image");
+  }
+  if (kind !== "png") {
+    const detail: Record<ProviderPayloadKind, string> = {
+      jpeg: "Background removal provider returned JPEG instead of PNG — the subject was not isolated (likely a stub/passthrough or a misconfigured provider)",
+      webp: "Background removal provider returned WebP instead of PNG",
+      heic: "Background removal provider returned HEIC instead of PNG",
+      gif: "Background removal provider returned GIF instead of PNG",
+      json: "Background removal provider returned a JSON error payload instead of an image",
+      html: "Background removal provider returned an HTML error page instead of an image",
+      unknown: "Provider output is not a valid PNG",
+      empty: "Provider returned an empty or truncated image",
+      png: "", // unreachable
+    };
+    throw new BadRequestException(detail[kind]);
+  }
   const info = inspectImage(buffer);
   if (!info || info.mime !== "image/png") throw new BadRequestException("Provider output is not a valid PNG");
   if (!info.hasAlpha) throw new BadRequestException("Provider output has no alpha channel — background was not removed");

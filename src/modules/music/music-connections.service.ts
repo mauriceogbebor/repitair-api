@@ -62,10 +62,17 @@ export class MusicConnectionsService {
     private readonly analytics: AnalyticsService,
   ) {}
 
-  private providerConnectionsEnabled(): boolean {
-    return this.config.get<string>("MUSIC_PROVIDER_CONNECTIONS_ENABLED", "false")
+  private providerConnectionsEnabled(provider?: MusicProviderName): boolean {
+    const masterEnabled = this.config.get<string>("MUSIC_PROVIDER_CONNECTIONS_ENABLED", "false")
       .trim()
       .toLowerCase() === "true";
+    if (!masterEnabled) return false;
+    if (!provider) return true;
+
+    const key = provider === "spotify"
+      ? "SPOTIFY_CONNECTIONS_ENABLED"
+      : "APPLE_MUSIC_CONNECTIONS_ENABLED";
+    return this.config.get<string>(key, "false").trim().toLowerCase() === "true";
   }
 
   private providerConnectionAllowlist(): Set<string> {
@@ -78,9 +85,19 @@ export class MusicConnectionsService {
     );
   }
 
-  async assertProviderAccess(userId: string): Promise<void> {
-    if (!this.providerConnectionsEnabled()) {
+  async assertProviderAccess(userId: string, provider?: MusicProviderName): Promise<void> {
+    if (!this.providerConnectionsEnabled(provider)) {
       throw new NotFoundException("Music account connections are not available.");
+    }
+
+    // Open-beta semantics: an EMPTY allowlist means "no per-email restriction" —
+    // any authenticated user may connect (still gated by the enabled flag above).
+    // A populated allowlist restricts access to exactly those emails. This lets a
+    // TestFlight beta connect without maintaining a per-tester email list, while
+    // still allowing a hard restriction to be re-imposed by setting the env var.
+    const allowlist = this.providerConnectionAllowlist();
+    if (allowlist.size === 0) {
+      return;
     }
 
     const user = await this.userRepo.findOne({
@@ -88,7 +105,7 @@ export class MusicConnectionsService {
       select: { id: true, email: true },
     });
     const email = user?.email?.trim().toLowerCase();
-    if (!email || !this.providerConnectionAllowlist().has(email)) {
+    if (!email || !allowlist.has(email)) {
       throw new NotFoundException("Music account connections are not available.");
     }
   }
@@ -158,7 +175,7 @@ export class MusicConnectionsService {
     provider: MusicProviderName,
     codeVerifier?: string,
   ): Promise<string> {
-    await this.assertProviderAccess(userId);
+    await this.assertProviderAccess(userId, provider);
     const state = randomBytes(32).toString("base64url");
     await this.oauthStateRepo.delete({ expiresAt: LessThan(new Date()) });
     await this.oauthStateRepo.save(
@@ -186,7 +203,7 @@ export class MusicConnectionsService {
     if (!row || row.consumedAt || row.expiresAt.getTime() <= Date.now()) {
       throw new BadRequestException("Invalid or expired music authorization state.");
     }
-    await this.assertProviderAccess(row.userId);
+    await this.assertProviderAccess(row.userId, provider);
   }
 
   async consumeOAuthState(
@@ -209,7 +226,7 @@ export class MusicConnectionsService {
         throw new BadRequestException("Invalid or expired music authorization state.");
       }
 
-      await this.assertProviderAccess(row.userId);
+      await this.assertProviderAccess(row.userId, provider);
 
       row.consumedAt = new Date();
       await repo.save(row);
@@ -235,8 +252,24 @@ export class MusicConnectionsService {
     return qb.getOne();
   }
 
+  /** The connected account's provider-side user id (e.g. Spotify user id), used
+   *  to distinguish playlists the user owns from ones they merely follow. */
+  async providerUserId(userId: string, provider: MusicProviderName): Promise<string | null> {
+    const row = await this.connectionRepo.findOne({ where: { userId, provider } });
+    return row?.providerUserId ?? null;
+  }
+
+  /** OAuth scopes granted on the connection — used to tell a "reconnect to grant
+   *  playlist access" case apart from a genuinely inaccessible playlist. */
+  async providerScopes(userId: string, provider: MusicProviderName): Promise<string[]> {
+    const row = await this.connectionRepo.findOne({ where: { userId, provider } });
+    return row?.scopes ?? [];
+  }
+
   async listConnections(userId: string): Promise<MusicConnectionSummary[]> {
     await this.assertProviderAccess(userId);
+    const enabledProviders = (["spotify", "apple-music"] as const)
+      .filter((provider) => this.providerConnectionsEnabled(provider));
     let rows = await this.connectionRepo.find({
       where: { userId },
       order: { provider: "ASC" },
@@ -253,7 +286,7 @@ export class MusicConnectionsService {
       order: { provider: "ASC" },
     });
     const byProvider = new Map(rows.map((row) => [row.provider, row]));
-    return (["spotify", "apple-music"] as const).map((provider) => {
+    return enabledProviders.map((provider) => {
       const row = byProvider.get(provider);
       return {
         provider,
@@ -272,13 +305,43 @@ export class MusicConnectionsService {
     userId: string,
     token: SpotifyTokenResponse,
   ): Promise<void> {
-    await this.assertProviderAccess(userId);
-    const profileResponse = await fetch("https://api.spotify.com/v1/me", {
-      headers: { Authorization: `Bearer ${token.access_token}` },
-      signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
-    });
+    await this.assertProviderAccess(userId, "spotify");
+    let profileResponse: Response;
+    try {
+      profileResponse = await fetch("https://api.spotify.com/v1/me", {
+        headers: { Authorization: `Bearer ${token.access_token}` },
+        signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
+      });
+    } catch {
+      throw new ServiceUnavailableException({
+        errorCode: "SPOTIFY_PROVIDER_UNAVAILABLE",
+        message: "Spotify could not be reached. Please try again in a moment.",
+      });
+    }
     if (!profileResponse.ok) {
-      throw new BadRequestException("Spotify did not authorize this account.");
+      if (profileResponse.status === 403) {
+        throw new BadRequestException({
+          errorCode: "SPOTIFY_ACCOUNT_NOT_ALLOWED",
+          message:
+            "This Spotify account is not permitted by the configured Spotify application. Ask the administrator to approve the account or enable public quota, then try again.",
+        });
+      }
+      if (profileResponse.status === 401) {
+        throw new BadRequestException({
+          errorCode: "SPOTIFY_AUTHORIZATION_INVALID",
+          message: "Spotify rejected this authorization. Start the connection again.",
+        });
+      }
+      if (profileResponse.status === 429) {
+        throw new ServiceUnavailableException({
+          errorCode: "SPOTIFY_RATE_LIMITED",
+          message: "Spotify is temporarily limiting connection requests. Please try again shortly.",
+        });
+      }
+      throw new ServiceUnavailableException({
+        errorCode: "SPOTIFY_PROFILE_UNAVAILABLE",
+        message: "Spotify could not verify this account. Please try again.",
+      });
     }
     const profile = await profileResponse.json() as { id: string; display_name?: string | null };
 
@@ -317,7 +380,7 @@ export class MusicConnectionsService {
   }
 
   async connectAppleMusic(userId: string, userToken: string): Promise<void> {
-    await this.assertProviderAccess(userId);
+    await this.assertProviderAccess(userId, "apple-music");
     if (!userToken.trim()) throw new BadRequestException("Apple Music authorization is missing.");
     const existing = await this.findConnection(userId, "apple-music", true);
     await this.connectionRepo.save(
@@ -373,7 +436,7 @@ export class MusicConnectionsService {
   }
 
   async spotifyAccessToken(userId: string): Promise<string> {
-    await this.assertProviderAccess(userId);
+    await this.assertProviderAccess(userId, "spotify");
     const pending = this.pendingSpotifyRefreshes.get(userId);
     if (pending) return pending;
     const operation = this.spotifyAccessTokenInternal(userId);
@@ -481,7 +544,7 @@ export class MusicConnectionsService {
   }
 
   async appleMusicUserToken(userId: string): Promise<string> {
-    await this.assertProviderAccess(userId);
+    await this.assertProviderAccess(userId, "apple-music");
     let connection = await this.findConnection(userId, "apple-music", true);
     if (!connection) connection = await this.migrateLegacyAppleConnection(userId);
     if (!connection || connection.status !== "connected") throw this.connectionRequired("apple-music");

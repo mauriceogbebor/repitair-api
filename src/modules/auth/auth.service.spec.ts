@@ -65,6 +65,7 @@ describe("AuthService", () => {
     const mockTokenBlacklist = {
       add: jest.fn(),
       isBlacklisted: jest.fn().mockReturnValue(false),
+      consumeOnce: jest.fn().mockResolvedValue(true),
     };
 
     const mockAppleIdentity = {
@@ -540,6 +541,86 @@ describe("AuthService", () => {
       }
     });
 
+    it("surfaces Google email_verified and enforces nonce match", async () => {
+      mockConfigService.get.mockImplementation((key: string) => {
+        if (key === "GOOGLE_CLIENT_ID") return "web.apps.googleusercontent.com";
+        return undefined;
+      });
+      const fetchMock = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          email: "g@example.com",
+          email_verified: "true",
+          aud: "web.apps.googleusercontent.com",
+          sub: "sub-1",
+          nonce: "n-123",
+        }),
+      });
+      const originalFetch = global.fetch;
+      global.fetch = fetchMock as typeof fetch;
+      try {
+        // Matching nonce passes and emailVerified is surfaced.
+        const ok = await (authService as any).verifyGoogleIdToken("google-token", "n-123", true);
+        expect(ok).toEqual(expect.objectContaining({ emailVerified: true, sub: "sub-1" }));
+
+        // Mismatched nonce is rejected (replay defense).
+        await expect(
+          (authService as any).verifyGoogleIdToken("google-token", "wrong", true),
+        ).rejects.toThrow(UnauthorizedException);
+      } finally {
+        global.fetch = originalFetch;
+      }
+    });
+
+    it("rejects a Google sign-in that omits a required nonce", async () => {
+      mockConfigService.get.mockImplementation((key: string) => {
+        if (key === "GOOGLE_CLIENT_ID") return "web.apps.googleusercontent.com";
+        return undefined;
+      });
+      const fetchMock = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ email: "g@example.com", aud: "web.apps.googleusercontent.com", sub: "sub-1" }),
+      });
+      const originalFetch = global.fetch;
+      global.fetch = fetchMock as typeof fetch;
+      try {
+        await expect(
+          (authService as any).verifyGoogleIdToken("google-token", undefined, true),
+        ).rejects.toThrow(new UnauthorizedException("Google token missing required nonce"));
+      } finally {
+        global.fetch = originalFetch;
+      }
+    });
+
+    it("nonceRequired() flips on via SOCIAL_AUTH_REQUIRE_NONCE and the time-bounded cutoff", () => {
+      mockConfigService.get.mockImplementation((key: string) => {
+        if (key === "SOCIAL_AUTH_REQUIRE_NONCE") return "true";
+        return undefined;
+      });
+      expect((authService as any).nonceRequired()).toBe(true);
+
+      mockConfigService.get.mockImplementation((key: string) => {
+        if (key === "SOCIAL_AUTH_NONCE_REQUIRED_AFTER") return "2000-01-01";
+        return undefined;
+      });
+      expect((authService as any).nonceRequired()).toBe(true); // cutoff in the past
+
+      mockConfigService.get.mockImplementation((key: string) => {
+        if (key === "SOCIAL_AUTH_NONCE_REQUIRED_AFTER") return "2999-01-01";
+        return undefined;
+      });
+      expect((authService as any).nonceRequired()).toBe(false); // cutoff in the future
+    });
+
+    it("requires nonces by default in production", () => {
+      mockConfigService.get.mockImplementation((key: string) => {
+        if (key === "NODE_ENV") return "production";
+        return undefined;
+      });
+
+      expect((authService as any).nonceRequired()).toBe(true);
+    });
+
     it("rejects a Google token whose aud is not in the accepted set", async () => {
       mockConfigService.get.mockImplementation((key: string) => {
         if (key === "GOOGLE_CLIENT_ID") return "web.apps.googleusercontent.com";
@@ -580,6 +661,7 @@ describe("AuthService", () => {
       appleIdentity.verifyIdentityToken.mockResolvedValue({
         email: "john@example.com",
         sub: "apple-sub-1",
+        emailVerified: true,
       });
 
       const result = await (authService as any).verifyAppleIdToken(
@@ -589,18 +671,19 @@ describe("AuthService", () => {
 
       expect(appleIdentity.verifyIdentityToken).toHaveBeenCalledWith(
         "apple-token",
-        { expectedNonce: "nonce-123" },
+        { expectedNonce: "nonce-123", requireNonce: false },
       );
       // The Apple identity token must NOT be routed through NestJS JwtService
       // (whose key is the symmetric JWT_SECRET) — that was the RS256 defect.
       expect(jwtService.verify).not.toHaveBeenCalled();
-      expect(result).toEqual({ email: "john@example.com", sub: "apple-sub-1" });
+      expect(result).toEqual({ email: "john@example.com", sub: "apple-sub-1", emailVerified: true });
     });
 
     it("socialAuth resolves Apple by provider subject (not email) and issues a session", async () => {
       appleIdentity.verifyIdentityToken.mockResolvedValue({
         email: "mc5ph9zs44@privaterelay.appleid.com",
         sub: "apple-sub-42",
+        emailVerified: true,
       });
       socialIdentity.resolveUser.mockResolvedValue(mockUser);
       (jwtService.sign as jest.Mock).mockReturnValue(mockToken);
@@ -613,7 +696,7 @@ describe("AuthService", () => {
 
       expect(appleIdentity.verifyIdentityToken).toHaveBeenCalledWith(
         "apple-identity-token",
-        { expectedNonce: "nonce-xyz" },
+        { expectedNonce: "nonce-xyz", requireNonce: false },
       );
       // Identity resolution keys on the stable subject, and email lookup is NOT
       // used as the primary key (that is what created duplicate relay accounts).
@@ -624,6 +707,26 @@ describe("AuthService", () => {
       expect(result).toEqual(
         expect.objectContaining({ token: mockToken, refreshToken: expect.any(String) }),
       );
+    });
+
+    it("rejects a replayed social nonce before resolving an account", async () => {
+      appleIdentity.verifyIdentityToken.mockResolvedValue({
+        email: "john@example.com",
+        sub: "apple-sub-replay",
+        emailVerified: true,
+        exp: Math.floor(Date.now() / 1000) + 300,
+      });
+      (tokenBlacklist.consumeOnce as jest.Mock).mockResolvedValueOnce(false);
+
+      await expect(
+        authService.socialAuth({
+          provider: "apple",
+          idToken: "replayed-identity-token",
+          nonce: "already-used",
+        }),
+      ).rejects.toThrow(new UnauthorizedException("Social sign-in nonce has already been used"));
+
+      expect(socialIdentity.resolveUser).not.toHaveBeenCalled();
     });
 
     it("socialAuth resolves Google by provider subject and passes the picture through", async () => {

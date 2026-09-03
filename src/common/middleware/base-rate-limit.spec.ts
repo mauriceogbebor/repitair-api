@@ -99,3 +99,35 @@ describe("BaseRateLimiter Redis availability", () => {
     limiter.onModuleDestroy();
   });
 });
+
+describe("BaseRateLimiter authenticated bucketing", () => {
+  it("separates authenticated users behind the same IP", () => {
+    const first = {
+      headers: { authorization: "Bearer token-1" },
+      ip: "10.0.0.1",
+    } as Request;
+    const second = {
+      headers: { authorization: "Bearer token-2" },
+      ip: "10.0.0.1",
+    } as Request;
+    const verify = (token: string) => ({ sub: token === "token-1" ? "user-1" : "user-2" });
+
+    expect(BaseRateLimiter.authenticatedOrIpKey(first, "general", verify)).toBe("general:user:user-1");
+    expect(BaseRateLimiter.authenticatedOrIpKey(second, "general", verify)).toBe("general:user:user-2");
+  });
+
+  it("uses an IP bucket when no bearer token is present", () => {
+    const request = { headers: {}, ip: "10.0.0.1" } as Request;
+    expect(BaseRateLimiter.authenticatedOrIpKey(request, "general", jest.fn())).toBe("general:ip:10.0.0.1");
+  });
+
+  it("keeps a forged bearer token in the IP bucket", () => {
+    const request = {
+      headers: { authorization: "Bearer forged-token" },
+      ip: "10.0.0.1",
+    } as Request;
+    const verify = () => { throw new Error("invalid signature"); };
+
+    expect(BaseRateLimiter.authenticatedOrIpKey(request, "general", verify)).toBe("general:ip:10.0.0.1");
+  });
+});

@@ -345,7 +345,11 @@ export class AdminDashboardService {
       { id: "api", label: "API", status: databaseHealthy ? "healthy" : "critical", available: true, detail: databaseHealthy ? "Dashboard request and database probe succeeded." : "Database probe failed." },
       { id: "postgresql", label: "PostgreSQL", status: databaseHealthy ? "healthy" : "critical", available: true, detail: databaseHealthy ? "Connection probe succeeded." : "Connection probe failed." },
       { id: "redis", label: "Redis", status: isRedisReady(this.redis) ? "healthy" : "warning", available: true, detail: isRedisReady(this.redis) ? "Shared cache client is ready." : "Unavailable; services are using documented in-memory fallbacks." },
-      unprobed("email", "Email", configured(["SMTP_HOST", "RESEND_API_KEY"])),
+      unprobed(
+        "email",
+        "Email",
+        configured(["SENDGRID_API_KEY", "SMTP_HOST", "RESEND_API_KEY"]),
+      ),
       unprobed("push", "Push Notifications", configured(["EXPO_ACCESS_TOKEN"])),
       unprobed("storage", "Storage", configured(["AWS_S3_BUCKET", "S3_BUCKET", "CLOUDINARY_URL"])),
       unprobed("workers", "Background Workers", configured(["QUEUE_URL", "REDIS_URL"])),

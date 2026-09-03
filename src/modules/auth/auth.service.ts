@@ -4,6 +4,7 @@ import {
   Logger,
   BadRequestException,
   ConflictException,
+  HttpException,
   NotFoundException,
   Optional,
   ServiceUnavailableException,
@@ -11,7 +12,8 @@ import {
 } from "@nestjs/common";
 import { JwtService, type JwtSignOptions } from "@nestjs/jwt";
 import { ConfigService } from "@nestjs/config";
-import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "crypto";
+import { createHash, createHmac, createPublicKey, randomBytes, randomUUID, timingSafeEqual } from "crypto";
+import * as jwt from "jsonwebtoken";
 
 import { UsersService } from "../users/users.service";
 import { MailService } from "../../common/services/mail.service";
@@ -22,7 +24,10 @@ import { SocialAuthDto } from "./dto/social-auth.dto";
 import { MusicConnectionsService } from "../music/music-connections.service";
 import { AppleIdentityService } from "./apple-identity.service";
 import { SocialIdentityService, type SocialConnection } from "./social-identity.service";
+import { AnalyticsService, ANALYTICS_EVENTS } from "../analytics/analytics.service";
 import type { SocialAuthProvider } from "../../entities";
+import { spotifyRedirectUriProblem } from "./spotify-redirect-uri";
+import { renderBrandedEmail } from "../../common/services/email-template";
 
 @Injectable()
 export class AuthService {
@@ -38,7 +43,13 @@ export class AuthService {
     private readonly appleIdentity: AppleIdentityService,
     private readonly socialIdentity: SocialIdentityService,
     @Optional() private readonly musicConnections?: MusicConnectionsService,
+    @Optional() private readonly analytics?: AnalyticsService,
   ) {}
+
+  /** Fire-and-forget analytics emit; never blocks or breaks the auth path. */
+  private emit(name: string, userId: string, properties?: Record<string, unknown>) {
+    void this.analytics?.track(name, { userId, properties, source: "backend" });
+  }
 
   private requireSecret(key: string): string {
     const value = this.configService.get<string>(key);
@@ -63,6 +74,7 @@ export class AuthService {
       signupSource: "email",
     });
 
+    this.emit(ANALYTICS_EVENTS.USER_REGISTERED, user.id, { method: "email" });
     return this.issueSession(user);
   }
 
@@ -94,6 +106,7 @@ export class AuthService {
     }
 
     await this.usersService.recordLogin(user.id);
+    this.emit(ANALYTICS_EVENTS.LOGIN, user.id, { method: "email" });
     return this.issueSession(user);
   }
 
@@ -106,12 +119,14 @@ export class AuthService {
       provider: dto.provider,
       subject: identity.subject,
       email: identity.email,
+      emailVerified: identity.emailVerified,
       fullName: dto.fullName || identity.name || undefined,
       picture: identity.picture,
     });
 
     this.assertUserCanSignIn(user);
     await this.usersService.recordLogin(user.id);
+    this.emit(ANALYTICS_EVENTS.LOGIN, user.id, { method: dto.provider });
 
     return this.issueSession(user);
   }
@@ -127,6 +142,7 @@ export class AuthService {
       provider: dto.provider,
       subject: identity.subject,
       email: identity.email,
+      emailVerified: identity.emailVerified,
       fullName: dto.fullName || identity.name || undefined,
       picture: identity.picture,
     });
@@ -203,20 +219,83 @@ export class AuthService {
     return this.getLinkedAuthProviders(userId);
   }
 
+  /**
+   * Whether a nonce is mandatory for social auth right now. Nonce binding is the
+   * replay defense for OAuth. Older released clients do not send one, so we allow
+   * a single, explicit, time-bounded compatibility window controlled by config —
+   * never an indefinitely-optional nonce:
+   *   - `SOCIAL_AUTH_REQUIRE_NONCE=true` forces enforcement immediately, OR
+   *   - the current date is on/after `SOCIAL_AUTH_NONCE_REQUIRED_AFTER` (ISO date).
+   * Once either trips, a request without a verifiable nonce is rejected.
+   */
+  private nonceRequired(): boolean {
+    if (this.configService.get<string>("SOCIAL_AUTH_REQUIRE_NONCE") === "true") {
+      return true;
+    }
+    const cutoff = this.configService.get<string>("SOCIAL_AUTH_NONCE_REQUIRED_AFTER");
+    if (cutoff) {
+      const cutoffTime = Date.parse(cutoff);
+      if (!Number.isNaN(cutoffTime) && Date.now() >= cutoffTime) {
+        return true;
+      }
+    }
+    // New production deployments fail closed. A compatibility window must be
+    // explicit and future-dated; development/test remain permissive so provider
+    // fixtures that predate nonce support can still run.
+    return this.configService.get<string>("NODE_ENV") === "production";
+  }
+
   private async verifySocialToken(
     dto: SocialAuthDto,
-  ): Promise<{ subject: string; email: string | null; name?: string | null; picture?: string | null }> {
+  ): Promise<{
+    subject: string;
+    email: string | null;
+    emailVerified: boolean;
+    name?: string | null;
+    picture?: string | null;
+  }> {
+    const requireNonce = this.nonceRequired();
     if (dto.provider === "google") {
-      const payload = await this.verifyGoogleIdToken(dto.idToken);
-      return { subject: payload.sub, email: payload.email, name: payload.name, picture: payload.picture };
+      const payload = await this.verifyGoogleIdToken(dto.idToken, dto.nonce, requireNonce);
+      await this.consumeSocialNonce(dto.provider, dto.nonce, payload.exp);
+      return {
+        subject: payload.sub,
+        email: payload.email,
+        emailVerified: payload.emailVerified,
+        name: payload.name,
+        picture: payload.picture,
+      };
     }
-    const payload = await this.verifyAppleIdToken(dto.idToken, dto.nonce);
-    return { subject: payload.sub, email: payload.email, name: null, picture: null };
+    const payload = await this.verifyAppleIdToken(dto.idToken, dto.nonce, requireNonce);
+    await this.consumeSocialNonce(dto.provider, dto.nonce, payload.exp);
+    return {
+      subject: payload.sub,
+      email: payload.email,
+      emailVerified: payload.emailVerified,
+      name: null,
+      picture: null,
+    };
+  }
+
+  private async consumeSocialNonce(
+    provider: SocialAuthProvider,
+    nonce?: string,
+    expiresAt?: number,
+  ): Promise<void> {
+    if (!nonce) return;
+    const digest = createHash("sha256").update(`${provider}:${nonce}`).digest("hex");
+    const accepted = await this.tokenBlacklist.consumeOnce(`social-nonce:${digest}`, expiresAt);
+    if (!accepted) {
+      this.logger.warn(`provider=${provider} nonce_replay`);
+      throw new UnauthorizedException("Social sign-in nonce has already been used");
+    }
   }
 
   private async verifyGoogleIdToken(
     idToken: string,
-  ): Promise<{ email: string; name?: string; sub: string; picture?: string | null }> {
+    expectedNonce?: string,
+    requireNonce = false,
+  ): Promise<{ email: string; emailVerified: boolean; name?: string; sub: string; picture?: string | null; exp?: number }> {
     // The token's `aud` is the client ID that INITIATED the OAuth request. On
     // iOS that is the iOS client ID, on Android the Android client ID — NOT the
     // web `GOOGLE_CLIENT_ID`. All client IDs the app can use must therefore be
@@ -249,10 +328,13 @@ export class AuthService {
       }
       const payload = (await response.json()) as {
         email?: string;
+        email_verified?: boolean | string;
         name?: string;
         aud?: string;
         sub?: string;
         picture?: string;
+        nonce?: string;
+        exp?: string | number;
       };
 
       if (!payload.aud || !expectedClientIds.includes(payload.aud)) {
@@ -274,7 +356,25 @@ export class AuthService {
         throw new UnauthorizedException("Google token missing subject");
       }
 
-      return { email: payload.email, name: payload.name, sub: payload.sub, picture: payload.picture ?? null };
+      // Nonce binding (replay defense). Enforce when required; when a nonce is
+      // supplied it must match the token's `nonce` claim regardless.
+      if (requireNonce && !expectedNonce) {
+        throw new UnauthorizedException("Google token missing required nonce");
+      }
+      if (expectedNonce && payload.nonce !== expectedNonce) {
+        this.logger.warn("provider=google nonce_mismatch");
+        throw new UnauthorizedException("Google token nonce mismatch");
+      }
+
+      return {
+        email: payload.email,
+        emailVerified:
+          payload.email_verified === true || payload.email_verified === "true",
+        name: payload.name,
+        sub: payload.sub,
+        picture: payload.picture ?? null,
+        exp: payload.exp == null ? undefined : Number(payload.exp),
+      };
     } catch (error) {
       if (error instanceof UnauthorizedException || error instanceof ServiceUnavailableException) throw error;
       this.logger.error("Google token verification failed", error);
@@ -292,11 +392,13 @@ export class AuthService {
   private async verifyAppleIdToken(
     idToken: string,
     nonce?: string,
-  ): Promise<{ email: string; sub: string }> {
-    const { email, sub } = await this.appleIdentity.verifyIdentityToken(idToken, {
-      expectedNonce: nonce,
-    });
-    return { email, sub };
+    requireNonce = false,
+  ): Promise<{ email: string; emailVerified: boolean; sub: string; exp?: number }> {
+    const { email, sub, emailVerified, exp } = await this.appleIdentity.verifyIdentityToken(
+      idToken,
+      { expectedNonce: nonce, requireNonce },
+    );
+    return { email, sub, emailVerified, exp };
   }
 
   async forgotPassword(email: string) {
@@ -346,7 +448,7 @@ export class AuthService {
   }
 
   async refresh(refreshToken: string) {
-    let payload: { sub: string; email: string; jti: string; type: string; sessionVersion?: number; exp?: number };
+    let payload: { sub: string; email: string; jti: string; type: string; sessionVersion?: number; authTime?: number; exp?: number };
     try {
       payload = this.jwtService.verify(refreshToken, { secret: this.getRefreshSecret() }) as typeof payload;
     } catch (error) {
@@ -378,17 +480,17 @@ export class AuthService {
     }
 
     await this.tokenBlacklist.add(blacklistKey, payload.exp);
-    return this.issueSession(user);
+    return this.issueSession(user, payload.authTime);
   }
 
-  async upgradeSession(currentToken: string, userId: string) {
+  async upgradeSession(currentToken: string, userId: string, authTime?: number) {
     const user = await this.usersService.findById(userId);
     if (!user) {
       throw this.sessionUnauthorized("SESSION_INVALID", "The user session no longer exists.");
     }
     this.assertUserCanSignIn(user);
     await this.revokeAccessToken(currentToken);
-    return this.issueSession(user);
+    return this.issueSession(user, authTime);
   }
 
   async sendEmailVerification(userId: string, email: string) {
@@ -399,14 +501,17 @@ export class AuthService {
         await this.mailService.sendRaw({
           to: email,
           subject: "Verify your Repitair email",
-          html: `
-            <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 400px; margin: 0 auto; padding: 24px;">
-              <h2 style="color: #111;">Verify your email</h2>
-              <p>Hi ${user?.fullName ?? "there"}, use this code to verify your email address:</p>
-              <div style="background: #f0f0f0; border-radius: 8px; padding: 16px; text-align: center; font-size: 32px; font-weight: 700; letter-spacing: 4px;">${code}</div>
-              <p style="color: #888; font-size: 13px; margin-top: 16px;">This code expires in 30 minutes.</p>
-            </div>
-          `,
+          html: renderBrandedEmail({
+            preheader: "Your Repitair email verification code (expires in 30 minutes).",
+            heading: "Verify your email",
+            intro: [
+              `Hi ${user?.fullName?.trim() || "there"},`,
+              "Use this code to verify your email address:",
+            ],
+            code,
+            note: "This code expires in 30 minutes. If you didn't request this, you can ignore this email.",
+          }),
+          sensitive: true,
         });
       } catch (err) {
         this.logger.error(`Failed to send verification email to ${email}: ${(err as Error).message}`);
@@ -424,8 +529,19 @@ export class AuthService {
     return { verified: true };
   }
 
-  private signToken(userId: string, email: string, sessionVersion: number): string {
-    return this.jwtService.sign({ sub: userId, email, sessionVersion, jti: randomUUID() });
+  private signToken(
+    userId: string,
+    email: string,
+    sessionVersion: number,
+    authTime: number,
+  ): string {
+    return this.jwtService.sign({
+      sub: userId,
+      email,
+      sessionVersion,
+      authTime,
+      jti: randomUUID(),
+    });
   }
 
   private issueSession(user: {
@@ -436,13 +552,21 @@ export class AuthService {
     connectedPlatforms: string[];
     avatarUrl?: string | null;
     sessionVersion?: number;
-  }) {
+  }, existingAuthTime?: number) {
     const sessionVersion = user.sessionVersion ?? 0;
-    const token = this.signToken(user.id, user.email, sessionVersion);
+    const authTime = existingAuthTime ?? Math.floor(Date.now() / 1000);
+    const token = this.signToken(user.id, user.email, sessionVersion, authTime);
     const accessPayload = this.jwtService.decode(token) as { exp?: number } | null;
     const refreshJti = randomUUID();
     const refreshToken = this.jwtService.sign(
-      { sub: user.id, email: user.email, sessionVersion, jti: refreshJti, type: "refresh" },
+      {
+        sub: user.id,
+        email: user.email,
+        sessionVersion,
+        authTime,
+        jti: refreshJti,
+        type: "refresh",
+      },
       {
         secret: this.getRefreshSecret(),
         expiresIn: (this.configService.get<string>("JWT_REFRESH_EXPIRES_IN") ?? "30d") as JwtSignOptions["expiresIn"],
@@ -531,9 +655,43 @@ export class AuthService {
       ? await this.musicConnections.createOAuthState(userId, "apple-music")
       : this.signOAuthState(userId);
 
-    const baseUrl = this.configService.get<string>("API_BASE_URL") || "http://localhost:3000";
+    const baseUrl = this.resolveAppleMusicAuthBaseUrl();
     const params = new URLSearchParams({ state });
     return `${baseUrl}/auth/apple-music/authorize?${params.toString()}`;
+  }
+
+  private resolveAppleMusicAuthBaseUrl(): string {
+    const configuredBaseUrl = this.configService.get<string>("APPLE_MUSIC_AUTH_BASE_URL")?.trim();
+    const nodeEnv = this.configService.get<string>("NODE_ENV")?.trim().toLowerCase();
+    if (!configuredBaseUrl && nodeEnv === "production") {
+      throw new ServiceUnavailableException(
+        "Apple Music is not available. APPLE_MUSIC_AUTH_BASE_URL must be configured to an Apple-approved HTTPS origin.",
+      );
+    }
+
+    const candidate = configuredBaseUrl
+      || this.configService.get<string>("API_BASE_URL")?.trim()
+      || "http://localhost:3000";
+    let parsed: URL;
+    try {
+      parsed = new URL(candidate);
+    } catch {
+      throw new ServiceUnavailableException("Apple Music authorization URL is invalid.");
+    }
+
+    const isLocalhost = ["localhost", "127.0.0.1"].includes(parsed.hostname);
+    if (!isLocalhost && parsed.protocol !== "https:") {
+      throw new ServiceUnavailableException("Apple Music authorization must use HTTPS.");
+    }
+    if (parsed.hostname.endsWith(".up.railway.app")) {
+      throw new ServiceUnavailableException(
+        "Apple Music authorization must use the Apple-approved custom domain, not a Railway service domain.",
+      );
+    }
+
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString().replace(/\/$/, "");
   }
 
   async validateAppleMusicAuthorizationState(state: string): Promise<void> {
@@ -554,25 +712,185 @@ export class AuthService {
 
     try {
       const privateKey = privateKeyStr.replace(/\\n/g, "\n");
-      const now = Math.floor(Date.now() / 1000);
-      const exp = now + 6 * 30 * 24 * 60 * 60;
-
-      const header = { alg: "ES256", kid: keyId, typ: "JWT" };
-      const payload = { iss: teamId, iat: now, exp };
-
-      const headerEnc = Buffer.from(JSON.stringify(header)).toString("base64url");
-      const payloadEnc = Buffer.from(JSON.stringify(payload)).toString("base64url");
-      const message = `${headerEnc}.${payloadEnc}`;
-
-      const { createSign } = require("crypto");
-      const sig = createSign("sha256").update(message).sign({ key: privateKey, format: "pem" }, "base64");
-      const sigEnc = Buffer.from(sig, "base64").toString("base64url");
-
-      return `${message}.${sigEnc}`;
+      // MusicKit requires a JOSE ES256 JWT: the ECDSA signature must be the raw
+      // r‖s (IEEE P1363) form. Node's crypto.createSign(...).sign() emits an
+      // ASN.1 DER signature by default, which Apple rejects with
+      // ERROR_FAILED_TO_VERIFY_JWT. Sign with the jsonwebtoken library (as the
+      // catalog-lookup path already does) so the encoding is correct.
+      const token = jwt.sign({}, privateKey, {
+        algorithm: "ES256",
+        expiresIn: "180d",
+        header: { alg: "ES256", kid: keyId },
+        issuer: teamId,
+      });
+      return token;
     } catch (err) {
       this.logger.error("Failed to generate MusicKit developer token", err);
       return null;
     }
+  }
+
+  /**
+   * Structural validation of a MusicKit developer token — three JWT segments,
+   * ES256 header with a non-empty `kid`, and a payload with a non-empty `iss`
+   * (team id) that has not already expired. This catches the common staging
+   * misconfiguration (missing/mangled key id or private key) before we hand a
+   * broken token to Apple's authorize page, which would otherwise present a
+   * generic "Problem Connecting" error to the user.
+   */
+  isDeveloperTokenWellFormed(token: string | null | undefined): boolean {
+    if (!token || typeof token !== "string") return false;
+    const segments = token.split(".");
+    if (segments.length !== 3) return false;
+    try {
+      const header = JSON.parse(Buffer.from(segments[0], "base64url").toString("utf8")) as {
+        alg?: string;
+        kid?: string;
+      };
+      const payload = JSON.parse(Buffer.from(segments[1], "base64url").toString("utf8")) as {
+        iss?: string;
+        exp?: number;
+      };
+      if (header.alg !== "ES256") return false;
+      if (!header.kid || typeof header.kid !== "string") return false;
+      if (!payload.iss || typeof payload.iss !== "string") return false;
+      if (typeof payload.exp !== "number" || payload.exp <= Math.floor(Date.now() / 1000)) return false;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Cryptographically verify a MusicKit developer token against the public key
+   * derived from the configured `.p8` private key. This catches the exact class
+   * of signing bug that produced `ERROR_FAILED_TO_VERIFY_JWT` (e.g. a DER-
+   * encoded ECDSA signature instead of JOSE r‖s) *before* the token ever
+   * reaches Apple. It cannot detect a wrong Key ID / Team ID (only Apple can),
+   * but it guarantees the signature itself is a valid ES256 JOSE signature for
+   * this key.
+   */
+  developerTokenSelfVerifies(token: string | null | undefined): boolean {
+    if (!token) return false;
+    const privateKeyStr = this.configService.get<string>("APPLE_MUSIC_PRIVATE_KEY");
+    if (!privateKeyStr) return false;
+    try {
+      const privateKey = privateKeyStr.replace(/\\n/g, "\n");
+      const publicKey = createPublicKey({ key: privateKey, format: "pem" });
+      jwt.verify(token, publicKey, { algorithms: ["ES256"] });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Safe, secret-free report of whether this environment is configured for the
+   * music OAuth flows. Returns only booleans (and the non-secret Spotify
+   * redirect URI, which is required to match the provider dashboard) so it can
+   * be surfaced to an admin to diagnose "connect fails" without leaking any
+   * client secrets or signing keys.
+   */
+  getOAuthConfigDiagnostics(): {
+    apiBaseUrl: { configured: boolean; isLocalhost: boolean };
+    spotify: {
+      clientId: boolean;
+      clientSecret: boolean;
+      redirectUri: string | null;
+      redirectUriHttps: boolean;
+      redirectUriCallbackPath: boolean;
+      redirectUriValid: boolean;
+      redirectUriProblem: string | null;
+      ready: boolean;
+    };
+    appleMusic: {
+      authBaseUrlConfigured: boolean;
+      authBaseUrlHttps: boolean;
+      authBaseUrlUsesRailwayDomain: boolean;
+      teamId: boolean;
+      keyId: boolean;
+      privateKey: boolean;
+      developerTokenGenerates: boolean;
+      developerTokenWellFormed: boolean;
+      developerTokenSelfVerifies: boolean;
+      ready: boolean;
+    };
+  } {
+    const apiBaseUrl = this.configService.get<string>("API_BASE_URL");
+    const spotifyClientId = Boolean(this.configService.get<string>("SPOTIFY_CLIENT_ID"));
+    const spotifyClientSecret = Boolean(this.configService.get<string>("SPOTIFY_CLIENT_SECRET"));
+    const spotifyRedirectUri = this.configService.get<string>("SPOTIFY_REDIRECT_URI") ?? null;
+    let spotifyRedirectUriHttps = false;
+    let spotifyRedirectUriCallbackPath = false;
+    if (spotifyRedirectUri) {
+      try {
+        const parsed = new URL(spotifyRedirectUri);
+        spotifyRedirectUriHttps = parsed.protocol === "https:";
+        spotifyRedirectUriCallbackPath = parsed.pathname === "/api/auth/spotify/callback";
+      } catch {
+        // Invalid URLs are reported through redirectUriProblem below.
+      }
+    }
+    // Single source of truth for validity (also catches comma-separated lists).
+    const spotifyRedirectUriProblemMessage = spotifyRedirectUriProblem(spotifyRedirectUri);
+    const spotifyRedirectUriValid = spotifyRedirectUriProblemMessage === null;
+
+    const teamId = Boolean(this.configService.get<string>("APPLE_MUSIC_TEAM_ID"));
+    const keyId = Boolean(this.configService.get<string>("APPLE_MUSIC_KEY_ID"));
+    const privateKey = Boolean(this.configService.get<string>("APPLE_MUSIC_PRIVATE_KEY"));
+    const appleMusicAuthBaseUrl = this.configService.get<string>("APPLE_MUSIC_AUTH_BASE_URL")?.trim();
+    let authBaseUrlHttps = false;
+    let authBaseUrlUsesRailwayDomain = false;
+    if (appleMusicAuthBaseUrl) {
+      try {
+        const parsed = new URL(appleMusicAuthBaseUrl);
+        authBaseUrlHttps = parsed.protocol === "https:";
+        authBaseUrlUsesRailwayDomain = parsed.hostname.endsWith(".up.railway.app");
+      } catch {
+        // Invalid URLs remain not ready and are reported through the booleans.
+      }
+    }
+    const developerToken = this.generateMusicKitDeveloperToken();
+    const developerTokenGenerates = Boolean(developerToken);
+    const developerTokenWellFormed = this.isDeveloperTokenWellFormed(developerToken);
+    const developerTokenSelfVerifies = this.developerTokenSelfVerifies(developerToken);
+
+    return {
+      apiBaseUrl: {
+        configured: Boolean(apiBaseUrl),
+        isLocalhost: Boolean(apiBaseUrl && /localhost|127\.0\.0\.1/.test(apiBaseUrl)),
+      },
+      spotify: {
+        clientId: spotifyClientId,
+        clientSecret: spotifyClientSecret,
+        redirectUri: spotifyRedirectUri,
+        redirectUriHttps: spotifyRedirectUriHttps,
+        redirectUriCallbackPath: spotifyRedirectUriCallbackPath,
+        redirectUriValid: spotifyRedirectUriValid,
+        redirectUriProblem: spotifyRedirectUriProblemMessage,
+        ready: spotifyClientId && spotifyRedirectUriValid,
+      },
+      appleMusic: {
+        authBaseUrlConfigured: Boolean(appleMusicAuthBaseUrl),
+        authBaseUrlHttps,
+        authBaseUrlUsesRailwayDomain,
+        teamId,
+        keyId,
+        privateKey,
+        developerTokenGenerates,
+        developerTokenWellFormed,
+        developerTokenSelfVerifies,
+        // A self-verifiable token guarantees the signature is valid ES256 JOSE
+        // for this key — the class of failure behind ERROR_FAILED_TO_VERIFY_JWT.
+        ready: Boolean(appleMusicAuthBaseUrl)
+          && authBaseUrlHttps
+          && !authBaseUrlUsesRailwayDomain
+          && teamId
+          && keyId
+          && privateKey
+          && developerTokenSelfVerifies,
+      },
+    };
   }
 
   async handleAppleMusicCallback(state: string, userToken: string): Promise<{ success: boolean; message: string }> {
@@ -609,6 +927,10 @@ export class AuthService {
       throw new ServiceUnavailableException(
         "Spotify OAuth is not available. SPOTIFY_CLIENT_ID and SPOTIFY_REDIRECT_URI must be configured.",
       );
+    }
+    const redirectProblem = spotifyRedirectUriProblem(redirectUri);
+    if (redirectProblem) {
+      throw new ServiceUnavailableException(`Spotify OAuth is misconfigured: ${redirectProblem}`);
     }
 
     const codeVerifier = randomBytes(64).toString("base64url");
@@ -650,6 +972,12 @@ export class AuthService {
         "Spotify OAuth is not available. SPOTIFY_CLIENT_ID and SPOTIFY_REDIRECT_URI must be configured.",
       );
     }
+    const redirectProblem = spotifyRedirectUriProblem(redirectUri);
+    if (redirectProblem) {
+      // Must match the authorize call byte-for-byte; fail fast rather than let
+      // Spotify reject the token exchange with an opaque error.
+      throw new ServiceUnavailableException(`Spotify OAuth is misconfigured: ${redirectProblem}`);
+    }
 
     const oauthState = this.musicConnections
       ? await this.musicConnections.consumeOAuthState(state, "spotify")
@@ -662,22 +990,47 @@ export class AuthService {
       headers.Authorization = `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`;
     }
 
+    const tokenBody = new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: redirectUri,
+      ...(oauthState.codeVerifier ? { code_verifier: oauthState.codeVerifier } : {}),
+      ...(!clientSecret ? { client_id: clientId } : {}),
+    });
     const tokenResponse = await fetch("https://accounts.spotify.com/api/token", {
       method: "POST",
       headers,
       signal: AbortSignal.timeout(12_000),
-      body: new URLSearchParams({
-        grant_type: "authorization_code",
-        code,
-        redirect_uri: redirectUri,
-        client_id: clientId,
-        ...(oauthState.codeVerifier ? { code_verifier: oauthState.codeVerifier } : {}),
-      }).toString(),
+      body: tokenBody.toString(),
     });
 
     if (!tokenResponse.ok) {
-      this.logger.error(`Spotify token exchange failed with status ${tokenResponse.status}`);
-      throw new BadRequestException("Failed to exchange authorization code for tokens");
+      const providerError = await tokenResponse
+        .json()
+        .catch(() => ({})) as { error?: string; error_description?: string };
+      const providerErrorCode = typeof providerError.error === "string"
+        ? providerError.error.slice(0, 80)
+        : "unknown";
+      this.logger.error(
+        `Spotify token exchange failed status=${tokenResponse.status} providerError=${providerErrorCode}`,
+      );
+
+      if (providerErrorCode === "invalid_client") {
+        throw new BadRequestException({
+          errorCode: "SPOTIFY_CONFIGURATION_INVALID",
+          message: "Spotify is not configured correctly for this environment.",
+        });
+      }
+      if (providerErrorCode === "invalid_grant") {
+        throw new BadRequestException({
+          errorCode: "SPOTIFY_AUTHORIZATION_EXPIRED",
+          message: "This Spotify authorization expired or was already used. Start the connection again.",
+        });
+      }
+      throw new BadRequestException({
+        errorCode: "SPOTIFY_TOKEN_EXCHANGE_FAILED",
+        message: "Spotify could not complete the authorization. Please try again.",
+      });
     }
 
     const tokenData = (await tokenResponse.json()) as {
@@ -698,6 +1051,9 @@ export class AuthService {
     } catch (err) {
       if (err instanceof NotFoundException) {
         throw new BadRequestException("Invalid state parameter");
+      }
+      if (err instanceof HttpException) {
+        throw err;
       }
       this.logger.error(`Failed to save Spotify authorization for user ${oauthState.userId}: ${(err as Error).message}`);
       throw new BadRequestException("Failed to connect Spotify account");

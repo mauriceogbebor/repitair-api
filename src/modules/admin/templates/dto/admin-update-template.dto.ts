@@ -1,4 +1,4 @@
-import { IsArray, IsBoolean, IsNumber, IsObject, IsOptional, IsString, Max, Min } from "class-validator";
+import { ArrayMaxSize, IsArray, IsBoolean, IsNotEmpty, IsNumber, IsObject, IsOptional, IsString, Max, MaxLength, Min } from "class-validator";
 import type {
   TemplateCapabilities,
   TemplateDesignTokens,
@@ -11,14 +11,20 @@ import type {
 export class AdminUpdateTemplateDto {
   @IsOptional()
   @IsString()
+  @IsNotEmpty()
+  @MaxLength(120)
   name?: string;
 
   @IsOptional()
   @IsString()
+  @IsNotEmpty()
+  @MaxLength(80)
   style?: string;
 
   @IsOptional()
   @IsString()
+  @IsNotEmpty()
+  @MaxLength(80)
   category?: string;
 
   @IsOptional()
@@ -39,10 +45,12 @@ export class AdminUpdateTemplateDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(80)
   layoutVariant?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(80)
   playerVariant?: string;
 
   @IsOptional()
@@ -53,17 +61,21 @@ export class AdminUpdateTemplateDto {
 
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(12)
   @IsString({ each: true })
   previewImages?: string[];
 
   @IsOptional()
+  @IsObject()
   composition?: Record<string, unknown>;
 
   @IsOptional()
+  @IsObject()
   canvasMeta?: Record<string, unknown>;
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   changeSummary?: string;
 
   /* ── Template-First Metadata (Sprint D) ─────────────────────── */

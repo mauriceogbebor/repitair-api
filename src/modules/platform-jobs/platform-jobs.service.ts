@@ -373,7 +373,10 @@ export class PlatformJobsService {
   }
 
   // ── Reads for the admin Jobs module ──────────────────────────────────────
-  async list(filters: { queue?: string; type?: string; domain?: string; status?: PlatformJobStatus; search?: string; page?: number; pageSize?: number }) {
+  async list(
+    filters: { queue?: string; type?: string; domain?: string; status?: PlatformJobStatus; search?: string; page?: number; pageSize?: number },
+    view: { payload?: boolean; errors?: boolean } = {},
+  ) {
     const page = Math.max(filters.page ?? 1, 1);
     const pageSize = Math.min(filters.pageSize ?? 25, 100);
     const qb = this.jobs.createQueryBuilder("j");
@@ -385,11 +388,11 @@ export class PlatformJobsService {
     const total = await qb.getCount();
     qb.orderBy("j.createdAt", "DESC").offset((page - 1) * pageSize).limit(pageSize);
     const rows = await qb.getMany();
-    return { total, page, pageSize, records: rows.map((j) => this.redact(j)) };
+    return { total, page, pageSize, records: rows.map((j) => this.redact(j, view)) };
   }
 
-  async detail(id: string) {
-    return this.redact(await this.requireJob(id), true);
+  async detail(id: string, view: { payload?: boolean; errors?: boolean } = {}) {
+    return this.redact(await this.requireJob(id), view);
   }
 
   /** Latest media job for operational correlation without exposing payload values. */
@@ -454,9 +457,18 @@ export class PlatformJobsService {
     return reclaimed;
   }
 
-  /** Redact sensitive payload values — never expose export contents / tokens / PII. */
-  private redact(job: PlatformJob, includePayloadKeys = false) {
-    const payloadKeys = job.payload ? Object.keys(job.payload) : [];
+  /**
+   * Redact a job for the admin surface. Payload VALUES are never returned.
+   * Least-privilege view scopes:
+   *   - base `jobs.view`: lifecycle, timing, attempts, operational identifiers.
+   *   - `jobs.view_payload` (opts.payload): payload KEYS, metadata, derived
+   *     related-resource id.
+   *   - `jobs.view_errors` (opts.errors): error code + message.
+   */
+  private redact(job: PlatformJob, opts: { payload?: boolean; errors?: boolean } = {}) {
+    const showPayload = opts.payload === true;
+    const showErrors = opts.errors === true;
+    const payloadKeys = showPayload && job.payload ? Object.keys(job.payload) : [];
     const result = job.result ? { outcome: (job.result as Record<string, unknown>).outcome ?? null, summary: (job.result as Record<string, unknown>).packageSummary ?? (job.result as Record<string, unknown>).steps ? "[recorded]" : null } : null;
     return {
       id: job.id, queue: job.queue, type: job.type, domain: job.domain, status: job.status, priority: job.priority,
@@ -466,12 +478,13 @@ export class PlatformJobsService {
       scheduledFor: job.scheduledFor ?? null, queuedAt: job.queuedAt ?? null, startedAt: job.startedAt ?? null,
       completedAt: job.completedAt ?? null, failedAt: job.failedAt ?? null, cancelledAt: job.cancelledAt ?? null,
       nextRetryAt: job.nextRetryAt ?? null, heartbeatAt: job.heartbeatAt ?? null, durationMs: job.durationMs ?? null,
-      lastErrorCode: job.lastErrorCode ?? null, lastErrorMessage: job.lastErrorMessage ?? null,
-      payloadKeys, // keys only — values are never returned to the admin
+      lastErrorCode: showErrors ? job.lastErrorCode ?? null : null,
+      lastErrorMessage: showErrors ? job.lastErrorMessage ?? null : null,
+      payloadKeys, // keys only, and only with jobs.view_payload — values are never returned
       result,
-      relatedResource: job.payload ? (job.payload.privacyRequestId ?? job.payload.notificationId ?? job.payload.spotlightId ?? null) : null,
+      relatedResource: showPayload && job.payload ? (job.payload.privacyRequestId ?? job.payload.notificationId ?? job.payload.spotlightId ?? null) : null,
       createdAt: job.createdAt, updatedAt: job.updatedAt,
-      metadata: includePayloadKeys ? job.metadata ?? null : null,
+      metadata: showPayload ? job.metadata ?? null : null,
     };
   }
 }

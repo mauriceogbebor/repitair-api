@@ -65,6 +65,8 @@ describe("MusicConnectionsService", () => {
     rows.splice(0);
     user.connectedPlatforms = [];
     configValues.MUSIC_PROVIDER_CONNECTIONS_ENABLED = "true";
+    configValues.SPOTIFY_CONNECTIONS_ENABLED = "true";
+    configValues.APPLE_MUSIC_CONNECTIONS_ENABLED = "true";
     configValues.MUSIC_PROVIDER_CONNECTION_ALLOWLIST = "tester@repitair.com";
     jest.clearAllMocks();
     service = new MusicConnectionsService(
@@ -85,11 +87,29 @@ describe("MusicConnectionsService", () => {
     expect(connectionRepo.find).not.toHaveBeenCalled();
   });
 
+  it("can release Apple Music while Spotify remains quota-gated", async () => {
+    configValues.SPOTIFY_CONNECTIONS_ENABLED = "false";
+    configValues.APPLE_MUSIC_CONNECTIONS_ENABLED = "true";
+
+    await expect(service.listConnections("user-1")).resolves.toEqual([
+      expect.objectContaining({ provider: "apple-music" }),
+    ]);
+    await expect(service.spotifyAccessToken("user-1")).rejects.toMatchObject({ status: 404 });
+  });
+
   it("rejects authenticated users who are not in the staging allowlist", async () => {
     configValues.MUSIC_PROVIDER_CONNECTION_ALLOWLIST = "another@repitair.com";
 
     await expect(service.spotifyAccessToken("user-1")).rejects.toMatchObject({ status: 404 });
     expect(connectionRepo.createQueryBuilder).not.toHaveBeenCalled();
+  });
+
+  it("allows any authenticated user when the allowlist is empty (open beta)", async () => {
+    configValues.MUSIC_PROVIDER_CONNECTION_ALLOWLIST = "";
+
+    // Resolves rather than throwing the 404 the populated-allowlist path raises
+    // for a non-listed user — i.e. the empty allowlist opens access to all.
+    await expect(service.listConnections("user-1")).resolves.toBeDefined();
   });
 
   it("stores Spotify authorization encrypted and returns only shaped account metadata", async () => {
@@ -112,6 +132,26 @@ describe("MusicConnectionsService", () => {
     expect(summary[0]).toEqual(expect.objectContaining({ provider: "spotify", accountName: "Listener", playlistCount: 43 }));
     expect(JSON.stringify(summary)).not.toContain("raw-access-token");
     expect(JSON.stringify(summary)).not.toContain("raw-refresh-token");
+  });
+
+  it("reports when Spotify rejects an account that is not approved for the development app", async () => {
+    fetchSpy = jest.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ error: { status: 403 } }), { status: 403 }),
+    );
+
+    await expect(service.connectSpotify("user-1", {
+      access_token: "raw-access-token",
+      refresh_token: "raw-refresh-token",
+      expires_in: 3600,
+      scope: "playlist-read-private",
+    })).rejects.toMatchObject({
+      status: 400,
+      response: {
+        errorCode: "SPOTIFY_ACCOUNT_NOT_ALLOWED",
+        message: expect.stringContaining("approve the account"),
+      },
+    });
+    expect(rows).toHaveLength(0);
   });
 
   it("refreshes an expired Spotify token on the backend and preserves a rotated refresh token", async () => {

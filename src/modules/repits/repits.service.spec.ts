@@ -45,6 +45,7 @@ describe("RepitsService", () => {
   };
 
   const mockUploadsService = {
+    canonicalReadUrl: jest.fn((url: string | null | undefined) => url),
     deleteFile: jest.fn().mockResolvedValue(undefined),
     uploadFile: jest.fn(),
   };
@@ -171,6 +172,38 @@ describe("RepitsService", () => {
         canvasMeta: null,
       }));
     });
+
+    it("refreshes managed photo URLs across the complete editable Repit", async () => {
+      const legacyUrl = "https://repitair-staging.s3.eu-west-1.amazonaws.com/photo.jpg";
+      const durableUrl = "https://api-staging.repitair.com/api/uploads/photo.jpg";
+      mockUploadsService.canonicalReadUrl.mockImplementation((url) => (
+        url === legacyUrl ? durableUrl : url
+      ));
+      mockRepository.findOne.mockResolvedValue({
+        ...mockRepit,
+        backgroundPhotoUrl: legacyUrl,
+        composition: {
+          ...validComposition,
+          layers: [{
+            ...validComposition.layers[0],
+            data: { uri: legacyUrl },
+          }],
+        },
+        editorState: { mediaOriginalPhotoUrl: legacyUrl },
+      });
+
+      const result = await service.getRepit("user_1", mockRepit.id);
+
+      expect(result).toEqual(expect.objectContaining({
+        backgroundPhotoUrl: durableUrl,
+        editorState: expect.objectContaining({ mediaOriginalPhotoUrl: durableUrl }),
+        composition: expect.objectContaining({
+          layers: [expect.objectContaining({
+            data: expect.objectContaining({ uri: durableUrl }),
+          })],
+        }),
+      }));
+    });
   });
 
   describe("createRepit", () => {
@@ -182,6 +215,14 @@ describe("RepitsService", () => {
         songLink: "https://example.com/track",
         platform: RepitPlatform.SPOTIFY,
         backgroundPhotoUrl: "https://example.com/photo.jpg",
+        selectedSongs: [{
+          songLink: "https://example.com/track",
+          songTitle: "New Song",
+          artistName: "New Artist",
+          platform: RepitPlatform.SPOTIFY,
+          isExplicit: true,
+          progressFraction: 0.5,
+        }],
       };
 
       const newRepit = {
@@ -211,6 +252,7 @@ describe("RepitsService", () => {
           songLink: createDto.songLink,
           status: "draft",
           backgroundPhotoUrl: createDto.backgroundPhotoUrl,
+          selectedSongs: createDto.selectedSongs,
         }),
       );
       expect(repository.save).toHaveBeenCalled();

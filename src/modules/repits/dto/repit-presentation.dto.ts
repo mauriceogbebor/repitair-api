@@ -1,9 +1,12 @@
 import {
+  IsBoolean,
   IsEnum,
   IsNumber,
   IsOptional,
   IsString,
   IsUrl,
+  Max,
+  Min,
 } from "class-validator";
 
 export enum RepitPlatform {
@@ -32,6 +35,16 @@ export class RepitSongSelectionDto {
   @IsOptional()
   @IsUrl({}, { message: "albumArtUrl must be a valid URL" })
   albumArtUrl?: string | null;
+
+  @IsOptional()
+  @IsBoolean()
+  isExplicit?: boolean | null;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(1)
+  progressFraction?: number | null;
 }
 
 export class RepitWidgetTransformDto {

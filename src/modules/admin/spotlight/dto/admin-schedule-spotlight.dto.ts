@@ -1,11 +1,10 @@
-import { IsOptional, IsString } from "class-validator";
+import { IsISO8601, IsOptional } from "class-validator";
 
 export class AdminScheduleSpotlightDto {
-  @IsOptional()
-  @IsString()
-  startsAt?: string;
+  @IsISO8601()
+  startsAt!: string;
 
   @IsOptional()
-  @IsString()
-  expiresAt?: string;
+  @IsISO8601()
+  expiresAt?: string | null;
 }

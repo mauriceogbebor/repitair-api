@@ -1,10 +1,12 @@
 import { Test, TestingModule } from "@nestjs/testing";
+import { ConfigService } from "@nestjs/config";
 import { JwtService } from "@nestjs/jwt";
 import { AuthController } from "./auth.controller";
 import { AuthService } from "./auth.service";
 import { TokenBlacklistService } from "../../common/services/token-blacklist.service";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { User } from "../../entities";
+import { BadRequestException } from "@nestjs/common";
 
 describe("AuthController", () => {
   let authController: AuthController;
@@ -36,6 +38,9 @@ describe("AuthController", () => {
       handleSpotifyCallback: jest.fn(),
       validateAppleMusicAuthorizationState: jest.fn(),
       generateMusicKitDeveloperToken: jest.fn(),
+      isDeveloperTokenWellFormed: jest.fn().mockReturnValue(true),
+      developerTokenSelfVerifies: jest.fn().mockReturnValue(true),
+      getOAuthConfigDiagnostics: jest.fn(),
       handleAppleMusicCallback: jest.fn(),
     };
 
@@ -57,6 +62,12 @@ describe("AuthController", () => {
         {
           provide: TokenBlacklistService,
           useValue: { isBlacklisted: jest.fn().mockResolvedValue(false), add: jest.fn() },
+        },
+        {
+          // Required so the AdminEmailGuard on GET /auth/oauth/diagnostics can be
+          // instantiated by the testing module (its canActivate isn't exercised here).
+          provide: ConfigService,
+          useValue: { get: jest.fn() },
         },
       ],
     }).compile();
@@ -398,12 +409,17 @@ describe("AuthController", () => {
         sub: "user_1",
         email: "john@example.com",
         token: "legacy-access-token",
+        authTime: 1_700_000_000,
       };
       const response = { token: "next-access", refreshToken: "next-refresh" };
       (authService.upgradeSession as jest.Mock).mockResolvedValue(response);
 
       await expect(authController.upgradeSession(user)).resolves.toEqual(response);
-      expect(authService.upgradeSession).toHaveBeenCalledWith(user.token, user.sub);
+      expect(authService.upgradeSession).toHaveBeenCalledWith(
+        user.token,
+        user.sub,
+        user.authTime,
+      );
     });
   });
 
@@ -440,6 +456,21 @@ describe("AuthController", () => {
         url: "repitair://spotify-connected?status=error&message=Could+not+connect+Spotify.+Please+try+again.",
       });
     });
+
+    it("preserves a safe Spotify account eligibility error for the mobile callback", async () => {
+      (authService.handleSpotifyCallback as jest.Mock).mockRejectedValue(
+        new BadRequestException({
+          errorCode: "SPOTIFY_ACCOUNT_NOT_ALLOWED",
+          message: "This Spotify account is not approved for the staging app.",
+        }),
+      );
+
+      const result = await authController.spotifyCallback("code", "state", undefined);
+
+      expect(result).toEqual({
+        url: "repitair://spotify-connected?status=error&message=This+Spotify+account+is+not+approved+for+the+staging+app.&reason=SPOTIFY_ACCOUNT_NOT_ALLOWED",
+      });
+    });
   });
 
   describe("GET /auth/apple-music/authorize", () => {
@@ -462,6 +493,41 @@ describe("AuthController", () => {
         "const CALLBACK_URL = new URL('callback', window.location.href).toString();",
       );
       expect(html).not.toContain("window.location.origin + '/auth/apple-music/callback'");
+    });
+
+    it("fails loudly with a config error instead of serving a broken MusicKit page when the developer token is malformed", async () => {
+      (authService.validateAppleMusicAuthorizationState as jest.Mock).mockResolvedValue(undefined);
+      (authService.generateMusicKitDeveloperToken as jest.Mock).mockReturnValue("malformed-token");
+      (authService.isDeveloperTokenWellFormed as jest.Mock).mockReturnValue(false);
+      const send = jest.fn();
+      const response = {
+        redirect: jest.fn(),
+        type: jest.fn().mockReturnThis(),
+        send,
+      };
+
+      await authController.appleMusicAuthorize("oauth-state", response as never);
+
+      // No MusicKit page served; a deep-link error redirect is issued instead.
+      expect(send).not.toHaveBeenCalled();
+      expect(response.redirect).toHaveBeenCalledTimes(1);
+      expect(String(response.redirect.mock.calls[0][0])).toContain("repitair://apple-music-connected");
+      expect(String(response.redirect.mock.calls[0][0])).toContain("status=error");
+    });
+
+    it("preflight rejects a well-formed token that does not self-verify (the ERROR_FAILED_TO_VERIFY_JWT class)", async () => {
+      (authService.validateAppleMusicAuthorizationState as jest.Mock).mockResolvedValue(undefined);
+      (authService.generateMusicKitDeveloperToken as jest.Mock).mockReturnValue("well-formed-but-wrong-signature");
+      (authService.isDeveloperTokenWellFormed as jest.Mock).mockReturnValue(true);
+      (authService.developerTokenSelfVerifies as jest.Mock).mockReturnValue(false);
+      const send = jest.fn();
+      const response = { redirect: jest.fn(), type: jest.fn().mockReturnThis(), send };
+
+      await authController.appleMusicAuthorize("oauth-state", response as never);
+
+      expect(send).not.toHaveBeenCalled();
+      expect(response.redirect).toHaveBeenCalledTimes(1);
+      expect(String(response.redirect.mock.calls[0][0])).toContain("status=error");
     });
   });
 });

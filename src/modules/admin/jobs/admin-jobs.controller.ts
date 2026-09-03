@@ -36,9 +36,19 @@ export class AdminJobsController {
     return this.jobs.workerHealth();
   }
 
+  /** Least-privilege view scope derived from the caller's granted permissions. */
+  private viewScope(req: AdminRequest): { payload: boolean; errors: boolean } {
+    const perms = req.adminUser?.permissionKeys ?? [];
+    return {
+      payload: perms.includes("jobs.view_payload"),
+      errors: perms.includes("jobs.view_errors"),
+    };
+  }
+
   @Get()
   @AdminPermissions("jobs.view")
   list(
+    @Req() req: AdminRequest,
     @Query("queue") queue?: string,
     @Query("type") type?: string,
     @Query("domain") domain?: string,
@@ -46,13 +56,13 @@ export class AdminJobsController {
     @Query("search") search?: string,
     @Query("page") page?: string,
   ) {
-    return this.jobs.list({ queue, type, domain, status, search, page: page ? Number(page) : 1 });
+    return this.jobs.list({ queue, type, domain, status, search, page: page ? Number(page) : 1 }, this.viewScope(req));
   }
 
   @Get(":id")
   @AdminPermissions("jobs.view")
-  detail(@Param("id") id: string) {
-    return this.jobs.detail(id);
+  detail(@Param("id") id: string, @Req() req: AdminRequest) {
+    return this.jobs.detail(id, this.viewScope(req));
   }
 
   @Post(":id/retry")
@@ -67,7 +77,7 @@ export class AdminJobsController {
       afterState: { status: job.status },
       metadata: { reason: body.reason, correlationId: job.correlationId ?? null },
     });
-    return this.jobs.detail(id);
+    return this.jobs.detail(id, this.viewScope(req));
   }
 
   @Post(":id/cancel")
@@ -81,6 +91,6 @@ export class AdminJobsController {
       beforeState: { status: before.status }, afterState: { status: job.status },
       metadata: { reason: body.reason, correlationId: job.correlationId ?? null },
     });
-    return this.jobs.detail(id);
+    return this.jobs.detail(id, this.viewScope(req));
   }
 }

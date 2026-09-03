@@ -1,6 +1,7 @@
 import { Injectable, UnauthorizedException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { JwtService } from "@nestjs/jwt";
+import { randomUUID } from "crypto";
 
 export type AdminAccessTokenPayload = {
   sub: string;
@@ -14,7 +15,10 @@ export type AdminAccessTokenPayload = {
 export type AdminMfaTicketPayload = {
   sub: string;
   email: string;
+  jti: string;
   tokenType: "admin-mfa-ticket";
+  exp?: number;
+  iat?: number;
 };
 
 @Injectable()
@@ -23,7 +27,11 @@ export class AdminTokenService {
   private readonly mfaTicketJwt: JwtService;
 
   constructor(private readonly configService: ConfigService) {
-    const secret = this.configService.get<string>("ADMIN_JWT_SECRET") ?? "admin-dev-secret-change-me";
+    const configuredSecret = this.configService.get<string>("ADMIN_JWT_SECRET");
+    if (!configuredSecret && this.configService.get<string>("NODE_ENV") === "production") {
+      throw new Error("ADMIN_JWT_SECRET is required in production");
+    }
+    const secret = configuredSecret ?? "admin-dev-secret-change-me";
     const accessExpiresIn = this.configService.get<string>("ADMIN_JWT_EXPIRES_IN") ?? "8h";
     const ticketExpiresIn = this.configService.get<string>("ADMIN_MFA_TICKET_EXPIRES_IN") ?? "10m";
 
@@ -47,14 +55,14 @@ export class AdminTokenService {
     }
   }
 
-  signMfaTicket(payload: Omit<AdminMfaTicketPayload, "tokenType">): string {
-    return this.mfaTicketJwt.sign({ ...payload, tokenType: "admin-mfa-ticket" });
+  signMfaTicket(payload: Omit<AdminMfaTicketPayload, "tokenType" | "jti">): string {
+    return this.mfaTicketJwt.sign({ ...payload, jti: randomUUID(), tokenType: "admin-mfa-ticket" });
   }
 
   verifyMfaTicket(ticket: string): AdminMfaTicketPayload {
     try {
       const payload = this.mfaTicketJwt.verify<AdminMfaTicketPayload>(ticket);
-      if (payload.tokenType !== "admin-mfa-ticket") {
+      if (payload.tokenType !== "admin-mfa-ticket" || !payload.jti) {
         throw new UnauthorizedException("Invalid MFA ticket type");
       }
       return payload;

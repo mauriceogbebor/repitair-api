@@ -147,6 +147,31 @@ describe("UploadsService", () => {
     });
   });
 
+  describe("durable read URLs", () => {
+    it("returns an application proxy URL for a server-owned key", () => {
+      expect(service.urlForKey("photo.jpg")).toBe(
+        "http://localhost:4000/api/uploads/photo.jpg",
+      );
+    });
+
+    it("normalizes legacy private-S3 object URLs to the application proxy", () => {
+      Object.assign(service, {
+        uploadProvider: "s3",
+        s3Bucket: "repitair-staging",
+        awsRegion: "eu-west-1",
+      });
+
+      expect(service.canonicalReadUrl(
+        "https://repitair-staging.s3.eu-west-1.amazonaws.com/photo.jpg?X-Amz-Signature=expired",
+      )).toBe("http://localhost:4000/api/uploads/photo.jpg");
+    });
+
+    it("does not rewrite third-party artwork URLs", () => {
+      const url = "https://i.scdn.co/image/album-art";
+      expect(service.canonicalReadUrl(url)).toBe(url);
+    });
+  });
+
   describe("deleteFile", () => {
     it("should remove file from disk", async () => {
       (fs.existsSync as jest.Mock).mockReturnValue(true);

@@ -1,4 +1,11 @@
-import { ConflictException, Injectable, NotFoundException } from "@nestjs/common";
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  UnauthorizedException,
+} from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository, ILike, QueryFailedError } from "typeorm";
 import * as bcrypt from "bcryptjs";
@@ -7,10 +14,26 @@ import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto
 import { User } from "../../entities";
 import { UploadsService } from "../uploads/uploads.service";
 import { PrivacyService } from "../privacy/privacy.service";
+import { MailService } from "../../common/services/mail.service";
+import { renderBrandedEmail } from "../../common/services/email-template";
 
 export type { User as UserRecord };
 
 const PG_UNIQUE_VIOLATION = "23505";
+
+/** Minimum gap between email-change requests for one user (request rate limit). */
+const EMAIL_CHANGE_REQUEST_COOLDOWN_MS = 60 * 1000;
+/** How long a pending email confirmation code is valid. */
+const EMAIL_CHANGE_TTL_MS = 30 * 60 * 1000;
+/** Failed confirmation attempts that void the pending change. */
+const EMAIL_CHANGE_MAX_ATTEMPTS = 5;
+/** Password accounts reauthenticate with their password. Social-only accounts
+ * must present an access token whose authTime was established by their own
+ * provider login inside this window. A user-wide lastLoginAt timestamp is not a
+ * valid proof because a different session can refresh it.
+ */
+const SOCIAL_RECENT_AUTH_WINDOW_MS = 15 * 60 * 1000;
+const RESERVED_SOCIAL_EMAIL_SUFFIXES = ["@users.repitair.com", "@social.repitair.invalid"];
 
 function isUniqueViolation(err: unknown): boolean {
   return err instanceof QueryFailedError && (err as QueryFailedError & { code?: string }).code === PG_UNIQUE_VIOLATION;
@@ -30,6 +53,11 @@ const LEGACY_MISSING_USER_COLUMNS = [
   "lastLoginAt",
   "signupSource",
   "sessionVersion",
+  "pendingEmail",
+  "pendingEmailCodeHash",
+  "pendingEmailExpiresAt",
+  "pendingEmailAttempts",
+  "pendingEmailRequestedAt",
 ];
 
 function isLegacyUserSchemaError(err: unknown): boolean {
@@ -43,11 +71,14 @@ function isLegacyUserSchemaError(err: unknown): boolean {
 
 @Injectable()
 export class UsersService {
+  private readonly logger = new Logger(UsersService.name);
+
   constructor(
     @InjectRepository(User)
     private readonly usersRepo: Repository<User>,
     private readonly uploadsService: UploadsService,
     private readonly privacyService: PrivacyService,
+    private readonly mailService: MailService,
   ) {}
 
   async findByEmail(email: string): Promise<User | null> {
@@ -119,7 +150,11 @@ export class UsersService {
     password: string;
     signupSource?: string | null;
   }): Promise<User> {
-    const existing = await this.findByEmail(data.email);
+    const normalizedEmail = data.email.trim().toLowerCase();
+    if (RESERVED_SOCIAL_EMAIL_SUFFIXES.some((suffix) => normalizedEmail.endsWith(suffix))) {
+      throw new BadRequestException("Please use a valid personal email address");
+    }
+    const existing = await this.findByEmail(normalizedEmail);
     if (existing) {
       throw new ConflictException("An account with this email already exists");
     }
@@ -128,7 +163,7 @@ export class UsersService {
 
     const user = this.usersRepo.create({
       fullName: data.fullName,
-      email: data.email.toLowerCase(),
+      email: normalizedEmail,
       country: data.country,
       passwordHash,
       connectedPlatforms: [],
@@ -178,8 +213,10 @@ export class UsersService {
       return await this.usersRepo.save(user);
     } catch (err) {
       if (isUniqueViolation(err)) {
-        const existing = await this.findByEmail(data.email);
-        if (existing) return existing;
+        // Never return the row that won an email race. The caller may be in the
+        // middle of linking a provider subject, and adopting that row would
+        // recreate the social-account pre-hijacking vulnerability.
+        throw new ConflictException("An account with this email already exists");
       }
       throw err;
     }
@@ -289,35 +326,189 @@ export class UsersService {
     return true;
   }
 
+  /**
+   * Update mutable profile fields. Email is intentionally NOT accepted here:
+   * changing the primary email is a security-sensitive operation that must go
+   * through the verified pending-email workflow ({@link requestEmailChange} /
+   * {@link confirmEmailChange}), which proves control of the new address before
+   * replacing it. Any `email` supplied to this method is ignored.
+   */
   async updateProfile(
     userId: string,
-    data: { fullName?: string; email?: string; country?: string; avatarUrl?: string },
+    data: { fullName?: string; country?: string; avatarUrl?: string },
   ): Promise<User | null> {
     const user = await this.findById(userId);
     if (!user) return null;
 
-    if (data.email && data.email.toLowerCase() !== user.email) {
-      const existing = await this.findByEmail(data.email);
-      if (existing && existing.id !== userId) {
-        throw new ConflictException("An account with this email already exists");
-      }
-    }
-
     if (data.fullName !== undefined) user.fullName = data.fullName;
-    if (data.email !== undefined) user.email = data.email.toLowerCase();
     if (data.country !== undefined) user.country = data.country;
     if (data.avatarUrl !== undefined) {
       user.avatarUrl = data.avatarUrl.trim() || undefined;
     }
 
+    return this.usersRepo.save(user);
+  }
+
+  private normalizeEmail(email: string): string {
+    return email.trim().toLowerCase();
+  }
+
+  /**
+   * Step 1 of an email change. Requires a recent-authentication proof, stages
+   * the new (normalized) address, and emails a single-use code to it. Only a
+   * hash of the code is stored. The response is intentionally uniform: it never
+   * reveals whether the target address already belongs to another account.
+   *
+   * @returns the raw code ONLY for a genuinely stageable change (tests/dev);
+   *          production callers email it and discard it. Returns null when the
+   *          request was accepted but not staged (e.g. address already in use).
+   */
+  async requestEmailChange(
+    userId: string,
+    rawNewEmail: string,
+    currentPassword?: string,
+    sessionAuthTimeSeconds?: number,
+  ): Promise<{ staged: boolean; code: string | null }> {
+    const user = await this.findById(userId);
+    if (!user) throw new NotFoundException("User not found");
+
+    const newEmail = this.normalizeEmail(rawNewEmail);
+    if (newEmail === user.email) {
+      throw new BadRequestException("That is already your email address.");
+    }
+
+    // Recent-authentication proof.
+    if (user.hasUsablePassword) {
+      if (!currentPassword || !(await this.validatePassword(user, currentPassword))) {
+        throw new UnauthorizedException("Your current password is required to change your email.");
+      }
+    } else {
+      // Social-only account: the proof must belong to THIS bearer session. Do
+      // not consult user.lastLoginAt: another session can update that value.
+      const authTimeMs = Number.isFinite(sessionAuthTimeSeconds)
+        ? Number(sessionAuthTimeSeconds) * 1000
+        : 0;
+      if (authTimeMs <= 0 || Date.now() - authTimeMs > SOCIAL_RECENT_AUTH_WINDOW_MS) {
+        throw new UnauthorizedException("Please sign in again before changing your email.");
+      }
+    }
+
+    // Request rate limit (per user).
+    if (
+      user.pendingEmailRequestedAt &&
+      Date.now() - new Date(user.pendingEmailRequestedAt).getTime() < EMAIL_CHANGE_REQUEST_COOLDOWN_MS
+    ) {
+      throw new BadRequestException("Please wait a moment before requesting another email change.");
+    }
+
+    // Enumeration-safe: if the address already belongs to another account we
+    // accept the request and return the same shape, but stage nothing and send
+    // no code — the caller cannot distinguish "taken" from "sent".
+    const existing = await this.findByEmail(newEmail);
+    if (existing && existing.id !== userId) {
+      user.pendingEmailRequestedAt = new Date();
+      await this.usersRepo.save(user);
+      return { staged: false, code: null };
+    }
+
+    const code = String(randomInt(100000, 1000000));
+    user.pendingEmail = newEmail;
+    user.pendingEmailCodeHash = this.hashCode(code);
+    user.pendingEmailExpiresAt = new Date(Date.now() + EMAIL_CHANGE_TTL_MS);
+    user.pendingEmailAttempts = 0;
+    user.pendingEmailRequestedAt = new Date();
+    await this.usersRepo.save(user);
+
+    // Best-effort delivery to the NEW address (proves control of that mailbox).
+    try {
+      await this.mailService.sendRaw({
+        to: newEmail,
+        subject: "Confirm your new Repitair email",
+        html: renderBrandedEmail({
+          preheader: "Confirm your new Repitair email address (code expires in 30 minutes).",
+          heading: "Confirm your new email",
+          intro: "Use this code to confirm this address on your Repitair account:",
+          code,
+          note: "This code expires in 30 minutes. If you didn't request this, you can ignore it — your current email stays unchanged.",
+        }),
+        sensitive: true,
+      });
+    } catch (err) {
+      this.logger.error(`Failed to send email-change code: ${(err as Error).message}`);
+    }
+
+    return { staged: true, code };
+  }
+
+  /**
+   * Step 2 of an email change. Verifies the single-use code, then atomically
+   * swaps the primary email to the pending address, marks it verified, clears
+   * all pending state, and bumps `sessionVersion` to revoke existing sessions.
+   * A uniqueness collision that appeared between request and confirmation is
+   * surfaced (never a silent/false success) and the pending change is cleared.
+   */
+  async confirmEmailChange(userId: string, code: string): Promise<User> {
+    const user = await this.findById(userId);
+    if (!user) throw new NotFoundException("User not found");
+
+    if (!user.pendingEmail || !user.pendingEmailCodeHash || !user.pendingEmailExpiresAt) {
+      throw new BadRequestException("There is no pending email change to confirm.");
+    }
+
+    if (new Date(user.pendingEmailExpiresAt) < new Date()) {
+      await this.clearPendingEmail(user);
+      throw new BadRequestException("Your email confirmation code has expired.");
+    }
+
+    if (user.pendingEmailAttempts >= EMAIL_CHANGE_MAX_ATTEMPTS) {
+      await this.clearPendingEmail(user);
+      throw new BadRequestException("Too many attempts. Please request the email change again.");
+    }
+
+    const expected = Buffer.from(user.pendingEmailCodeHash, "utf8");
+    const received = Buffer.from(this.hashCode(code), "utf8");
+    const matches = expected.length === received.length && timingSafeEqual(expected, received);
+    if (!matches) {
+      user.pendingEmailAttempts += 1;
+      await this.usersRepo.save(user);
+      throw new BadRequestException("That confirmation code is incorrect.");
+    }
+
+    const pending = user.pendingEmail;
+    user.email = pending;
+    user.emailVerified = true;
+    // Revoke every previously issued session — the identity backing them changed.
+    user.sessionVersion = (user.sessionVersion ?? 0) + 1;
+    this.resetPendingEmailFields(user);
+
     try {
       return await this.usersRepo.save(user);
     } catch (err) {
       if (isUniqueViolation(err)) {
-        throw new ConflictException("An account with this email already exists");
+        // Someone claimed this address between request and confirmation. Do not
+        // report success; clear the stale pending change and surface the clash.
+        const fresh = await this.findById(userId);
+        if (fresh) {
+          this.resetPendingEmailFields(fresh);
+          await this.usersRepo.save(fresh);
+        }
+        throw new ConflictException("That email address is no longer available.");
       }
       throw err;
     }
+  }
+
+  private resetPendingEmailFields(user: User): void {
+    user.pendingEmail = null;
+    user.pendingEmailCodeHash = null;
+    user.pendingEmailExpiresAt = null;
+    user.pendingEmailAttempts = 0;
+    user.pendingEmailRequestedAt = null;
+  }
+
+  private async clearPendingEmail(user: User): Promise<void> {
+    this.resetPendingEmailFields(user);
+    await this.usersRepo.save(user);
   }
 
   async changePassword(userId: string, newPassword: string): Promise<boolean> {

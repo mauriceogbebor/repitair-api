@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from "@nestjs/common";
+import { BadRequestException, Injectable, Optional } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { In, Not, QueryFailedError, Repository } from "typeorm";
 
@@ -18,6 +18,7 @@ import {
 } from "../media/media-processing.service";
 import { CreateRepitDto } from "./dto/create-repit.dto";
 import { UpdateRepitDto } from "./dto/update-repit.dto";
+import { AnalyticsService, ANALYTICS_EVENTS } from "../analytics/analytics.service";
 
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 100;
@@ -88,7 +89,13 @@ export class RepitsService {
     private readonly templatesRepo: Repository<Template>,
     private readonly uploadsService: UploadsService,
     private readonly mediaProcessingService: MediaProcessingService,
+    @Optional() private readonly analytics?: AnalyticsService,
   ) {}
+
+  /** Fire-and-forget analytics emit; never blocks or breaks the create/update path. */
+  private emit(name: string, userId: string, properties?: Record<string, unknown>) {
+    void this.analytics?.track(name, { userId, properties, source: "backend" });
+  }
 
   async getRepit(userId: string, id: string): Promise<Repit | null> {
     try {
@@ -179,6 +186,15 @@ export class RepitsService {
     try {
       const saved = await this.repitsRepo.save(repit);
       await this.linkRequiredIsolation(mediaBinding, saved.id, template.id, userId);
+      this.emit(ANALYTICS_EVENTS.REPIT_CREATED, userId, {
+        repitId: saved.id,
+        templateId: body.templateId,
+        platform: repit.platform,
+      });
+      this.emit(ANALYTICS_EVENTS.TEMPLATE_USED, userId, {
+        templateId: body.templateId,
+        templateVersion: repit.templateVersion,
+      });
       return this.normalizeRepit(saved);
     } catch (err) {
       if (isLegacyRepitSchemaError(err) && !mediaBinding) {
@@ -282,6 +298,15 @@ export class RepitsService {
 
     await this.linkRequiredIsolation(mediaBinding, saved.id, template.id, userId);
 
+    // Funnel conversion: the draft→published transition is the backend-observable
+    // "completed/shared" step. Emit only on the transition, not on every save.
+    if (existing.status !== "published" && saved.status === "published") {
+      this.emit(ANALYTICS_EVENTS.REPIT_PUBLISHED, userId, {
+        repitId: saved.id,
+        templateId: saved.templateId,
+      });
+    }
+
     if (photoChanged && oldPhoto && !mediaBinding) {
       // Fire-and-forget cleanup of the orphaned file. Failure here shouldn't
       // fail the update — the file will be caught by a periodic sweep instead.
@@ -339,10 +364,13 @@ export class RepitsService {
    */
   private tryDeleteCompositionAssets(composition: unknown): void {
     if (!composition || typeof composition !== "object") return;
-    const comp = composition as { layers?: Array<{ photoUri?: string; imageUri?: string }> };
+    const comp = composition as {
+      layers?: Array<{ data?: { uri?: string }; photoUri?: string; imageUri?: string }>;
+    };
     if (!Array.isArray(comp.layers)) return;
 
     for (const layer of comp.layers) {
+      if (layer.data?.uri) this.tryDeleteUpload(layer.data.uri);
       if (layer.photoUri) this.tryDeleteUpload(layer.photoUri);
       if (layer.imageUri) this.tryDeleteUpload(layer.imageUri);
     }
@@ -385,7 +413,35 @@ export class RepitsService {
   }
 
   private normalizeRepit(repit: Repit): Repit {
-    return normalizeRepitState(repit) as Repit;
+    const normalized = normalizeRepitState(repit) as Repit;
+    const backgroundPhotoUrl = this.uploadsService.canonicalReadUrl(normalized.backgroundPhotoUrl);
+    const composition = normalized.composition
+      ? {
+          ...normalized.composition,
+          layers: normalized.composition.layers.map((layer) => {
+            if (layer.type !== "photo" || typeof layer.data?.uri !== "string") return layer;
+            const uri = this.uploadsService.canonicalReadUrl(layer.data.uri);
+            return uri === layer.data.uri
+              ? layer
+              : { ...layer, data: { ...layer.data, uri } };
+          }),
+        }
+      : normalized.composition;
+    const editorState = normalized.editorState && typeof normalized.editorState === "object"
+      ? {
+          ...normalized.editorState,
+          mediaOriginalPhotoUrl: this.uploadsService.canonicalReadUrl(
+            normalized.editorState.mediaOriginalPhotoUrl,
+          ),
+        }
+      : normalized.editorState;
+
+    return {
+      ...normalized,
+      backgroundPhotoUrl,
+      composition,
+      editorState,
+    } as Repit;
   }
 
   private getRepitLegacy(userId: string, id: string): Promise<Repit | null> {

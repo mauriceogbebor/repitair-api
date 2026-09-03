@@ -42,6 +42,12 @@ type ProviderPlaylist = {
   isCollaborative: boolean;
   isPublic: boolean | null;
   lastImportedAt: string | null;
+  /** The connected account owns this playlist. */
+  owned: boolean;
+  /** The user can actually import it (owned, public, or collaborative). Others
+   *  are shown but not openable — Spotify blocks reading a private followed
+   *  playlist's tracks, so we surface that up front instead of dead-ending. */
+  importable: boolean;
 };
 
 type ProviderTrack = MusicCollectionTrack & {
@@ -60,8 +66,10 @@ type SpotifyImage = { url?: string | null };
 type SpotifyPlaylist = {
   id: string;
   name?: string;
-  owner?: { display_name?: string | null };
+  owner?: { id?: string | null; display_name?: string | null };
   images?: SpotifyImage[];
+  items?: { total?: number };
+  /** Pre-February-2026 response compatibility for cached/provider fixtures. */
   tracks?: { total?: number };
   collaborative?: boolean;
   public?: boolean | null;
@@ -250,7 +258,10 @@ export class MusicLibraryService {
   }
 
   private async spotifyPlaylists(userId: string): Promise<ProviderPlaylist[]> {
-    const token = await this.connections.spotifyAccessToken(userId);
+    const [token, providerUserId] = await Promise.all([
+      this.connections.spotifyAccessToken(userId),
+      this.connections.providerUserId(userId, "spotify"),
+    ]);
     const all: ProviderPlaylist[] = [];
     let offset = 0;
     do {
@@ -262,18 +273,25 @@ export class MusicLibraryService {
         userId,
       );
       const batch = payload.items ?? [];
-      all.push(...batch.map((playlist) => ({
-        id: playlist.id,
-        name: playlist.name?.trim() || "Untitled playlist",
-        owner: playlist.owner?.display_name?.trim() || null,
-        artworkUrl: playlist.images?.find((image) => image.url)?.url ?? null,
-        songCount: Number(playlist.tracks?.total ?? 0),
-        lastUpdated: null,
-        provider: "spotify" as const,
-        isCollaborative: Boolean(playlist.collaborative),
-        isPublic: typeof playlist.public === "boolean" ? playlist.public : null,
-        lastImportedAt: null,
-      })));
+      all.push(...batch.map((playlist) => {
+        const isPublic = typeof playlist.public === "boolean" ? playlist.public : null;
+        const isCollaborative = Boolean(playlist.collaborative);
+        const owned = Boolean(providerUserId && playlist.owner?.id && playlist.owner.id === providerUserId);
+        return {
+          id: playlist.id,
+          name: playlist.name?.trim() || "Untitled playlist",
+          owner: playlist.owner?.display_name?.trim() || null,
+          artworkUrl: playlist.images?.find((image) => image.url)?.url ?? null,
+          songCount: Number(playlist.items?.total ?? playlist.tracks?.total ?? 0),
+          lastUpdated: null,
+          provider: "spotify" as const,
+          isCollaborative,
+          isPublic,
+          lastImportedAt: null,
+          owned,
+          importable: owned || isPublic === true || isCollaborative,
+        };
+      }));
       offset += batch.length;
       if (!batch.length || offset >= Number(payload.total ?? 0) || all.length >= 500) break;
     } while (true);
@@ -311,6 +329,9 @@ export class MusicLibraryService {
         isCollaborative: false,
         isPublic: null,
         lastImportedAt: null,
+        // Apple Music browse only returns the user's own library playlists.
+        owned: true,
+        importable: true,
       })));
       offset += batch.length;
       if (!payload.next || !batch.length || all.length >= 500) break;
@@ -340,10 +361,13 @@ export class MusicLibraryService {
   }
 
   private async spotifyPlaylistTracks(userId: string, playlistId: string) {
-    const token = await this.connections.spotifyAccessToken(userId);
+    const [token, providerUserId] = await Promise.all([
+      this.connections.spotifyAccessToken(userId),
+      this.connections.providerUserId(userId, "spotify"),
+    ]);
     const headers = { Authorization: `Bearer ${token}` };
     const playlist = await this.requestJson<SpotifyPlaylist>(
-      `https://api.spotify.com/v1/playlists/${encodeURIComponent(playlistId)}?fields=id,name,owner(display_name),images,tracks(total),collaborative,public`,
+      `https://api.spotify.com/v1/playlists/${encodeURIComponent(playlistId)}?fields=id,name,owner(id,display_name),images,items(total),collaborative,public`,
       "spotify",
       headers,
       true,
@@ -360,11 +384,13 @@ export class MusicLibraryService {
         userId,
       );
       const batch = payload.items ?? [];
-      for (const wrapper of batch) {
+      for (const [batchIndex, wrapper] of batch.entries()) {
         const track = wrapper.track ?? wrapper.item;
         if (!track?.id || track.is_local) continue;
         tracks.push({
-          id: track.id,
+          // Selection IDs identify playlist occurrences, not catalog tracks.
+          // The same song may legitimately appear more than once in a playlist.
+          id: `${track.id}:${offset + batchIndex}`,
           provider: "spotify",
           providerTrackId: track.id,
           title: track.name?.trim() || "Untitled track",
@@ -385,12 +411,15 @@ export class MusicLibraryService {
         name: playlist.name?.trim() || "Untitled playlist",
         owner: playlist.owner?.display_name?.trim() || null,
         artworkUrl: playlist.images?.find((image) => image.url)?.url ?? null,
-        songCount: Number(playlist.tracks?.total ?? tracks.length),
+        songCount: Number(playlist.items?.total ?? playlist.tracks?.total ?? tracks.length),
         lastUpdated: null,
         provider: "spotify" as const,
         isCollaborative: Boolean(playlist.collaborative),
         isPublic: typeof playlist.public === "boolean" ? playlist.public : null,
         lastImportedAt: null,
+        owned: Boolean(providerUserId && playlist.owner?.id && playlist.owner.id === providerUserId),
+        // Tracks were successfully read, so this playlist is importable.
+        importable: true,
       },
       tracks,
     };
@@ -455,10 +484,10 @@ export class MusicLibraryService {
         userId,
       );
       const batch = payload.data ?? [];
-      for (const track of batch) {
+      for (const [batchIndex, track] of batch.entries()) {
         const catalogId = track.attributes?.playParams?.catalogId ?? track.attributes?.playParams?.globalId ?? track.id;
         tracks.push({
-          id: track.id,
+          id: `${track.id}:${offset + batchIndex}`,
           provider: "apple-music",
           providerTrackId: catalogId,
           title: track.attributes?.name?.trim() || "Untitled track",
@@ -487,6 +516,8 @@ export class MusicLibraryService {
         isCollaborative: false,
         isPublic: null,
         lastImportedAt: null,
+        owned: true,
+        importable: true,
       },
       tracks,
     };
