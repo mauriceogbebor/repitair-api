@@ -1,8 +1,9 @@
-import { IsString, Length } from "class-validator";
+import { IsOptional, IsString, Length } from "class-validator";
 
 export class AdminVerifyMfaDto {
+  @IsOptional()
   @IsString()
-  ticket!: string;
+  ticket?: string;
 
   @IsString()
   @Length(6, 6)

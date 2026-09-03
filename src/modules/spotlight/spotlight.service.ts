@@ -1,11 +1,10 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { LessThanOrEqual, MoreThanOrEqual, IsNull, Or, Repository } from "typeorm";
+import { Repository } from "typeorm";
 
 import { Spotlight } from "../../entities/spotlight.entity";
 import { AnalyticsService, ANALYTICS_EVENTS } from "../analytics/analytics.service";
-import { CreateSpotlightDto } from "./dto/create-spotlight.dto";
-import { UpdateSpotlightDto } from "./dto/update-spotlight.dto";
+import { SPOTLIGHT_CREATE_DESTINATION } from "./spotlight-destination";
 
 @Injectable()
 export class SpotlightService {
@@ -17,25 +16,29 @@ export class SpotlightService {
 
   async getActiveSpotlights() {
     const now = new Date();
-
-    const filtered = await this.repo.find({
-      where: {
-        status: "active" as const,
-        startsAt: Or(IsNull(), LessThanOrEqual(now)),
-        expiresAt: Or(IsNull(), MoreThanOrEqual(now)),
-      },
-      order: { priority: "ASC", createdAt: "DESC" },
-      take: 10,
-    });
+    const filtered = await this.repo.createQueryBuilder("spotlight")
+      .where("spotlight.status IN (:...statuses)", { statuses: ["active", "scheduled"] })
+      .andWhere("(spotlight.startsAt IS NULL OR spotlight.startsAt <= :now)", { now: now.toISOString() })
+      .andWhere("(spotlight.expiresAt IS NULL OR spotlight.expiresAt > :now)", { now: now.toISOString() })
+      .orderBy("spotlight.priority", "ASC")
+      .addOrderBy("spotlight.createdAt", "DESC")
+      .take(10)
+      .getMany();
 
     return {
       items: filtered.map((item) => ({
         id: item.id,
         title: item.title,
+        subtitle: item.subtitle ?? null,
         artist: item.artist,
+        song: item.song ?? null,
+        songLink: item.songLink ?? null,
         albumArt: item.albumArt,
+        backgroundImage: item.backgroundImage ?? null,
+        campaignType: item.campaignType,
+        buttonLabel: "Create Repit",
         tag: item.tag,
-        deepLink: item.deepLink,
+        deepLink: SPOTLIGHT_CREATE_DESTINATION,
         priority: item.priority,
         expiresAt: item.expiresAt?.toISOString(),
       })),
@@ -44,54 +47,27 @@ export class SpotlightService {
   }
 
   async trackImpression(id: string) {
-    const result = await this.repo.increment({ id }, "impressionCount", 1);
-    if (result.affected === 0) {
-      throw new NotFoundException("Spotlight not found");
-    }
+    await this.incrementEligibleMetric(id, "impressionCount");
     await this.analytics.track(ANALYTICS_EVENTS.SPOTLIGHT_VIEWED, { properties: { spotlightId: id }, source: "mobile" });
     return { ok: true as const };
   }
 
-  async findAll(options: { limit?: number; offset?: number } = {}) {
-    const take = Math.min(options.limit ?? 50, 100);
-    const skip = Math.max(options.offset ?? 0, 0);
-    const [data, total] = await this.repo.findAndCount({
-      order: { priority: "ASC", createdAt: "DESC" },
-      take,
-      skip,
-    });
-    return { data, total, limit: take, offset: skip };
-  }
-
-  async findOne(id: string) {
-    const item = await this.repo.findOne({ where: { id } });
-    if (!item) throw new NotFoundException("Spotlight not found");
-    return item;
-  }
-
-  async create(dto: CreateSpotlightDto) {
-    const spotlight = this.repo.create({
-      ...dto,
-      status: "draft",
-      startsAt: dto.startsAt ? new Date(dto.startsAt) : undefined,
-      expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
-    });
-    return this.repo.save(spotlight);
-  }
-
-  async update(id: string, dto: UpdateSpotlightDto) {
-    const spotlight = await this.findOne(id);
-    Object.assign(spotlight, {
-      ...dto,
-      startsAt: dto.startsAt ? new Date(dto.startsAt) : spotlight.startsAt,
-      expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : spotlight.expiresAt,
-    });
-    return this.repo.save(spotlight);
-  }
-
-  async remove(id: string) {
-    const spotlight = await this.findOne(id);
-    await this.repo.remove(spotlight);
+  async trackTap(id: string) {
+    await this.incrementEligibleMetric(id, "tapCount");
+    await this.analytics.track(ANALYTICS_EVENTS.SPOTLIGHT_CLICKED, { properties: { spotlightId: id }, source: "mobile" });
     return { ok: true as const };
+  }
+
+  private async incrementEligibleMetric(id: string, metric: "impressionCount" | "tapCount") {
+    const now = new Date().toISOString();
+    const result = await this.repo.createQueryBuilder()
+      .update(Spotlight)
+      .set({ [metric]: () => `"${metric}" + 1` })
+      .where("id = :id", { id })
+      .andWhere("status IN (:...statuses)", { statuses: ["active", "scheduled"] })
+      .andWhere("(\"startsAt\" IS NULL OR \"startsAt\" <= :now)", { now })
+      .andWhere("(\"expiresAt\" IS NULL OR \"expiresAt\" > :now)", { now })
+      .execute();
+    if (result.affected === 0) throw new NotFoundException("Active spotlight not found");
   }
 }

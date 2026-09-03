@@ -1,4 +1,5 @@
 import { Column, CreateDateColumn, Entity, Index, PrimaryGeneratedColumn } from "typeorm";
+import type { VisibleBounds } from "../modules/media/png-alpha-bounds";
 
 /**
  * A processed output produced from a MediaAsset by one pipeline stage. Kinds are
@@ -42,6 +43,13 @@ export class MediaDerivative {
 
   @Column({ type: "int", nullable: true }) width?: number | null;
   @Column({ type: "int", nullable: true }) height?: number | null;
+  /**
+   * Visible-content bounds (pixels) of a transparent derivative — the smallest
+   * rectangle enclosing non-transparent pixels. Additive + nullable: older
+   * derivatives and non-transparent kinds leave it null and consumers fall back
+   * to whole-frame behaviour. Consumed only by templates that opt in (Ice Girl).
+   */
+  @Column({ type: "jsonb", nullable: true }) visibleBounds?: VisibleBounds | null;
   @Column({ type: "bigint", nullable: true }) bytes?: number | null;
   @Column({ type: "varchar", nullable: true }) checksum?: string | null;
 

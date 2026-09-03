@@ -6,6 +6,7 @@ export type AdminPermissionDefinition = {
 
 export const ADMIN_PERMISSION_DEFINITIONS: AdminPermissionDefinition[] = [
   { key: "dashboard.read", module: "dashboard", description: "View the admin dashboard" },
+  { key: "analytics.read", module: "analytics", description: "View product analytics (funnel, retention, adoption, providers)" },
   { key: "audit.read", module: "audit", description: "View audit logs" },
   { key: "audit.export", module: "audit", description: "Export filtered audit records" },
   { key: "search.read", module: "search", description: "Use global admin search" },
@@ -36,6 +37,7 @@ export const ADMIN_PERMISSION_DEFINITIONS: AdminPermissionDefinition[] = [
   { key: "templates.publish", module: "templates", description: "Publish template versions" },
   { key: "templates.rollback", module: "templates", description: "Rollback template versions" },
   { key: "templates.archive", module: "templates", description: "Archive templates" },
+  { key: "templates.certify", module: "templates", description: "Approve/certify templates for publication" },
   { key: "spotlight.read", module: "spotlight", description: "View spotlight campaigns" },
   { key: "spotlight.write", module: "spotlight", description: "Create and edit spotlight campaigns" },
   { key: "spotlight.publish", module: "spotlight", description: "Publish spotlight campaigns" },
@@ -89,6 +91,8 @@ export const ADMIN_PERMISSION_DEFINITIONS: AdminPermissionDefinition[] = [
   { key: "jobs.view_errors", module: "jobs", description: "View job error details and stacks" },
   { key: "media.read", module: "media", description: "View media processing queue and asset status" },
   { key: "media.manage", module: "media", description: "Retry and regenerate media processing" },
+  { key: "music.read", module: "music", description: "View music provider connection operations" },
+  { key: "music.manage", module: "music", description: "Force reauthorization or disconnect a user's music provider connection" },
 ];
 
 export const ADMIN_ROLE_DEFINITIONS = [
@@ -104,6 +108,7 @@ export const ADMIN_ROLE_DEFINITIONS = [
     description: "Templates, spotlight, and moderation workflows.",
     permissions: [
       "dashboard.read",
+      "analytics.read",
       "audit.read",
       "search.read",
       "repits.read",
@@ -139,6 +144,7 @@ export const ADMIN_ROLE_DEFINITIONS = [
     description: "User support, diagnostics, and queue triage.",
     permissions: [
       "dashboard.read",
+      "analytics.read",
       "audit.read",
       "search.read",
       "users.read",
@@ -177,6 +183,8 @@ export const ADMIN_ROLE_DEFINITIONS = [
       "support.sla.read",
       "support.sensitive_context.read",
       "notifications.read",
+      "music.read",
+      "music.manage",
     ],
   },
   {
@@ -185,6 +193,7 @@ export const ADMIN_ROLE_DEFINITIONS = [
     description: "Campaigns, growth operations, and spotlight reporting.",
     permissions: [
       "dashboard.read",
+      "analytics.read",
       "audit.read",
       "search.read",
       "spotlight.read",

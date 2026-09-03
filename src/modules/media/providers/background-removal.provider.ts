@@ -106,6 +106,11 @@ export class RemoveBgProvider implements BackgroundRemovalProvider {
   async removeBackground(input: BackgroundRemovalInput): Promise<BackgroundRemovalOutput> {
     const form = new FormData();
     form.append("size", "auto");
+    // Repitair isolation subjects are always people, so hint remove.bg to use its
+    // person-optimised segmentation — it cuts foreground people much more cleanly
+    // on ambiguous shots (e.g. someone sitting on a similar-toned rail/ledge) than
+    // the generic "auto" detector. Overridable via REMOVE_BG_TYPE for edge cases.
+    form.append("type", process.env.REMOVE_BG_TYPE?.trim() || "person");
     form.append("image_file", new Blob([new Uint8Array(input.buffer)], { type: input.mimeType }), "source");
     const response = await fetchWithTimeout(this.name, "https://api.remove.bg/v1.0/removebg", {
       method: "POST",

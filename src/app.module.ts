@@ -44,6 +44,7 @@ import {
   SupportTicketEscalation,
   SupportTicketResolution,
   Template,
+  TemplateDraft,
   TemplateVersion,
   User,
   SocialIdentity,
@@ -82,6 +83,10 @@ import { UsersModule } from "./modules/users/users.module";
       inject: [ConfigService],
       useFactory: (config: ConfigService) => {
         const isProduction = config.get<string>("NODE_ENV") === "production";
+        const configuredPoolMax = Number(config.get<string>("DB_POOL_MAX") ?? 10);
+        const configuredConnectionTimeout = Number(
+          config.get<string>("DB_CONNECTION_TIMEOUT_MS") ?? 10_000,
+        );
         return {
           type: "postgres" as const,
           url:
@@ -96,6 +101,7 @@ import { UsersModule } from "./modules/users/users.module";
             RepitModerationReport,
             PushToken,
             Template,
+            TemplateDraft,
             TemplateVersion,
             ContactSubmission,
             Spotlight,
@@ -134,6 +140,15 @@ import { UsersModule } from "./modules/users/users.module";
           synchronize: false,
           migrationsRun: false,
           logging: !isProduction,
+          extra: {
+            max: Number.isFinite(configuredPoolMax) && configuredPoolMax > 0
+              ? Math.floor(configuredPoolMax)
+              : 10,
+            connectionTimeoutMillis:
+              Number.isFinite(configuredConnectionTimeout) && configuredConnectionTimeout >= 1_000
+                ? Math.floor(configuredConnectionTimeout)
+                : 10_000,
+          },
         };
       },
     }),

@@ -6,6 +6,7 @@ import { AdminTokenService } from "./admin-token.service";
 
 export const ADMIN_SESSION_COOKIE = "ra_admin_session";
 export const ADMIN_CSRF_COOKIE = "ra_admin_csrf";
+export const ADMIN_MFA_COOKIE = "ra_admin_mfa";
 
 type AdminSameSite = "lax" | "strict" | "none";
 
@@ -14,6 +15,7 @@ export class AdminSessionService {
   private readonly secure: boolean;
   private readonly sameSite: AdminSameSite;
   private readonly path: string;
+  private readonly mfaPath: string;
   private readonly domain?: string;
 
   constructor(
@@ -24,6 +26,7 @@ export class AdminSessionService {
     this.secure = isProduction || this.configService.get<string>("ADMIN_COOKIE_SECURE") === "true";
     this.sameSite = (this.configService.get<string>("ADMIN_COOKIE_SAME_SITE") ?? "lax") as AdminSameSite;
     this.path = this.configService.get<string>("ADMIN_COOKIE_PATH") ?? "/api/admin";
+    this.mfaPath = this.configService.get<string>("ADMIN_MFA_COOKIE_PATH") ?? "/api/admin/auth";
     this.domain = this.configService.get<string>("ADMIN_COOKIE_DOMAIN") || undefined;
   }
 
@@ -44,6 +47,24 @@ export class AdminSessionService {
     });
 
     return csrfToken;
+  }
+
+  startMfaChallenge(response: Response, ticket: string): void {
+    const payload = this.tokenService.verifyMfaTicket(ticket);
+    const maxAge = Math.max(((payload.exp ?? 0) * 1000) - Date.now(), 1_000);
+    response.cookie(ADMIN_MFA_COOKIE, ticket, {
+      ...this.mfaCookieOptions(),
+      httpOnly: true,
+      maxAge,
+    });
+  }
+
+  getMfaTicket(request: Request): string | null {
+    return this.readCookie(request, ADMIN_MFA_COOKIE);
+  }
+
+  clearMfaChallenge(response: Response): void {
+    response.clearCookie(ADMIN_MFA_COOKIE, { ...this.mfaCookieOptions(), httpOnly: true });
   }
 
   getOrCreateCsrfToken(request: Request, response: Response, expiresAt?: number): string {
@@ -72,6 +93,7 @@ export class AdminSessionService {
     const options = this.baseCookieOptions();
     response.clearCookie(ADMIN_SESSION_COOKIE, { ...options, httpOnly: true });
     response.clearCookie(ADMIN_CSRF_COOKIE, { ...options, httpOnly: true });
+    this.clearMfaChallenge(response);
   }
 
   private baseCookieOptions(): CookieOptions {
@@ -79,6 +101,15 @@ export class AdminSessionService {
       secure: this.secure,
       sameSite: this.sameSite,
       path: this.path,
+      ...(this.domain ? { domain: this.domain } : {}),
+    };
+  }
+
+  private mfaCookieOptions(): CookieOptions {
+    return {
+      secure: this.secure,
+      sameSite: this.sameSite,
+      path: this.mfaPath,
       ...(this.domain ? { domain: this.domain } : {}),
     };
   }

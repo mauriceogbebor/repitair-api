@@ -3,7 +3,7 @@ import { ConfigService } from "@nestjs/config";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import { v4 as uuid } from "uuid";
+import { randomUUID } from "crypto";
 import { UploadResponseDto } from "./dto/upload-response.dto";
 
 // S3 types — only used when UPLOAD_PROVIDER=s3. The actual @aws-sdk/client-s3
@@ -37,7 +37,7 @@ export class UploadsService {
   private GetObjectCommand: S3CommandCtor | null = null;
   private getSignedUrlFn: ((client: S3ClientInstance, command: unknown, options: { expiresIn: number }) => Promise<string>) | null = null;
   private localUploadDir: string;
-  /** TTL for presigned read URLs handed to clients (seconds). */
+  /** TTL for worker/internal presigned S3 reads (seconds). */
   private readonly signedUrlTtlSeconds: number;
 
   // Allowed MIME types for images (HEIC/HEIF for iOS camera uploads)
@@ -60,8 +60,8 @@ export class UploadsService {
     this.uploadProvider = (this.configService.get<string>("UPLOAD_PROVIDER") ||
       "local") as "local" | "s3";
     this.awsRegion = this.configService.get<string>("AWS_REGION") || "us-east-1";
-    // Presigned read URLs are short-lived; the client fetches the image well
-    // within this window. Default 1h; override with MEDIA_SIGNED_URL_TTL_SECONDS.
+    // Presigned read URLs are short-lived and reserved for internal direct-S3
+    // reads. Persisted/mobile URLs use the durable application proxy instead.
     this.signedUrlTtlSeconds = Number(
       this.configService.get<string>("MEDIA_SIGNED_URL_TTL_SECONDS") || 3600,
     ) || 3600;
@@ -177,7 +177,7 @@ export class UploadsService {
 
     // Generate unique filename
     const ext = this.getFileExtension(filename, mimetype);
-    const uniqueFilename = `${uuid()}${ext}`;
+    const uniqueFilename = `${randomUUID()}${ext}`;
 
     try {
       if (this.uploadProvider === "s3") {
@@ -243,23 +243,44 @@ export class UploadsService {
   }
 
   /**
-   * Reconstruct the canonical URL for a server-owned key. Used so the backend
-   * derives any URL it returns from a trusted key — never from client input.
-   * (For private buckets this is where a short-lived signed URL is minted.)
+   * Reconstruct the durable application URL for a server-owned key. The
+   * uploads controller proxies both local and private-S3 objects, so URLs
+   * persisted in Repits remain readable after a presigned URL would expire.
    */
   urlForKey(key: string): string {
     const safeKey = this.assertSafeKey(key);
-    if (this.uploadProvider === "s3") {
-      return `https://${this.s3Bucket}.s3.${this.awsRegion}.amazonaws.com/${safeKey}`;
-    }
-    return `${this.baseUrl}/api/uploads/${safeKey}`;
+    return `${this.baseUrl.replace(/\/+$/, "")}/api/uploads/${safeKey}`;
   }
 
   /**
-   * Mint a short-lived URL a client can GET directly. For S3 this is a
-   * presigned URL so the bucket can stay private (a plain object URL 403s on a
-   * private bucket). For local storage the served path is already reachable.
-   * Use this — not urlForKey — for any URL handed to the mobile client to load.
+   * Convert a URL previously issued by this service into its durable proxy
+   * form. Third-party URLs are returned unchanged.
+   */
+  canonicalReadUrl(value: string | null | undefined): string | null | undefined {
+    if (!value) return value;
+    try {
+      const parsed = new URL(value);
+      const base = new URL(this.baseUrl);
+      const isApplicationUpload = parsed.origin === base.origin
+        && parsed.pathname.startsWith("/api/uploads/");
+      const isConfiguredS3Object = this.uploadProvider === "s3"
+        && (
+          parsed.hostname === `${this.s3Bucket}.s3.${this.awsRegion}.amazonaws.com`
+          || parsed.hostname === `${this.s3Bucket}.s3.amazonaws.com`
+        );
+      if (!isApplicationUpload && !isConfiguredS3Object) return value;
+
+      const key = decodeURIComponent(parsed.pathname.split("/").pop() ?? "");
+      return this.urlForKey(key);
+    } catch {
+      return value;
+    }
+  }
+
+  /**
+   * Mint a short-lived direct-storage URL. For S3 this is presigned so the
+   * bucket stays private. Persisted and mobile-facing URLs should use
+   * urlForKey() so they remain stable across sessions.
    */
   async signedReadUrl(key: string): Promise<string> {
     const safeKey = this.assertSafeKey(key);
@@ -351,10 +372,8 @@ export class UploadsService {
 
     await this.s3Client.send(command);
 
-    // Return S3 URL — include region to work outside us-east-1
-    const url = `https://${this.s3Bucket}.s3.${this.awsRegion}.amazonaws.com/${filename}`;
     return {
-      url,
+      url: this.urlForKey(filename),
       key: filename,
     };
   }

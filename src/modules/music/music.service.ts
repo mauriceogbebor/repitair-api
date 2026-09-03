@@ -15,6 +15,7 @@ import {
   UpstreamMusicError,
 } from "./music.errors";
 import { MusicConnectionsService } from "./music-connections.service";
+import { MusicLibraryService } from "./music-library.service";
 
 type RedisClient = any;
 
@@ -109,6 +110,7 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
     private readonly usersRepo: Repository<User>,
     @Inject(REDIS_CLIENT) @Optional() private readonly redis: RedisClient | null,
     @Optional() private readonly musicConnections?: MusicConnectionsService,
+    @Optional() private readonly musicLibrary?: MusicLibraryService,
   ) {}
 
   /* ── Lifecycle ─────────────────────────────────────────────────────── */
@@ -385,12 +387,18 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
     }
 
     const host = url.hostname.toLowerCase();
+    // Exact-host matching: `base` itself or a real subdomain (`.base`). This
+    // rejects look-alikes such as `xspotify.com` / `notmusic.apple.com` that a
+    // bare endsWith() would accept. (IDs are still only ever used against the
+    // hardcoded official API bases, so this is defence-in-depth, not the sole
+    // SSRF guard.)
+    const hostIs = (base: string) => host === base || host.endsWith(`.${base}`);
     if (host === "spotify.link") {
       const resolvedUrl = await this.resolveSpotifyShortLink(cleaned, requestId);
       return this.prepareLink(resolvedUrl, requestId, userId);
     }
 
-    if (host.endsWith("spotify.com")) {
+    if (hostIs("spotify.com")) {
       const segments = url.pathname
         .split("/")
         .filter(Boolean)
@@ -431,7 +439,7 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
       };
     }
 
-    if (host.endsWith("music.apple.com") || host.endsWith("itunes.apple.com")) {
+    if (hostIs("music.apple.com") || hostIs("itunes.apple.com")) {
       const lowerSegments = url.pathname.split("/").filter(Boolean).map((segment) => segment.toLowerCase());
       const linkType: MusicLinkType = lowerSegments.includes("playlist")
         ? "playlist"
@@ -1217,7 +1225,13 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
     if (this.musicConnections) {
       try {
         return await this.musicConnections.spotifyAccessToken(userId);
-      } catch {
+      } catch (err) {
+        // Don't swallow silently: a null user token here downgrades playlist
+        // paste-link to client-credentials (which 404s on private/own playlists
+        // that browse can read), so surface why for diagnosis.
+        this.logger.warn(
+          `getUserSpotifyAccessToken: connection token unavailable for user ${userId}: ${(err as Error).message}`,
+        );
         return null;
       }
     }
@@ -1373,8 +1387,13 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
     const songWithName = url.match(/(?:music|itunes)\.apple\.com\/[a-z]{2}\/song\/[^/]+\/(\d+)/);
     if (songWithName) return songWithName[1];
 
-    const songDirect = url.match(/(?:music|itunes)\.apple\.com\/[a-z]{2}\/song\/(\d+)(?:\?|$)/);
-    return songDirect ? songDirect[1] : null;
+    const songDirect = url.match(/(?:music|itunes)\.apple\.com\/[a-z]{2}\/song\/(\d+)(?:[/?]|$)/);
+    if (songDirect) return songDirect[1];
+
+    // Modern storefront-less canonical share links: music.apple.com/song/{id}
+    // (and the rarer name variant music.apple.com/song/{name}/{id}).
+    const songNoStorefront = url.match(/(?:music|itunes)\.apple\.com\/song\/(?:[^/]+\/)?(\d+)(?:[/?]|$)/);
+    return songNoStorefront ? songNoStorefront[1] : null;
   }
 
   private extractAppleMusicPlaylistId(url: string) {
@@ -1480,7 +1499,39 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async listSpotifyPlaylist(playlistId: string, context: PreparedMusicLink): Promise<ParsedCollection | null> {
-    const url = `https://api.spotify.com/v1/playlists/${playlistId}`;
+    // Prefer the exact path the browse flow uses (object with ?fields + the
+    // /tracks endpoint). Browse reads playlists that this paste path 404'd on, so
+    // for a connected user delegate to that proven code and only fall back to the
+    // legacy object/client-credentials path if it can't resolve (e.g. not connected).
+    if (context.userId && this.musicLibrary) {
+      try {
+        const loaded = await this.musicLibrary.loadProviderPlaylist(context.userId, "spotify", playlistId);
+        if (loaded && Array.isArray(loaded.tracks) && loaded.tracks.length > 0) {
+          return {
+            type: "playlist",
+            name: loaded.playlist?.name ?? "Playlist",
+            tracks: loaded.tracks.map((track) => ({
+              albumArt: track.albumArt ?? undefined,
+              artist: track.artist,
+              durationMs: track.durationMs ?? undefined,
+              platform: "spotify" as const,
+              sourceLink: track.sourceLink,
+              title: track.title,
+            })),
+          };
+        }
+      } catch {
+        // Fall through to the legacy path (handles unconnected users / public links).
+      }
+    }
+
+    // Request a FIELDS-SCOPED playlist object. Spotify's Web API returns 404 on
+    // the unscoped full-object request for some playlists (the same playlists the
+    // browse flow reads fine — it always passes ?fields=), so mirror that here.
+    // Only the fields the parser consumes are requested (first 100 items, which
+    // comfortably exceeds any template's song capacity).
+    const fields = "name,items.items(item(id,name,duration_ms,artists(name),album(images)))";
+    const url = `https://api.spotify.com/v1/playlists/${playlistId}?fields=${encodeURIComponent(fields)}`;
 
     // Try user token first if available.
     let usedUserToken = false;
@@ -1535,9 +1586,36 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
       // If Spotify returned 404 and we had no user token to try, the playlist is likely
       // private or personal. Provide an actionable message.
       if (response.status === 404 || userTokenStatus === 404) {
+        // A private/personal playlist. Distinguish "no Spotify connection at all"
+        // (→ prompt the user to connect, and the client can auto-resume after) from
+        // "connected but this account can't access it" (→ terminal access-denied).
+        if (!userTokenAvailable) {
+          throw this.buildResolutionException(context, {
+            code: "PROVIDER_NOT_CONNECTED" as const,
+            message: "Connect Spotify to access this playlist.",
+            providerStatus: 404,
+            retriable: false,
+            status: 409,
+          });
+        }
+        // Connected, but if the private-playlist scope was never granted (e.g. the
+        // account connected before it was requested), the user's own private
+        // playlists 404 — a reconnect fixes that, so say so specifically.
+        if (context.userId && this.musicConnections) {
+          const scopes = await this.musicConnections.providerScopes(context.userId, "spotify").catch(() => [] as string[]);
+          if (!scopes.includes("playlist-read-private")) {
+            throw this.buildResolutionException(context, {
+              code: "PROVIDER_REAUTH_REQUIRED" as const,
+              message: "Reconnect Spotify and allow playlist access so Repitair can read your private playlists. (Playlists owned by others or curated by Spotify still can’t be imported.)",
+              providerStatus: 404,
+              retriable: false,
+              status: 409,
+            });
+          }
+        }
         throw this.buildResolutionException(context, {
           code: "PROVIDER_NOT_FOUND" as const,
-          message: "This playlist is private. Connect the account that owns it or ask the owner to share it through Repitair.",
+          message: "This playlist can’t be imported. Spotify only lets apps read playlists you created or public playlists — private playlists owned by others and Spotify‑curated/algorithmic playlists (like Discover Weekly) aren’t accessible. Try one of your own playlists.",
           providerStatus: 404,
           retriable: false,
           status: 404,
@@ -1553,22 +1631,47 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async parseSpotifyPlaylistResponse(response: Response): Promise<ParsedCollection> {
+    type SpotifyPlaylistTrack = {
+      album?: { images?: Array<{ url: string }> };
+      artists?: Array<{ name: string }>;
+      duration_ms?: number;
+      id?: string;
+      name?: string;
+    };
+    type SpotifyPlaylistItem = {
+      item?: SpotifyPlaylistTrack | null;
+      track?: SpotifyPlaylistTrack | null;
+    };
     const data = await response.json() as {
       name: string;
-      tracks: { items: Array<{ track: { album?: { images?: Array<{ url: string }> }; artists: Array<{ name: string }>; duration_ms: number; id: string; name: string } | null }> };
+      items?: { items?: SpotifyPlaylistItem[] };
+      tracks?: { items?: SpotifyPlaylistItem[] };
     };
 
+    // Playlists can contain podcast episodes and local/unavailable items whose
+    // `track` is truthy but has no `id`/`artists` — accessing `.artists.map` on
+    // those threw a TypeError that surfaced as a generic 503. Only keep real
+    // songs and null-safe every field.
+    const wrappers = Array.isArray(data?.items?.items)
+      ? data.items.items
+      : Array.isArray(data?.tracks?.items)
+        ? data.tracks.items
+        : [];
+    const tracks = wrappers
+      .map((wrapper) => wrapper.item ?? wrapper.track)
+      .filter((track): track is SpotifyPlaylistTrack => Boolean(
+        track?.id && Array.isArray(track.artists),
+      ));
     return {
-      name: data.name,
-      tracks: data.tracks.items
-        .filter((item) => item.track)
-        .map((item) => ({
-          albumArt: item.track?.album?.images?.[0]?.url,
-          artist: item.track!.artists.map((artist) => artist.name).join(", "),
-          durationMs: item.track!.duration_ms,
+      name: data?.name ?? "Playlist",
+      tracks: tracks
+        .map((track) => ({
+          albumArt: track.album?.images?.[0]?.url,
+          artist: (track.artists ?? []).map((artist) => artist.name).filter(Boolean).join(", ") || "Unknown artist",
+          durationMs: track.duration_ms,
           platform: "spotify" as const,
-          sourceLink: `https://open.spotify.com/track/${item.track!.id}`,
-          title: item.track!.name,
+          sourceLink: `https://open.spotify.com/track/${track.id}`,
+          title: track.name ?? "Untitled track",
         })),
       type: "playlist",
     };
@@ -1635,9 +1738,10 @@ export class MusicService implements OnModuleInit, OnModuleDestroy {
     if (isPersonal) {
       const userToken = context.userId ? await this.getUserAppleMusicToken(context.userId) : null;
       if (!userToken) {
+        // No Apple Music connection → prompt connect (client can auto-resume after).
         throw this.buildResolutionException(context, {
-          code: "PROVIDER_AUTH_FAILURE",
-          message: "Connect Apple Music in Profile to use personal playlists.",
+          code: "PROVIDER_NOT_CONNECTED",
+          message: "Connect Apple Music to access this playlist.",
           retriable: false,
           status: 409,
         });

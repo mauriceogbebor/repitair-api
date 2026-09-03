@@ -1,0 +1,67 @@
+name: CI
+
+# Repo-local CI for repitair-backend. This repository is standalone (it is NOT a
+# subfolder of a monorepo), so paths here are relative to the repo root — there
+# is no "repitair-backend/" prefix.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    name: Backend — audit, typecheck, build, migrations, tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: repitair
+          POSTGRES_PASSWORD: repitair
+          POSTGRES_DB: repitair_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://repitair:repitair@localhost:5432/repitair_test
+      JWT_SECRET: ci-test-secret-do-not-use-in-production
+      JWT_REFRESH_SECRET: ci-test-refresh-secret-do-not-use-in-production
+      NODE_ENV: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      # Dependency audit is a visible GATE, not a silent warning. High/critical
+      # PRODUCTION advisories fail the build. To accept a specific unfixable
+      # advisory, document it (owner + reason + expiry) and add a scoped
+      # `--exclude`/allowlist entry here — never blanket `continue-on-error`.
+      - name: Audit production dependencies (high/critical)
+        run: npm audit --audit-level=high --omit=dev
+
+      - name: Typecheck / lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      # Migration validation: apply every migration against a clean database, so
+      # a broken or non-idempotent migration fails CI before it reaches prod.
+      - name: Validate migrations (run against ephemeral Postgres)
+        run: npm run migration:run
+
+      - name: Test suite
+        run: npx jest --runInBand --watchman=false

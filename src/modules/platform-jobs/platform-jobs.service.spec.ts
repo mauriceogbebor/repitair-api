@@ -80,3 +80,46 @@ describe("PlatformJobsService worker health", () => {
     expect(result.activeWorkerCount).toBe(0);
   });
 });
+
+describe("PlatformJobsService job redaction (least-privilege)", () => {
+  const job = {
+    id: "job-1", queue: "media", type: "media.background_remove", domain: "media", status: "failed",
+    priority: 0, attempts: 2, maxAttempts: 3,
+    payload: { assetId: "a1", exportToken: "SECRET", privacyRequestId: "pr-9" },
+    metadata: { assetId: "a1", templateId: "ice-girl" },
+    lastErrorCode: "PROVIDER_TIMEOUT", lastErrorMessage: "remove.bg timed out",
+    createdAt: new Date(), updatedAt: new Date(),
+  };
+  const redact = (opts: { payload?: boolean; errors?: boolean }) =>
+    (makeService().service as unknown as { redact: (j: unknown, o: unknown) => Record<string, unknown> }).redact(job, opts);
+
+  it("never returns payload values, and hides payload keys/metadata/errors at base jobs.view", () => {
+    const r = redact({});
+    expect(JSON.stringify(r)).not.toContain("SECRET"); // payload values never exposed
+    expect(r.payloadKeys).toEqual([]);
+    expect(r.metadata).toBeNull();
+    expect(r.relatedResource).toBeNull();
+    expect(r.lastErrorMessage).toBeNull();
+    expect(r.lastErrorCode).toBeNull();
+    // Operational fields remain visible.
+    expect(r.status).toBe("failed");
+    expect(r.attempts).toBe(2);
+  });
+
+  it("exposes payload keys + metadata + related resource only with jobs.view_payload", () => {
+    const r = redact({ payload: true });
+    expect(r.payloadKeys).toEqual(["assetId", "exportToken", "privacyRequestId"]);
+    expect(r.metadata).toEqual({ assetId: "a1", templateId: "ice-girl" });
+    expect(r.relatedResource).toBe("pr-9");
+    expect(r.lastErrorMessage).toBeNull(); // errors still gated
+    expect(JSON.stringify(r)).not.toContain("SECRET"); // still values-free
+  });
+
+  it("exposes error code + message only with jobs.view_errors", () => {
+    const r = redact({ errors: true });
+    expect(r.lastErrorCode).toBe("PROVIDER_TIMEOUT");
+    expect(r.lastErrorMessage).toBe("remove.bg timed out");
+    expect(r.payloadKeys).toEqual([]); // payload still gated
+    expect(r.metadata).toBeNull();
+  });
+});

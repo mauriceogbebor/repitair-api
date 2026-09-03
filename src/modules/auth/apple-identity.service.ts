@@ -55,6 +55,14 @@ interface AppleTokenHeader {
 export interface AppleIdentity {
   email: string;
   sub: string;
+  /**
+   * Whether Apple asserts the email is verified. Apple sends `email_verified`
+   * as the string "true"/"false" (occasionally a boolean). Used by identity
+   * linking to refuse merging a provider identity into an unverified local
+   * account (account pre-hijacking defense).
+   */
+  emailVerified: boolean;
+  exp?: number;
 }
 
 /**
@@ -114,7 +122,7 @@ export class AppleIdentityService {
    */
   async verifyIdentityToken(
     idToken: string,
-    options?: { expectedNonce?: string },
+    options?: { expectedNonce?: string; requireNonce?: boolean },
   ): Promise<AppleIdentity> {
     const audiences = this.getAllowedAudiences();
     if (audiences.length === 0) {
@@ -151,6 +159,8 @@ export class AppleIdentityService {
         sub?: string;
         nonce?: string;
         nonce_supported?: boolean;
+        email_verified?: boolean | string;
+        exp?: number;
       };
       try {
         payload = verifyJwt(idToken, publicKeyPem, {
@@ -163,6 +173,17 @@ export class AppleIdentityService {
         throw this.mapJwtError(error);
       }
 
+      // Nonce binding (replay defense). When the caller requires a nonce, the
+      // request MUST carry an expected value and the token MUST echo it. This is
+      // the enforcement point for the "current clients must bind a nonce" rule;
+      // the time-bounded compatibility path (legacy clients that send none) is
+      // decided by the caller via `requireNonce`.
+      if (options?.requireNonce && !options.expectedNonce) {
+        throw new AppleTokenError(
+          "nonce_required",
+          "A nonce is required but none was supplied by the client.",
+        );
+      }
       if (options?.expectedNonce) {
         if (!payload.nonce || payload.nonce !== options.expectedNonce) {
           throw new AppleTokenError(
@@ -180,7 +201,13 @@ export class AppleIdentityService {
         throw new AppleTokenError("missing_email", "Token is missing email.");
       }
 
-      return { email: payload.email, sub: payload.sub };
+      return {
+        email: payload.email,
+        sub: payload.sub,
+        emailVerified:
+          payload.email_verified === true || payload.email_verified === "true",
+        exp: payload.exp,
+      };
     } catch (error) {
       if (error instanceof ServiceUnavailableException) {
         throw error;

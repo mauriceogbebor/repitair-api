@@ -168,6 +168,54 @@ describe("AdminUsersService", () => {
     }
   });
 
+  it("uses a PostgreSQL-safe support-case alias in user detail", async () => {
+    const user = {
+      id: "user-1",
+      fullName: "User One",
+      email: "user@example.com",
+      country: "NG",
+      avatarUrl: null,
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      signupSource: "organic",
+      isSuspended: false,
+      suspensionReason: null,
+      suspendedAt: null,
+      emailVerified: true,
+      connectedPlatforms: [],
+      spotifyRefreshToken: null,
+      appleMusicUserToken: null,
+      pushTokens: [],
+      lastLoginAt: null,
+    } as unknown as User;
+    const userQb: any = {
+      addSelect: jest.fn().mockReturnThis(),
+      leftJoinAndSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      getOne: jest.fn().mockResolvedValue(user),
+    };
+    const supportQb: any = {
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      getCount: jest.fn().mockResolvedValue(0),
+    };
+    mockUserRepository.createQueryBuilder.mockReturnValue(userQb);
+    mockSupportTicketRepository.createQueryBuilder.mockReturnValue(supportQb);
+    mockRepitRepository.count.mockResolvedValue(0);
+    mockRestrictionRepository.count.mockResolvedValue(0);
+
+    await service.getUserDetail(user.id, { permissionKeys: [] } as any, null);
+
+    expect(mockSupportTicketRepository.createQueryBuilder).toHaveBeenCalledWith("support_case");
+    expect(supportQb.where).toHaveBeenCalledWith(
+      'support_case."relatedUserId" = :userId',
+      { userId: user.id },
+    );
+    expect(supportQb.andWhere).toHaveBeenCalledWith(
+      "support_case.status NOT IN (:...closedStatuses)",
+      { closedStatuses: ["resolved", "closed"] },
+    );
+  });
+
   it("suspends a user and writes an audit log", async () => {
     const user = {
       id: "user-1",

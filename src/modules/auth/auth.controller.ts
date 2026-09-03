@@ -1,7 +1,22 @@
-import { BadRequestException, Body, Controller, Delete, Get, Header, Param, Post, Query, Redirect, Res, UseGuards } from "@nestjs/common";
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Header,
+  HttpException,
+  Param,
+  Post,
+  Query,
+  Redirect,
+  Res,
+  UseGuards,
+} from "@nestjs/common";
 import { Response } from "express";
 
 import { CurrentUser, CurrentUserPayload } from "../../common/decorators/current-user.decorator";
+import { AdminEmailGuard } from "../../common/guards/admin-email.guard";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { AuthService } from "./auth.service";
 import { ForgotPasswordDto } from "./dto/forgot-password.dto";
@@ -21,12 +36,40 @@ export class AuthController {
   private buildSpotifyAppRedirect(
     status: "success" | "error",
     message?: string,
+    reason?: string,
   ) {
     const params = new URLSearchParams({ status });
     if (message) {
       params.set("message", message);
     }
+    if (reason) {
+      params.set("reason", reason);
+    }
     return { url: `repitair://spotify-connected?${params.toString()}` };
+  }
+
+  private spotifyCallbackError(error: unknown): {
+    message: string;
+    reason?: string;
+  } {
+    if (error instanceof HttpException) {
+      const response = error.getResponse();
+      if (response && typeof response === "object") {
+        const errorCode = (response as { errorCode?: unknown }).errorCode;
+        const message = (response as { message?: unknown }).message;
+        if (typeof errorCode === "string" && typeof message === "string") {
+          return { message, reason: errorCode };
+        }
+      }
+    }
+
+    if (error instanceof Error && error.message.includes("not available")) {
+      return { message: "Spotify connection is not available right now." };
+    }
+    if (error instanceof Error && error.message.includes("Invalid state")) {
+      return { message: "This Spotify connection link is invalid or expired." };
+    }
+    return { message: "Could not connect Spotify. Please try again." };
   }
 
   @Post("signup")
@@ -116,7 +159,7 @@ export class AuthController {
   @Post("upgrade-session")
   @UseGuards(JwtAuthGuard)
   upgradeSession(@CurrentUser() user: CurrentUserPayload) {
-    return this.authService.upgradeSession(user.token, user.sub);
+    return this.authService.upgradeSession(user.token, user.sub, user.authTime);
   }
 
   /**
@@ -180,13 +223,12 @@ export class AuthController {
       await this.authService.handleSpotifyCallback(code, state);
       return this.buildSpotifyAppRedirect("success");
     } catch (err) {
-      const message =
-        err instanceof Error && err.message.includes("not available")
-          ? "Spotify connection is not available right now."
-          : err instanceof Error && err.message.includes("Invalid state")
-            ? "This Spotify connection link is invalid or expired."
-            : "Could not connect Spotify. Please try again.";
-      return this.buildSpotifyAppRedirect("error", message);
+      const failure = this.spotifyCallbackError(err);
+      return this.buildSpotifyAppRedirect(
+        "error",
+        failure.message,
+        failure.reason,
+      );
     }
   }
 
@@ -201,6 +243,19 @@ export class AuthController {
       params.set("message", message);
     }
     return `repitair://apple-music-connected?${params.toString()}`;
+  }
+
+  /**
+   * Admin-only, secret-free readiness report for the music OAuth flows.
+   * Lets an operator instantly see which env vars are missing/misconfigured on
+   * a given deployment (e.g. staging) when "connect" fails, instead of chasing
+   * a generic provider "Problem Connecting" screen. Returns booleans only
+   * (plus the non-secret Spotify redirect URI, which must match the dashboard).
+   */
+  @Get("oauth/diagnostics")
+  @UseGuards(JwtAuthGuard, AdminEmailGuard)
+  oauthDiagnostics() {
+    return this.authService.getOAuthConfigDiagnostics();
   }
 
   /**
@@ -235,10 +290,21 @@ export class AuthController {
     }
     const developerToken = this.authService.generateMusicKitDeveloperToken();
 
-    if (!developerToken || !state) {
+    // Fail loudly on a missing, structurally-invalid, OR non-self-verifiable
+    // developer token before ever launching MusicKit. Self-verification catches
+    // the signing-bug class (e.g. DER vs JOSE ES256) that Apple would otherwise
+    // reject with the cryptic ERROR_FAILED_TO_VERIFY_JWT behind a generic
+    // "Problem Connecting" screen. A wrong Key ID / Team ID can still only be
+    // caught by Apple, but every server-detectable misconfig is surfaced here.
+    if (
+      !state
+      || !developerToken
+      || !this.authService.isDeveloperTokenWellFormed(developerToken)
+      || !this.authService.developerTokenSelfVerifies(developerToken)
+    ) {
       const redirectUrl = this.buildAppleMusicAppRedirect(
         "error",
-        "Apple Music is not available right now.",
+        "Apple Music isn't configured correctly on this server yet. Please try again later.",
       );
       return res.redirect(redirectUrl);
     }
@@ -331,9 +397,12 @@ export class AuthController {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ state: STATE, userToken }),
         });
-        const result = await callback.json();
+        const result = await callback.json().catch(() => ({}));
         if (!callback.ok || !result.redirectUrl) {
-          throw new Error(result.message || 'Authorization failed. Please try again.');
+          // Never surface a raw server error (e.g. "Internal server error") to the
+          // user; log the technical detail and show friendly copy.
+          console.error('apple-music callback failed', callback.status, result);
+          throw new Error("We couldn't connect Apple Music right now. Please try again in a moment.");
         }
         window.location.replace(result.redirectUrl);
       } catch (err) {
@@ -359,7 +428,9 @@ export class AuthController {
   async appleMusicCallback(
     @Body() body: { state?: string; userToken?: string; error?: string },
   ) {
-    const { state, userToken, error } = body;
+    // Defensive: an empty/malformed POST body must not throw (raw 500) — degrade
+    // to a friendly redirect like every other failure path here.
+    const { state, userToken, error } = body ?? {};
     if (error || !state || !userToken) {
       return {
         redirectUrl: this.buildAppleMusicAppRedirect("error", "Could not connect Apple Music. Please try again."),

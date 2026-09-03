@@ -4,7 +4,9 @@ import { NestExpressApplication } from "@nestjs/platform-express";
 import { DocumentBuilder, SwaggerModule } from "@nestjs/swagger";
 
 import { AppModule } from "./app.module";
+import { resolveCorsOrigins } from "./common/config/cors-origins";
 import { GlobalExceptionFilter } from "./common/filters/global-exception.filter";
+import { spotifyRedirectUriProblem } from "./modules/auth/spotify-redirect-uri";
 
 function setupSwagger(app: NestExpressApplication): void {
   const isEnabled =
@@ -49,6 +51,8 @@ function validateEnvironment(): void {
     if (!process.env.ADMIN_JWT_SECRET) errors.push("ADMIN_JWT_SECRET is required");
     if (!process.env.ADMIN_FRONTEND_ORIGIN) errors.push("ADMIN_FRONTEND_ORIGIN is required");
     if (!process.env.PUBLIC_URL) errors.push("PUBLIC_URL is required");
+    if (!process.env.API_BASE_URL) errors.push("API_BASE_URL is required");
+    if (!process.env.REDIS_URL) errors.push("REDIS_URL is required for distributed production state");
     if (!process.env.MUSIC_TOKEN_ENCRYPTION_KEY) {
       errors.push("MUSIC_TOKEN_ENCRYPTION_KEY is required for encrypted music-provider authorization");
     } else {
@@ -89,8 +93,24 @@ function validateEnvironment(): void {
       if (publicUrl.origin !== normalized || publicUrl.protocol !== "https:") {
         errors.push("PUBLIC_URL must be an HTTPS origin without a path in production");
       }
+      if (publicUrl.hostname.endsWith(".up.railway.app")) {
+        errors.push("PUBLIC_URL must use the stable production custom domain, not a Railway service domain");
+      }
     } catch {
       errors.push("PUBLIC_URL must be a valid URL origin");
+    }
+
+    try {
+      const apiBaseUrl = new URL(process.env.API_BASE_URL ?? "");
+      const normalized = (process.env.API_BASE_URL ?? "").replace(/\/+$/, "");
+      if (apiBaseUrl.origin !== normalized || apiBaseUrl.protocol !== "https:") {
+        errors.push("API_BASE_URL must be an HTTPS origin without a path in production");
+      }
+      if (apiBaseUrl.hostname.endsWith(".up.railway.app")) {
+        errors.push("API_BASE_URL must use the stable production custom domain");
+      }
+    } catch {
+      errors.push("API_BASE_URL must be a valid URL origin");
     }
 
     if ((process.env.CORS_ORIGINS ?? "").split(",").some((origin) => origin.trim() === "*")) {
@@ -114,13 +134,38 @@ function validateEnvironment(): void {
   if (!process.env.SPOTIFY_CLIENT_ID) {
     warnings.push("Spotify credentials missing (SPOTIFY_CLIENT_ID) — Spotify song lookup and account connection will fail");
   }
+  {
+    const redirectProblem = spotifyRedirectUriProblem(process.env.SPOTIFY_REDIRECT_URI);
+    if (process.env.SPOTIFY_CLIENT_ID && redirectProblem) {
+      warnings.push(`Spotify account connection will fail — ${redirectProblem}`);
+    }
+  }
   if (!process.env.APPLE_MUSIC_TEAM_ID || !process.env.APPLE_MUSIC_KEY_ID || !process.env.APPLE_MUSIC_PRIVATE_KEY) {
     warnings.push("Apple Music credentials missing (APPLE_MUSIC_TEAM_ID, APPLE_MUSIC_KEY_ID, APPLE_MUSIC_PRIVATE_KEY) — Apple Music lookup will fail");
   } else if (!process.env.APPLE_MUSIC_PRIVATE_KEY.includes("BEGIN PRIVATE KEY")) {
     warnings.push("APPLE_MUSIC_PRIVATE_KEY does not look like a PEM private key — Apple Music lookup may fail");
   }
-  if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
-    warnings.push("SMTP credentials missing (SMTP_HOST, SMTP_USER, SMTP_PASS) — email sending will fail");
+  const hasSendGridEmail = Boolean(process.env.SENDGRID_API_KEY);
+  const hasSmtpEmail = Boolean(
+    process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS,
+  );
+  if (!hasSendGridEmail && !hasSmtpEmail) {
+    const message = "Email delivery credentials missing (SENDGRID_API_KEY or SMTP_HOST, SMTP_USER, SMTP_PASS)";
+    if (isProduction) errors.push(message);
+    else warnings.push(`${message} — email sending will fail`);
+  }
+
+  if (isProduction && process.env.MUSIC_PROVIDER_CONNECTIONS_ENABLED !== "true") {
+    errors.push("MUSIC_PROVIDER_CONNECTIONS_ENABLED must be true for the production Apple Music rollout");
+  }
+  if (isProduction && process.env.APPLE_MUSIC_CONNECTIONS_ENABLED !== "true") {
+    errors.push("APPLE_MUSIC_CONNECTIONS_ENABLED must be true for the production Apple Music rollout");
+  }
+  if (process.env.APPLE_MUSIC_CONNECTIONS_ENABLED === "true" && !process.env.APPLE_MUSIC_AUTH_BASE_URL) {
+    errors.push("APPLE_MUSIC_AUTH_BASE_URL is required when Apple Music connections are enabled");
+  }
+  if (process.env.SPOTIFY_CONNECTIONS_ENABLED === "true" && !process.env.SPOTIFY_REDIRECT_URI) {
+    errors.push("SPOTIFY_REDIRECT_URI is required when Spotify connections are enabled");
   }
   if (!process.env.ADMIN_BOOTSTRAP_EMAIL || !process.env.ADMIN_BOOTSTRAP_PASSWORD || !process.env.ADMIN_BOOTSTRAP_MFA_SECRET) {
     warnings.push("Admin bootstrap credentials missing (ADMIN_BOOTSTRAP_EMAIL, ADMIN_BOOTSTRAP_PASSWORD, ADMIN_BOOTSTRAP_MFA_SECRET) — the first admin account will not be auto-created");
@@ -139,21 +184,7 @@ function validateEnvironment(): void {
 async function bootstrap() {
   validateEnvironment();
 
-  const defaultCorsOrigins = [
-    "http://localhost:3000",
-    "http://localhost:3001",
-    "http://localhost:3002",
-    "https://repitair.com",
-    "https://www.repitair.com",
-  ];
-
-  const corsOrigins = process.env.CORS_ORIGINS
-    ? process.env.CORS_ORIGINS.split(",").map((origin) => origin.trim()).filter(Boolean)
-    : defaultCorsOrigins;
-
-  if (process.env.ADMIN_FRONTEND_ORIGIN && !corsOrigins.includes(process.env.ADMIN_FRONTEND_ORIGIN)) {
-    corsOrigins.push(process.env.ADMIN_FRONTEND_ORIGIN);
-  }
+  const corsOrigins = resolveCorsOrigins();
 
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     cors: {

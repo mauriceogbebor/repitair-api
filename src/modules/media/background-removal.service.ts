@@ -5,7 +5,8 @@ import { MediaDerivative } from "../../entities/media-derivative.entity";
 import { MediaAssetService } from "./media-asset.service";
 import { MediaStorageGateway } from "./media-storage.gateway";
 import { MediaProcessor, MediaProcessorContext } from "./media-processor.registry";
-import { validateTransparentOutput } from "./media-image-validation";
+import { validateTransparentOutput, classifyProviderBytes, bytePrefixHex } from "./media-image-validation";
+import { computePngVisibleBounds } from "./png-alpha-bounds";
 import { BACKGROUND_REMOVAL_PROVIDER, BackgroundRemovalProvider } from "./providers/background-removal.provider";
 
 /**
@@ -74,6 +75,7 @@ export class BackgroundRemovalService implements MediaProcessor {
             mimeType: contentMatch.mimeType,
             width: contentMatch.width ?? null,
             height: contentMatch.height ?? null,
+            visibleBounds: contentMatch.visibleBounds ?? null,
             bytes: contentMatch.bytes ?? null,
             checksum: contentMatch.checksum ?? null,
             provider: contentMatch.provider,
@@ -98,9 +100,26 @@ export class BackgroundRemovalService implements MediaProcessor {
       + ` assetId=${asset.id} provider=${this.provider.name}`,
     );
     const output = await this.provider.removeBackground({ buffer: source, mimeType: asset.mimeType });
+    // Safe diagnostic: if the provider did not return a PNG, log the signature
+    // (never image content — only length + first 16 bytes hex + classification)
+    // so a misconfigured provider is diagnosable without a device or a re-run.
+    const signature = classifyProviderBytes(output.buffer);
+    if (signature !== "png") {
+      this.logger.warn(
+        `[WORKER] provider output not PNG jobId=${context?.jobId ?? "unknown"}`
+        + ` assetId=${asset.id} provider=${this.provider.name} version=${this.provider.version}`
+        + ` declaredMime=${output.mimeType} bytes=${output.buffer.length}`
+        + ` signature=${signature} first16=${bytePrefixHex(output.buffer)}`,
+      );
+    }
     validateTransparentOutput(output.buffer);
     const stored = await this.storage.storeDerivative(output.buffer, "image/png");
     const durationMs = Date.now() - startedAt;
+
+    // Visible-content bounds for opt-in subject fitting (Ice Girl). Best-effort:
+    // the util returns null for any undecodable/unsupported PNG, and decoded
+    // dimensions supersede the provider's header dims when available.
+    const bounds = computePngVisibleBounds(output.buffer);
 
     const derivative = await this.assetService.saveDerivative({
       assetId: asset.id,
@@ -109,8 +128,9 @@ export class BackgroundRemovalService implements MediaProcessor {
       key: stored.key,
       url: stored.url,
       mimeType: "image/png",
-      width: output.width ?? null,
-      height: output.height ?? null,
+      width: bounds?.width ?? output.width ?? null,
+      height: bounds?.height ?? output.height ?? null,
+      visibleBounds: bounds?.visibleBounds ?? null,
       bytes: output.buffer.length,
       checksum: createHash("sha256").update(output.buffer).digest("hex"),
       provider: this.provider.name,

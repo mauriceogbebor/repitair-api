@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, Post, Req, Res, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, HttpCode, Post, Req, Res, UnauthorizedException, UseGuards } from "@nestjs/common";
 import type { Response } from "express";
 import type { AdminRequest } from "../admin.types";
 import { AdminJwtAuthGuard } from "../guards/admin-jwt-auth.guard";
@@ -16,14 +16,20 @@ export class AdminAuthController {
 
   @Post("login")
   @HttpCode(200)
-  async login(@Body() dto: AdminLoginDto, @Req() request: AdminRequest) {
-    return this.adminAuthService.login(dto, request.adminRequestContext);
+  async login(
+    @Body() dto: AdminLoginDto,
+    @Req() request: AdminRequest,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const result = await this.adminAuthService.login(dto, request.adminRequestContext);
+    this.adminSessionService.startMfaChallenge(response, result.ticket);
+    return { status: result.status, admin: result.admin };
   }
 
   @Post("mfa-enrollment")
   @HttpCode(200)
-  async mfaEnrollment(@Body("ticket") ticket: string) {
-    return this.adminAuthService.getMfaEnrollment(ticket);
+  async mfaEnrollment(@Req() request: AdminRequest, @Body("ticket") legacyTicket?: string) {
+    return this.adminAuthService.getMfaEnrollment(this.resolveMfaTicket(request, legacyTicket));
   }
 
   @Post("verify-mfa")
@@ -33,7 +39,9 @@ export class AdminAuthController {
     @Req() request: AdminRequest,
     @Res({ passthrough: true }) response: Response,
   ) {
-    const result = await this.adminAuthService.verifyMfa(dto, request.adminRequestContext);
+    const ticket = this.resolveMfaTicket(request, dto.ticket);
+    const result = await this.adminAuthService.verifyMfa({ ...dto, ticket }, request.adminRequestContext);
+    this.adminSessionService.clearMfaChallenge(response);
     const csrfToken = this.adminSessionService.startSession(response, result.accessToken);
     return { status: result.status, admin: result.admin, csrfToken };
   }
@@ -68,5 +76,11 @@ export class AdminAuthController {
     } finally {
       this.adminSessionService.clearSession(response);
     }
+  }
+
+  private resolveMfaTicket(request: AdminRequest, legacyTicket?: string): string {
+    const ticket = this.adminSessionService.getMfaTicket(request) ?? legacyTicket;
+    if (!ticket) throw new UnauthorizedException("MFA challenge is missing or expired");
+    return ticket;
   }
 }

@@ -10,6 +10,8 @@ type RepitSongSelection = {
   platform: "spotify" | "apple-music";
   durationMs?: number | null;
   albumArtUrl?: string | null;
+  isExplicit?: boolean | null;
+  progressFraction?: number | null;
 };
 
 type RepitWidgetTransform = {

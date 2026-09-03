@@ -8,6 +8,7 @@ export const ANALYTICS_EVENTS = {
   USER_REGISTERED: "user.registered",
   LOGIN: "user.login",
   REPIT_CREATED: "repit.created",
+  REPIT_PUBLISHED: "repit.published",
   REPIT_EXPORTED: "repit.exported",
   TEMPLATE_SELECTED: "template.selected",
   TEMPLATE_USED: "template.used",

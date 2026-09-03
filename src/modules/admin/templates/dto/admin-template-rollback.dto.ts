@@ -1,5 +1,5 @@
 import { Type } from "class-transformer";
-import { IsInt, IsOptional, IsString, Min } from "class-validator";
+import { IsInt, IsOptional, IsString, MaxLength, Min } from "class-validator";
 
 export class AdminTemplateRollbackDto {
   @Type(() => Number)
@@ -9,5 +9,6 @@ export class AdminTemplateRollbackDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   summary?: string;
 }
