@@ -257,10 +257,8 @@ export class RepitsService {
       backgroundPhotoUrl: effectiveBackgroundPhotoUrl,
     });
 
-    // If the photo is changing, schedule the old file for deletion.
-    const oldPhoto = existing.backgroundPhotoUrl;
-    const newPhoto = body.backgroundPhotoUrl;
-    const photoChanged = newPhoto !== undefined && newPhoto !== oldPhoto;
+    // TypeORM merge mutates existing, so preserve the transition source first.
+    const previousStatus = existing.status;
 
     const updated = this.repitsRepo.merge(existing, {
       artist: body.artist ?? existing.artist,
@@ -300,17 +298,11 @@ export class RepitsService {
 
     // Funnel conversion: the draft→published transition is the backend-observable
     // "completed/shared" step. Emit only on the transition, not on every save.
-    if (existing.status !== "published" && saved.status === "published") {
+    if (previousStatus !== "published" && saved.status === "published") {
       this.emit(ANALYTICS_EVENTS.REPIT_PUBLISHED, userId, {
         repitId: saved.id,
         templateId: saved.templateId,
       });
-    }
-
-    if (photoChanged && oldPhoto && !mediaBinding) {
-      // Fire-and-forget cleanup of the orphaned file. Failure here shouldn't
-      // fail the update — the file will be caught by a periodic sweep instead.
-      this.tryDeleteUpload(oldPhoto);
     }
 
     return this.normalizeRepit(saved);
@@ -327,72 +319,11 @@ export class RepitsService {
   }
 
   async deleteRepit(userId: string, id: string): Promise<boolean> {
-    // Fetch first so we can clean up the associated uploads.
-    let existing: Repit | null;
-    try {
-      existing = await this.repitsRepo.findOne({
-        where: { id, userId },
-      });
-    } catch (err) {
-      if (isLegacyRepitSchemaError(err)) {
-        existing = await this.getRepitLegacy(userId, id);
-      } else {
-        throw err;
-      }
-    }
-    if (!existing) return false;
-
+    // Repit URLs are client-controlled references, not proof of storage ownership.
+    // Originals and derivatives may also be shared by other Repits. Delete only
+    // the Repit; storage reclamation requires trusted ownership/reference data.
     const result = await this.repitsRepo.delete({ id, userId });
-    const deleted = (result.affected ?? 0) > 0;
-
-    if (deleted) {
-      // Best-effort cleanup of all uploaded assets associated with this repit.
-      // Failures are silently swallowed — orphans are caught by periodic sweep.
-      if (existing.backgroundPhotoUrl) {
-        this.tryDeleteUpload(existing.backgroundPhotoUrl);
-      }
-      // Clean up images embedded in composition layers (photo layers, etc.)
-      this.tryDeleteCompositionAssets(existing.composition);
-    }
-
-    return deleted;
-  }
-
-  /**
-   * Extract uploaded image URLs from composition layers and delete them.
-   * Only deletes URLs that look like our own uploads (contain /api/uploads/ or S3 bucket).
-   */
-  private tryDeleteCompositionAssets(composition: unknown): void {
-    if (!composition || typeof composition !== "object") return;
-    const comp = composition as {
-      layers?: Array<{ data?: { uri?: string }; photoUri?: string; imageUri?: string }>;
-    };
-    if (!Array.isArray(comp.layers)) return;
-
-    for (const layer of comp.layers) {
-      if (layer.data?.uri) this.tryDeleteUpload(layer.data.uri);
-      if (layer.photoUri) this.tryDeleteUpload(layer.photoUri);
-      if (layer.imageUri) this.tryDeleteUpload(layer.imageUri);
-    }
-  }
-
-  /**
-   * Best-effort deletion of an uploaded file given its public URL.
-   * Extracts the storage key from the URL and calls the uploads service.
-   */
-  private tryDeleteUpload(url: string): void {
-    try {
-      // URLs look like https://host/api/uploads/<filename> (local) or
-      // https://bucket.s3.amazonaws.com/<filename> (S3). Either way, the
-      // last path segment is the key.
-      const key = url.split("/").pop();
-      if (!key) return;
-      void this.uploadsService.deleteFile(key).catch(() => {
-        // Swallow — sweep job will catch persistent orphans.
-      });
-    } catch {
-      // URL parse error — ignore.
-    }
+    return (result.affected ?? 0) > 0;
   }
 
   private buildFallbackSelectedSongs(body: CreateRepitDto): Repit["selectedSongs"] {
@@ -525,10 +456,6 @@ export class RepitsService {
     const existing = await this.getRepitLegacy(userId, id);
     if (!existing) return null;
 
-    const oldPhoto = existing.backgroundPhotoUrl;
-    const newPhoto = body.backgroundPhotoUrl;
-    const photoChanged = newPhoto !== undefined && newPhoto !== oldPhoto;
-
     const updatePayload: Record<string, unknown> = {
       templateId: body.templateId ?? existing.templateId,
       songLink: body.songLink !== undefined ? body.songLink ?? "" : existing.songLink,
@@ -551,10 +478,6 @@ export class RepitsService {
 
     if ((updateResult.affected ?? 0) === 0) {
       return null;
-    }
-
-    if (photoChanged && oldPhoto) {
-      this.tryDeleteUpload(oldPhoto);
     }
 
     return this.getRepitLegacy(userId, id);
