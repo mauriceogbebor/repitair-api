@@ -2,6 +2,7 @@ import { BadRequestException } from "@nestjs/common";
 import { Test, TestingModule } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
+import { AnalyticsService, ANALYTICS_EVENTS } from "../analytics/analytics.service";
 import { RepitsService } from "./repits.service";
 import { Repit, Template } from "../../entities";
 import { UploadsService } from "../uploads/uploads.service";
@@ -39,6 +40,8 @@ describe("RepitsService", () => {
     merge: jest.fn(),
     delete: jest.fn(),
   };
+
+  const mockAnalytics = { track: jest.fn().mockResolvedValue(undefined) };
 
   const mockTemplatesRepo = {
     findOne: jest.fn(),
@@ -93,6 +96,7 @@ describe("RepitsService", () => {
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        { provide: AnalyticsService, useValue: mockAnalytics },
         RepitsService,
         {
           provide: getRepositoryToken(Repit),
@@ -117,6 +121,8 @@ describe("RepitsService", () => {
     repository = module.get<Repository<Repit>>(getRepositoryToken(Repit));
 
     jest.clearAllMocks();
+    mockRepository.merge.mockReset();
+    mockRepository.save.mockReset();
     mockTemplatesRepo.findOne.mockResolvedValue({
       id: "sunrise",
       status: "published",
@@ -373,6 +379,29 @@ describe("RepitsService", () => {
   });
 
   describe("updateRepit", () => {
+    it("emits publication once when merge mutates the loaded entity", async () => {
+      const existing = { ...mockRepit, status: "draft" };
+      mockRepository.findOne.mockResolvedValue(existing);
+      mockRepository.merge.mockImplementation((entity, patch) => Object.assign(entity, patch));
+      mockRepository.save.mockImplementation(async (entity) => entity);
+
+      await service.updateRepit("user_1", existing.id, { status: "published" });
+      await service.updateRepit("user_1", existing.id, { status: "published" });
+
+      expect(mockAnalytics.track).toHaveBeenCalledTimes(1);
+      expect(mockAnalytics.track).toHaveBeenCalledWith(ANALYTICS_EVENTS.REPIT_PUBLISHED,
+        expect.objectContaining({ userId: "user_1", properties: { repitId: existing.id, templateId: "sunrise" } }));
+    });
+
+    it("does not delete the old storage object when replacing a photo reference", async () => {
+      const existing = { ...mockRepit, backgroundPhotoUrl: "https://other.example/victim.png" };
+      mockRepository.findOne.mockResolvedValue(existing);
+      mockRepository.merge.mockImplementation((entity, patch) => Object.assign(entity, patch));
+      mockRepository.save.mockImplementation(async (entity) => entity);
+      await service.updateRepit("user_1", existing.id, { backgroundPhotoUrl: "https://example.com/new.png" });
+      expect(mockUploadsService.deleteFile).not.toHaveBeenCalled();
+    });
+
     it("should update existing repit", async () => {
       const updateDto = {
         title: "Updated Title",
@@ -490,6 +519,17 @@ describe("RepitsService", () => {
   });
 
   describe("deleteRepit", () => {
+    it.each(["https://other.example/victim.png", "https://api.example/api/uploads/shared.png"])(
+      "retains referenced storage objects when deleting a Repit: %s", async (url) => {
+        mockRepository.findOne.mockResolvedValue({
+          ...mockRepit, backgroundPhotoUrl: url,
+          composition: { ...validComposition, layers: [{ ...validComposition.layers[0], data: { uri: url } }] },
+        });
+        mockRepository.delete.mockResolvedValue({ affected: 1 });
+        expect(await service.deleteRepit("user_1", mockRepit.id)).toBe(true);
+        expect(mockUploadsService.deleteFile).not.toHaveBeenCalled();
+      },
+    );
     it("should delete repit and return true", async () => {
       mockRepository.findOne.mockResolvedValue(mockRepit);
       mockRepository.delete.mockResolvedValue({ affected: 1 });
@@ -506,6 +546,7 @@ describe("RepitsService", () => {
     it("should return false if repit not found", async () => {
       mockRepository.findOne.mockResolvedValue(null);
 
+      mockRepository.delete.mockResolvedValue({ affected: 0 });
       const result = await service.deleteRepit("user_1", "nonexistent");
 
       expect(result).toBe(false);
