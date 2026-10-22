@@ -7,6 +7,18 @@ import { UploadsService } from "./uploads.service";
 // Mock fs module
 jest.mock("fs");
 
+
+// Minimal real magic-byte headers (the service now validates file content, not the client MIME type).
+const pad = (head: number[] | Buffer) => Buffer.concat([Buffer.from(head as number[]), Buffer.alloc(32)]);
+const IMG: Record<string, Buffer> = {
+  "image/jpeg": pad([0xff, 0xd8, 0xff, 0xe0]),
+  "image/png": pad([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+  "image/webp": pad(Buffer.concat([Buffer.from("RIFF"), Buffer.alloc(4), Buffer.from("WEBP")])),
+  "image/gif": pad(Buffer.from("GIF89a")),
+  "image/heic": pad(Buffer.concat([Buffer.alloc(4), Buffer.from("ftypheic")])),
+  "image/heif": pad(Buffer.concat([Buffer.alloc(4), Buffer.from("ftypmif1")])),
+};
+
 describe("UploadsService", () => {
   let service: UploadsService;
   let configService: ConfigService;
@@ -71,7 +83,7 @@ describe("UploadsService", () => {
     });
 
     it("should write file and return URL containing baseUrl and filename", async () => {
-      const buffer = Buffer.from("test image data");
+      const buffer = IMG["image/jpeg"];
       (fs.writeFileSync as jest.Mock).mockReturnValue(undefined);
 
       const result = await service.uploadFile(buffer, "test.jpg", "image/jpeg");
@@ -83,7 +95,7 @@ describe("UploadsService", () => {
     });
 
     it("should generate unique filenames for two successive uploads", async () => {
-      const buffer = Buffer.from("test image data");
+      const buffer = IMG["image/jpeg"];
       (fs.writeFileSync as jest.Mock).mockReturnValue(undefined);
 
       const result1 = await service.uploadFile(buffer, "test.jpg", "image/jpeg");
@@ -93,7 +105,7 @@ describe("UploadsService", () => {
     });
 
     it("should derive extension from mimetype when filename has no extension", async () => {
-      const buffer = Buffer.from("test image data");
+      const buffer = IMG["image/png"];
       (fs.writeFileSync as jest.Mock).mockReturnValue(undefined);
 
       const result = await service.uploadFile(buffer, "myfile", "image/png");
@@ -102,7 +114,7 @@ describe("UploadsService", () => {
     });
 
     it("should handle image/jpeg mimetype", async () => {
-      const buffer = Buffer.from("test image data");
+      const buffer = IMG["image/jpeg"];
       (fs.writeFileSync as jest.Mock).mockReturnValue(undefined);
 
       const result = await service.uploadFile(buffer, "photo", "image/jpeg");
@@ -111,7 +123,7 @@ describe("UploadsService", () => {
     });
 
     it("should handle image/webp mimetype", async () => {
-      const buffer = Buffer.from("test image data");
+      const buffer = IMG["image/webp"];
       (fs.writeFileSync as jest.Mock).mockReturnValue(undefined);
 
       const result = await service.uploadFile(buffer, "image", "image/webp");
@@ -120,7 +132,7 @@ describe("UploadsService", () => {
     });
 
     it("should handle image/gif mimetype", async () => {
-      const buffer = Buffer.from("test image data");
+      const buffer = IMG["image/gif"];
       (fs.writeFileSync as jest.Mock).mockReturnValue(undefined);
 
       const result = await service.uploadFile(buffer, "animation", "image/gif");
@@ -129,7 +141,7 @@ describe("UploadsService", () => {
     });
 
     it("should handle image/heic mimetype (iOS camera)", async () => {
-      const buffer = Buffer.from("test image data");
+      const buffer = IMG["image/heic"];
       (fs.writeFileSync as jest.Mock).mockReturnValue(undefined);
 
       const result = await service.uploadFile(buffer, "photo", "image/heic");
@@ -138,12 +150,34 @@ describe("UploadsService", () => {
     });
 
     it("should handle image/heif mimetype", async () => {
-      const buffer = Buffer.from("test image data");
+      const buffer = IMG["image/heif"];
       (fs.writeFileSync as jest.Mock).mockReturnValue(undefined);
 
       const result = await service.uploadFile(buffer, "photo", "image/heif");
 
-      expect(result.key).toMatch(/\.heif$/);
+      expect(result.key).toMatch(/\.heic$/); // HEIF family is normalised to .heic
+    });
+  });
+
+  describe("content validation (spoofed uploads)", () => {
+    it("rejects HTML disguised as image/png", async () => {
+      const html = Buffer.from("<html><script>alert(document.cookie)</script></html>");
+      await expect(service.uploadFile(html, "avatar.png", "image/png")).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it("rejects SVG even with an image MIME type", async () => {
+      const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"></svg>');
+      await expect(service.uploadFile(svg, "x.svg", "image/gif")).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it("rejects MP4 (ftyp box with a non-HEIF brand)", async () => {
+      const mp4 = Buffer.concat([Buffer.alloc(4), Buffer.from("ftypisom"), Buffer.alloc(32)]);
+      await expect(service.uploadFile(mp4, "clip.heic", "image/heic")).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it("ignores the client extension and uses the sniffed type", async () => {
+      const result = await service.uploadFile(IMG["image/png"], "evil.html", "image/png");
+      expect(result.key).toMatch(/^[0-9a-f-]{36}\.png$/);
     });
   });
 

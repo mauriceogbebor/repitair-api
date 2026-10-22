@@ -68,6 +68,9 @@ export class UploadsController {
     const contentType = mimeTypes[ext] ?? "application/octet-stream";
     const file = await this.uploadsService.readFile(sanitized);
     res.setHeader("Content-Type", contentType);
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Content-Security-Policy", "default-src 'none'; sandbox");
+    res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
     res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
     res.send(file);
   }

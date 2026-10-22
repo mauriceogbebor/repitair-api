@@ -42,8 +42,10 @@ export class PrivacyQueryService {
     if (filters.assignedAdminEmail) qb.andWhere("r.assignedAdminEmail = :ae", { ae: filters.assignedAdminEmail });
     if (filters.search) qb.andWhere("(r.userEmail ILIKE :s OR r.userId::text ILIKE :s)", { s: `%${filters.search}%` });
     const total = await qb.getCount();
-    const sortBy = filters.sortBy ?? "createdAt";
-    qb.orderBy(`r.${sortBy}`, filters.sortOrder ?? "DESC").offset((page - 1) * pageSize).limit(pageSize);
+    const allowedSort = ["createdAt", "dueAt", "priority", "status"] as const;
+    const sortBy = allowedSort.includes(filters.sortBy as (typeof allowedSort)[number]) ? filters.sortBy! : "createdAt";
+    const sortOrder = filters.sortOrder === "ASC" ? "ASC" : "DESC";
+    qb.orderBy(`r.${sortBy}`, sortOrder).offset((page - 1) * pageSize).limit(pageSize);
     const rows = await qb.getMany();
     return { total, page, pageSize, records: rows.map((r) => this.serialize(r)) };
   }

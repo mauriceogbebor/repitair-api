@@ -6,6 +6,25 @@ import * as os from "os";
 import { randomUUID } from "crypto";
 import { UploadResponseDto } from "./dto/upload-response.dto";
 
+/**
+ * Identify the real image type from magic bytes. The client-supplied filename and
+ * MIME type are never trusted for storage (prevents HTML/SVG/script uploads
+ * disguised as images being served back from our domain or bucket).
+ */
+const HEIF_BRANDS = new Set(["heic", "heix", "hevc", "hevx", "heim", "heis", "mif1", "msf1"]);
+export function sniffImageType(buffer: Buffer): { mime: string; ext: string } | null {
+  if (!buffer || buffer.length < 12) return null;
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return { mime: "image/jpeg", ext: ".jpg" };
+  if (buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return { mime: "image/png", ext: ".png" };
+  if (buffer.subarray(0, 4).toString("ascii") === "RIFF" && buffer.subarray(8, 12).toString("ascii") === "WEBP") return { mime: "image/webp", ext: ".webp" };
+  const gifSig = buffer.subarray(0, 6).toString("ascii");
+  if (gifSig === "GIF87a" || gifSig === "GIF89a") return { mime: "image/gif", ext: ".gif" };
+  if (buffer.subarray(4, 8).toString("ascii") === "ftyp" && HEIF_BRANDS.has(buffer.subarray(8, 12).toString("ascii"))) {
+    return { mime: "image/heic", ext: ".heic" };
+  }
+  return null;
+}
+
 // S3 types — only used when UPLOAD_PROVIDER=s3. The actual @aws-sdk/client-s3
 // package is loaded dynamically at runtime so the build succeeds without it.
 type S3ClientInstance = { send: (command: unknown) => Promise<unknown> };
@@ -175,20 +194,24 @@ export class UploadsService {
       );
     }
 
-    // Generate unique filename
-    const ext = this.getFileExtension(filename, mimetype);
-    const uniqueFilename = `${randomUUID()}${ext}`;
+    // Validate the actual bytes; extension and content type come from the sniffed type only.
+    const detected = sniffImageType(buffer);
+    if (!detected) {
+      throw new BadRequestException("File content is not a supported image (JPEG, PNG, WebP, GIF or HEIC)");
+    }
+    void filename; // client filename is intentionally ignored
+    const uniqueFilename = `${randomUUID()}${detected.ext}`;
 
     try {
       if (this.uploadProvider === "s3") {
-        return await this.uploadToS3(buffer, uniqueFilename, mimetype);
+        return await this.uploadToS3(buffer, uniqueFilename, detected.mime);
       } else {
         return await this.uploadToLocal(buffer, uniqueFilename);
       }
     } catch (error) {
-      throw new InternalServerErrorException(
-        `Failed to upload file: ${(error as Error).message}`,
-      );
+      // Do not leak storage/provider internals to clients.
+      new Logger("UploadsService").error(`Upload failed: ${(error as Error).message}`);
+      throw new InternalServerErrorException("Failed to upload file");
     }
   }
 

@@ -31,6 +31,13 @@ export class JwtAuthGuard implements CanActivate {
 
     try {
       const payload = this.jwtService.verify(token);
+      if (payload?.type === "refresh") {
+        throw new UnauthorizedException({
+          errorCode: "SESSION_INVALID",
+          message: "Invalid access token",
+          retriable: false,
+        });
+      }
 
       // Check blacklist using jti (compact) or full token (pre-jti backwards compat)
       const blacklistKey = payload.jti ?? token;
