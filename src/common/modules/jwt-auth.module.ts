@@ -37,7 +37,9 @@ import { JwtAuthGuard } from "../guards/jwt-auth.guard";
 
         return {
           secret: jwtSecret ?? "dev-secret-change-me",
+          verifyOptions: { algorithms: ["HS256"] },
           signOptions: {
+            algorithm: "HS256",
             // Keep the legacy seven-day lifetime during mobile rollout. Once
             // refresh-capable builds are broadly adopted this can be shortened
             // through environment configuration without another code change.
