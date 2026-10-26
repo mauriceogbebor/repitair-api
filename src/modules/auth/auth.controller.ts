@@ -368,8 +368,8 @@ export class AuthController {
 
   <script src="https://js-cdn.music.apple.com/musickit/v3/musickit.js" data-web-components crossorigin></script>
   <script>
-    const STATE = ${JSON.stringify(state)};
-    const DEV_TOKEN = ${JSON.stringify(developerToken)};
+    const STATE = ${JSON.stringify(state).replace(/</g, "\\u003c")};
+    const DEV_TOKEN = ${JSON.stringify(developerToken).replace(/</g, "\\u003c")};
     const CALLBACK_URL = new URL('callback', window.location.href).toString();
 
     async function authorize() {

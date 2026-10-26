@@ -28,15 +28,18 @@ export class AdminTokenService {
 
   constructor(private readonly configService: ConfigService) {
     const configuredSecret = this.configService.get<string>("ADMIN_JWT_SECRET");
-    if (!configuredSecret && this.configService.get<string>("NODE_ENV") === "production") {
-      throw new Error("ADMIN_JWT_SECRET is required in production");
+    const nodeEnv = this.configService.get<string>("NODE_ENV") ?? "development";
+    // Fail closed everywhere except local development/test (staging/preview
+    // previously fell back to a public default secret => forgeable admin tokens).
+    if (!configuredSecret && nodeEnv !== "development" && nodeEnv !== "test") {
+      throw new Error(`ADMIN_JWT_SECRET is required when NODE_ENV=${nodeEnv}`);
     }
     const secret = configuredSecret ?? "admin-dev-secret-change-me";
     const accessExpiresIn = this.configService.get<string>("ADMIN_JWT_EXPIRES_IN") ?? "8h";
     const ticketExpiresIn = this.configService.get<string>("ADMIN_MFA_TICKET_EXPIRES_IN") ?? "10m";
 
-    this.accessJwt = new JwtService({ secret, signOptions: { expiresIn: accessExpiresIn as any } });
-    this.mfaTicketJwt = new JwtService({ secret, signOptions: { expiresIn: ticketExpiresIn as any } });
+    this.accessJwt = new JwtService({ secret, signOptions: { algorithm: "HS256", expiresIn: accessExpiresIn as any }, verifyOptions: { algorithms: ["HS256"] } });
+    this.mfaTicketJwt = new JwtService({ secret, signOptions: { algorithm: "HS256", expiresIn: ticketExpiresIn as any }, verifyOptions: { algorithms: ["HS256"] } });
   }
 
   signAccessToken(payload: Omit<AdminAccessTokenPayload, "tokenType">): string {
