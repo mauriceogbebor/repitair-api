@@ -104,6 +104,20 @@ describe("UploadsService", () => {
       expect(result1.key).not.toEqual(result2.key);
     });
 
+    it("reuses the same object key for a retried client request without crossing users or payloads", async () => {
+      const original = IMG["image/jpeg"];
+      const retry = { userId: "user-a", requestId: "upload-12345678-abcdef" };
+      const first = await service.uploadFile(original, "first.jpg", "image/jpeg", retry);
+      const second = await service.uploadFile(original, "first.jpg", "image/jpeg", retry);
+      const anotherUser = await service.uploadFile(original, "first.jpg", "image/jpeg", { ...retry, userId: "user-b" });
+      const changed = await service.uploadFile(Buffer.concat([original, Buffer.from([1])]), "first.jpg", "image/jpeg", retry);
+
+      expect(second.key).toBe(first.key);
+      expect(second.url).toBe(first.url);
+      expect(anotherUser.key).not.toBe(first.key);
+      expect(changed.key).not.toBe(first.key);
+    });
+
     it("should derive extension from mimetype when filename has no extension", async () => {
       const buffer = IMG["image/png"];
       (fs.writeFileSync as jest.Mock).mockReturnValue(undefined);

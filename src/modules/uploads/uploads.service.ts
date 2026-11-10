@@ -3,7 +3,7 @@ import { ConfigService } from "@nestjs/config";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { UploadResponseDto } from "./dto/upload-response.dto";
 
 /**
@@ -179,6 +179,7 @@ export class UploadsService {
     buffer: Buffer,
     filename: string,
     mimetype: string,
+    request?: { userId: string; requestId?: string },
   ): Promise<UploadResponseDto> {
     // Validate MIME type
     if (!this.ALLOWED_MIME_TYPES.includes(mimetype)) {
@@ -200,7 +201,18 @@ export class UploadsService {
       throw new BadRequestException("File content is not a supported image (JPEG, PNG, WebP, GIF or HEIC)");
     }
     void filename; // client filename is intentionally ignored
-    const uniqueFilename = `${randomUUID()}${detected.ext}`;
+    // A retry after a lost response must address the same object across API instances.
+    // Include the authenticated owner and bytes so another user or changed payload
+    // cannot overwrite an earlier upload with the same client request ID.
+    const idempotent = request?.userId && request.requestId &&
+      /^[A-Za-z0-9_-]{8,128}$/.test(request.requestId);
+    const objectId = idempotent
+      ? createHash("sha256")
+          .update(request.userId).update("\0")
+          .update(request.requestId!).update("\0")
+          .update(buffer).digest("hex")
+      : randomUUID();
+    const uniqueFilename = `${objectId}${detected.ext}`;
 
     try {
       if (this.uploadProvider === "s3") {
