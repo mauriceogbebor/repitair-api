@@ -3,6 +3,8 @@ import { BadRequestException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import * as fs from "fs";
 import { UploadsService } from "./uploads.service";
+import { getRepositoryToken } from "@nestjs/typeorm";
+import { UploadOwnership } from "../../entities/upload-ownership.entity";
 
 // Mock fs module
 jest.mock("fs");
@@ -22,6 +24,7 @@ const IMG: Record<string, Buffer> = {
 describe("UploadsService", () => {
   let service: UploadsService;
   let configService: ConfigService;
+  const ownership = { upsert: jest.fn(), findOne: jest.fn() };
 
   const mockConfigService = {
     get: jest.fn((key: string) => {
@@ -46,6 +49,7 @@ describe("UploadsService", () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         UploadsService,
+        { provide: getRepositoryToken(UploadOwnership), useValue: ownership },
         {
           provide: ConfigService,
           useValue: mockConfigService,
@@ -63,6 +67,11 @@ describe("UploadsService", () => {
       // We can't easily re-instantiate, so we verify fs was set up correctly
       expect(configService.get).toHaveBeenCalledWith("UPLOAD_PROVIDER");
     });
+  });
+
+  it("refuses to register an upload owned by another user", async () => {
+    ownership.findOne.mockResolvedValue({ key: "existing.jpg", userId: "another-user" });
+    await expect(service.assertUploadOwner("existing.jpg", "current-user")).rejects.toThrow("Upload does not belong");
   });
 
   describe("uploadFile", () => {

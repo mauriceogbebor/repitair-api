@@ -1,5 +1,5 @@
 # Builder stage
-FROM node:20-alpine AS builder
+FROM node:24.22.3-alpine AS builder
 
 WORKDIR /app
 
@@ -18,7 +18,7 @@ COPY nest-cli.json ./
 RUN npm run build
 
 # Production stage
-FROM node:20-alpine
+FROM node:24.22.3-alpine
 
 WORKDIR /app
 

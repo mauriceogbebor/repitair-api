@@ -42,6 +42,7 @@ describe("UsersService", () => {
     emailVerified: false,
     emailVerifyCode: undefined,
     emailVerifyCodeExpiresAt: undefined,
+    emailVerifyCodeAttempts: 0,
     pendingEmail: null,
     pendingEmailCodeHash: null,
     pendingEmailExpiresAt: null,
@@ -130,6 +131,26 @@ describe("UsersService", () => {
       const result = await service.findByEmail("nonexistent@example.com");
 
       expect(result).toBeNull();
+    });
+  });
+
+  describe("email verification", () => {
+    it("invalidates a code after five failed attempts under a row lock", async () => {
+      const user = { ...mockUser, emailVerifyCode: hashCode("123456"), emailVerifyCodeExpiresAt: new Date(Date.now() + 60_000) };
+      mockRepository.findOne.mockResolvedValue(user);
+      Object.defineProperty(repository, "manager", {
+        configurable: true,
+        value: { transaction: (callback: (manager: { getRepository: () => typeof mockRepository }) => Promise<boolean>) =>
+          callback({ getRepository: () => mockRepository }) },
+      });
+
+      for (let attempt = 0; attempt < 5; attempt++) {
+        await expect(service.verifyEmail(user.id, "000000")).resolves.toBe(false);
+      }
+      expect(user.emailVerifyCodeAttempts).toBe(5);
+      expect(user.emailVerifyCode).toBeUndefined();
+      expect(mockRepository.findOne).toHaveBeenCalledWith({ where: { id: user.id }, lock: { mode: "pessimistic_write" } });
+      await expect(service.verifyEmail(user.id, "123456")).resolves.toBe(false);
     });
   });
 

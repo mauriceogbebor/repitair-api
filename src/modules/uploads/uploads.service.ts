@@ -1,10 +1,13 @@
-import { BadRequestException, Injectable, InternalServerErrorException, Logger, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ForbiddenException, Injectable, InternalServerErrorException, Logger, NotFoundException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { InjectRepository } from "@nestjs/typeorm";
+import { Repository } from "typeorm";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import { createHash, randomUUID } from "crypto";
 import { UploadResponseDto } from "./dto/upload-response.dto";
+import { UploadOwnership } from "../../entities/upload-ownership.entity";
 
 /**
  * Identify the real image type from magic bytes. The client-supplied filename and
@@ -75,7 +78,10 @@ export class UploadsService {
   private readonly awsRegion: string;
   private baseUrl: string;
 
-  constructor(private configService: ConfigService) {
+  constructor(
+    private configService: ConfigService,
+    @InjectRepository(UploadOwnership) private readonly ownership: Repository<UploadOwnership>,
+  ) {
     this.uploadProvider = (this.configService.get<string>("UPLOAD_PROVIDER") ||
       "local") as "local" | "s3";
     this.awsRegion = this.configService.get<string>("AWS_REGION") || "us-east-1";
@@ -215,15 +221,24 @@ export class UploadsService {
     const uniqueFilename = `${objectId}${detected.ext}`;
 
     try {
-      if (this.uploadProvider === "s3") {
-        return await this.uploadToS3(buffer, uniqueFilename, detected.mime);
-      } else {
-        return await this.uploadToLocal(buffer, uniqueFilename);
+      const result = this.uploadProvider === "s3"
+        ? await this.uploadToS3(buffer, uniqueFilename, detected.mime)
+        : await this.uploadToLocal(buffer, uniqueFilename);
+      if (request?.userId) {
+        await this.ownership.upsert({ key: result.key, userId: request.userId }, ["key"]);
       }
+      return result;
     } catch (error) {
       // Do not leak storage/provider internals to clients.
       new Logger("UploadsService").error(`Upload failed: ${(error as Error).message}`);
       throw new InternalServerErrorException("Failed to upload file");
+    }
+  }
+
+  async assertUploadOwner(key: string, userId: string): Promise<void> {
+    const record = await this.ownership.findOne({ where: { key: this.assertSafeKey(key) } });
+    if (!record || record.userId !== userId) {
+      throw new ForbiddenException("Upload does not belong to this user");
     }
   }
 

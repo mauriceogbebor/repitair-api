@@ -1,4 +1,5 @@
 export { User } from "./user.entity";
+export { UploadOwnership } from "./upload-ownership.entity";
 export type { SocialAuthProvider } from "./social-identity.entity";
 export { SocialIdentity } from "./social-identity.entity";
 export { Repit } from "./repit.entity";
