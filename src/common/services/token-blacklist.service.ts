@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger, Optional } from "@nestjs/common";
+import { Inject, Injectable, Logger, Optional, ServiceUnavailableException } from "@nestjs/common";
 
 import { isRedisReady, REDIS_CLIENT } from "../modules/redis.module";
 
@@ -7,8 +7,8 @@ type RedisClient = any;
 /**
  * Token blacklist — invalidates JWTs on logout.
  *
- * Uses the shared Redis client (from RedisModule) when available, otherwise
- * falls back to an in-memory Map with periodic cleanup.
+ * Uses shared Redis in production and fails closed if it is unavailable.
+ * Development and tests can fall back to an in-memory Map.
  */
 @Injectable()
 export class TokenBlacklistService {
@@ -18,12 +18,13 @@ export class TokenBlacklistService {
   private readonly keyPrefix = "token:blacklist:";
   private cleanupInterval: NodeJS.Timeout | null = null;
   private hasLoggedRedisFailure = false;
+  private readonly requireRedis = process.env.NODE_ENV === "production";
 
   constructor(
     @Inject(REDIS_CLIENT) @Optional() private readonly redis: RedisClient | null,
   ) {
     if (this.redis) {
-      this.logger.log("Token blacklist configured for Redis with in-memory fallback");
+      this.logger.log(this.requireRedis ? "Token blacklist requires Redis" : "Token blacklist configured for Redis with in-memory fallback");
     } else {
       this.logger.log("Token blacklist using in-memory Map");
     }
@@ -56,7 +57,10 @@ export class TokenBlacklistService {
         this.hasLoggedRedisFailure = false;
       } catch (error) {
         this.logRedisFailure("add token to", error);
+        if (this.requireRedis) throw new ServiceUnavailableException("Session storage is unavailable");
       }
+    } else if (this.requireRedis) {
+      throw new ServiceUnavailableException("Session storage is unavailable");
     }
   }
 
@@ -71,9 +75,11 @@ export class TokenBlacklistService {
         return exists === 1 || locallyBlacklisted;
       } catch (error) {
         this.logRedisFailure("check", error);
+        if (this.requireRedis) throw new ServiceUnavailableException("Session storage is unavailable");
       }
     }
 
+    if (this.requireRedis) throw new ServiceUnavailableException("Session storage is unavailable");
     return locallyBlacklisted;
   }
 
@@ -99,9 +105,11 @@ export class TokenBlacklistService {
         return true;
       } catch (error) {
         this.logRedisFailure("consume one-time key in", error);
+        if (this.requireRedis) throw new ServiceUnavailableException("Session storage is unavailable");
       }
     }
 
+    if (this.requireRedis) throw new ServiceUnavailableException("Session storage is unavailable");
     // No await between the check above and this write: within one process this
     // is an atomic claim on the JavaScript event loop.
     if (this.isLocallyBlacklisted(token)) return false;

@@ -464,10 +464,6 @@ export class AuthService {
     }
 
     const blacklistKey = `refresh:${payload.jti}`;
-    if (await this.tokenBlacklist.isBlacklisted(blacklistKey)) {
-      throw this.sessionUnauthorized("REFRESH_TOKEN_REVOKED", "This session has been revoked.");
-    }
-
     const user = await this.usersService.findById(payload.sub);
     if (!user) {
       throw this.sessionUnauthorized("SESSION_INVALID", "The user session no longer exists.");
@@ -479,7 +475,9 @@ export class AuthService {
       throw this.sessionUnauthorized("REFRESH_TOKEN_REVOKED", "This session has been revoked.");
     }
 
-    await this.tokenBlacklist.add(blacklistKey, payload.exp);
+    if (!(await this.tokenBlacklist.consumeOnce(blacklistKey, payload.exp))) {
+      throw this.sessionUnauthorized("REFRESH_TOKEN_REVOKED", "This session has been revoked.");
+    }
     return this.issueSession(user, payload.authTime);
   }
 

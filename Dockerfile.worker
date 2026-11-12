@@ -1,7 +1,7 @@
 # Standalone Platform Jobs worker image. It intentionally exposes no HTTP port
 # and does not run migrations; deploy the API migration release before this
 # service so only one process owns schema changes.
-FROM node:20-alpine AS builder
+FROM node:24.22.3-alpine AS builder
 
 WORKDIR /app
 COPY package*.json ./
@@ -11,7 +11,7 @@ COPY tsconfig*.json ./
 COPY nest-cli.json ./
 RUN npm run build
 
-FROM node:20-alpine
+FROM node:24.22.3-alpine
 
 WORKDIR /app
 RUN apk add --no-cache dumb-init

@@ -48,6 +48,8 @@ export class MediaAssetService {
    * computed for content-addressed caching, and the URL is derived server-side.
    */
   async registerFromUpload(input: RegisterAssetInput): Promise<MediaAsset> {
+    if (!input.ownerUserId) throw new BadRequestException("Upload owner is required");
+    await this.storage.assertUploadOwner(input.originalKey, input.ownerUserId);
     // Read the original by key. Throws NotFound if the upload does not exist.
     const bytes = await this.storage.readByKey(input.originalKey);
     if (bytes.length > MAX_BYTES) throw new BadRequestException(`Image exceeds the ${MAX_BYTES / 1024 / 1024}MB limit`);
