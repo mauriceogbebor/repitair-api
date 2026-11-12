@@ -450,8 +450,7 @@ describe("AuthService", () => {
 
       const result = await authService.refresh(token);
 
-      expect(tokenBlacklist.isBlacklisted).toHaveBeenCalledWith("refresh:refresh-jti");
-      expect(tokenBlacklist.add).toHaveBeenCalledWith("refresh:refresh-jti", expect.any(Number));
+      expect(tokenBlacklist.consumeOnce).toHaveBeenCalledWith("refresh:refresh-jti", expect.any(Number));
       expect(result).toEqual(expect.objectContaining({
         token: mockToken,
         refreshToken: expect.any(String),
@@ -472,13 +471,28 @@ describe("AuthService", () => {
     });
 
     it("rejects a revoked refresh token", async () => {
-      (tokenBlacklist.isBlacklisted as jest.Mock).mockResolvedValueOnce(true);
+      (usersService.findById as jest.Mock).mockResolvedValue(mockUser);
+      (tokenBlacklist.consumeOnce as jest.Mock).mockResolvedValueOnce(false);
       const token = mockVerifiedRefresh();
 
       await expect(authService.refresh(token)).rejects.toMatchObject({
         response: expect.objectContaining({ errorCode: "REFRESH_TOKEN_REVOKED" }),
       });
-      expect(usersService.findById).not.toHaveBeenCalled();
+      expect(usersService.findById).toHaveBeenCalled();
+    });
+
+    it("allows only one concurrent use of a refresh token", async () => {
+      (usersService.findById as jest.Mock).mockResolvedValue(mockUser);
+      (tokenBlacklist.consumeOnce as jest.Mock)
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(false);
+      const token = mockVerifiedRefresh();
+
+      const results = await Promise.allSettled([authService.refresh(token), authService.refresh(token)]);
+
+      expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+      expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+      expect(tokenBlacklist.consumeOnce).toHaveBeenCalledTimes(2);
     });
 
     it("rejects refresh for a suspended account", async () => {

@@ -1,6 +1,7 @@
 import {
   Controller,
   Get,
+  Headers,
   NotFoundException,
   Param,
   Post,
@@ -14,6 +15,7 @@ import { Response } from "express";
 import * as path from "path";
 
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
+import { CurrentUser, CurrentUserPayload } from "../../common/decorators/current-user.decorator";
 import { UploadsService } from "./uploads.service";
 import { UploadResponseDto } from "./dto/upload-response.dto";
 
@@ -29,6 +31,8 @@ export class UploadsController {
   @UseInterceptors(FileInterceptor("file", { limits: { fileSize: 10 * 1024 * 1024 } }))
   async uploadImage(
     @UploadedFile() file: Express.Multer.File,
+    @CurrentUser() user: CurrentUserPayload,
+    @Headers("x-client-request-id") requestId?: string,
   ): Promise<UploadResponseDto> {
     if (!file) {
       throw new NotFoundException("No file provided");
@@ -38,6 +42,7 @@ export class UploadsController {
       file.buffer,
       file.originalname,
       file.mimetype,
+      { userId: user.sub, requestId },
     );
   }
 

@@ -2,6 +2,9 @@
   "name": "repitair-backend",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=24.22.3 <25"
+  },
   "scripts": {
     "start": "npm run migration:run:prod:locked && node dist/main.js",
     "start:dev": "nest start --watch",
@@ -34,7 +37,7 @@
     "@nestjs/core": "^11.2.3",
     "@nestjs/jwt": "^11.0.2",
     "@nestjs/platform-express": "^11.2.3",
-    "@nestjs/swagger": "^11.4.6",
+    "@nestjs/swagger": "^11.4.8",
     "@nestjs/typeorm": "^11.0.0",
     "bcryptjs": "^3.0.3",
     "class-transformer": "^0.5.1",
@@ -66,6 +69,9 @@
     "typescript": "^5.8.2"
   },
   "overrides": {
-    "multer": "2.5.0"
+    "multer": "2.5.0",
+    "typeorm": {
+      "glob": "14.0.2"
+    }
   }
 }
