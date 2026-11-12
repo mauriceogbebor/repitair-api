@@ -179,6 +179,11 @@ describe("TokenBlacklistService", () => {
   });
 
   describe("Redis availability", () => {
+    it("fails closed in production when Redis is unavailable", async () => {
+      Object.defineProperty(service, "requireRedis", { value: true });
+      await expect(service.isBlacklisted("unknown.token")).rejects.toThrow("Session storage is unavailable");
+      await expect(service.consumeOnce("new-token")).rejects.toThrow("Session storage is unavailable");
+    });
     it("uses the in-memory blacklist without calling a closed Redis client", async () => {
       const redis = {
         status: "end",

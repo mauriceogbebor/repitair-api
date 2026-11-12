@@ -18,6 +18,10 @@ export class MediaStorageGateway {
     return this.uploads.readFile(key);
   }
 
+  assertUploadOwner(key: string, userId: string): Promise<void> {
+    return this.uploads.assertUploadOwner(key, userId);
+  }
+
   /** Existence/ownership pre-check for a key before it enters the pipeline. */
   objectExists(key: string): Promise<boolean> {
     return this.uploads.objectExists(key);

@@ -47,6 +47,7 @@ import {
   TemplateDraft,
   TemplateVersion,
   User,
+  UploadOwnership,
   SocialIdentity,
   UserOperationalNote,
   UserRecoveryOperation,
@@ -94,6 +95,7 @@ import { UsersModule } from "./modules/users/users.module";
             "postgresql://repitair:repitair@localhost:5432/repitair",
           entities: [
             User,
+            UploadOwnership,
             SocialIdentity,
             Repit,
             RepitModerationDecision,

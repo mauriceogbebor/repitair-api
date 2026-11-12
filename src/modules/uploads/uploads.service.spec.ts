@@ -3,6 +3,8 @@ import { BadRequestException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import * as fs from "fs";
 import { UploadsService } from "./uploads.service";
+import { getRepositoryToken } from "@nestjs/typeorm";
+import { UploadOwnership } from "../../entities/upload-ownership.entity";
 
 // Mock fs module
 jest.mock("fs");
@@ -22,6 +24,7 @@ const IMG: Record<string, Buffer> = {
 describe("UploadsService", () => {
   let service: UploadsService;
   let configService: ConfigService;
+  const ownership = { upsert: jest.fn(), findOne: jest.fn() };
 
   const mockConfigService = {
     get: jest.fn((key: string) => {
@@ -46,6 +49,7 @@ describe("UploadsService", () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         UploadsService,
+        { provide: getRepositoryToken(UploadOwnership), useValue: ownership },
         {
           provide: ConfigService,
           useValue: mockConfigService,
@@ -63,6 +67,11 @@ describe("UploadsService", () => {
       // We can't easily re-instantiate, so we verify fs was set up correctly
       expect(configService.get).toHaveBeenCalledWith("UPLOAD_PROVIDER");
     });
+  });
+
+  it("refuses to register an upload owned by another user", async () => {
+    ownership.findOne.mockResolvedValue({ key: "existing.jpg", userId: "another-user" });
+    await expect(service.assertUploadOwner("existing.jpg", "current-user")).rejects.toThrow("Upload does not belong");
   });
 
   describe("uploadFile", () => {
@@ -102,6 +111,20 @@ describe("UploadsService", () => {
       const result2 = await service.uploadFile(buffer, "test.jpg", "image/jpeg");
 
       expect(result1.key).not.toEqual(result2.key);
+    });
+
+    it("reuses the same object key for a retried client request without crossing users or payloads", async () => {
+      const original = IMG["image/jpeg"];
+      const retry = { userId: "user-a", requestId: "upload-12345678-abcdef" };
+      const first = await service.uploadFile(original, "first.jpg", "image/jpeg", retry);
+      const second = await service.uploadFile(original, "first.jpg", "image/jpeg", retry);
+      const anotherUser = await service.uploadFile(original, "first.jpg", "image/jpeg", { ...retry, userId: "user-b" });
+      const changed = await service.uploadFile(Buffer.concat([original, Buffer.from([1])]), "first.jpg", "image/jpeg", retry);
+
+      expect(second.key).toBe(first.key);
+      expect(second.url).toBe(first.url);
+      expect(anotherUser.key).not.toBe(first.key);
+      expect(changed.key).not.toBe(first.key);
     });
 
     it("should derive extension from mimetype when filename has no extension", async () => {

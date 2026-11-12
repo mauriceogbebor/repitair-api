@@ -47,6 +47,7 @@ const LEGACY_MISSING_USER_COLUMNS = [
   "emailVerified",
   "emailVerifyCode",
   "emailVerifyCodeExpiresAt",
+  "emailVerifyCodeAttempts",
   "isSuspended",
   "suspensionReason",
   "suspendedAt",
@@ -577,27 +578,38 @@ export class UsersService {
     const code = String(randomInt(100000, 1000000));
     user.emailVerifyCode = this.hashCode(code);
     user.emailVerifyCodeExpiresAt = new Date(Date.now() + 30 * 60 * 1000);
+    user.emailVerifyCodeAttempts = 0;
     await this.usersRepo.save(user);
     return code;
   }
 
   async verifyEmail(userId: string, code: string): Promise<boolean> {
-    const user = await this.findById(userId);
-    if (!user || !user.emailVerifyCode || !user.emailVerifyCodeExpiresAt) return false;
+    return this.usersRepo.manager.transaction(async (manager) => {
+      const repo = manager.getRepository(User);
+      const user = await repo.findOne({ where: { id: userId }, lock: { mode: "pessimistic_write" } });
+      if (!user || !user.emailVerifyCode || !user.emailVerifyCodeExpiresAt) return false;
+      if (new Date(user.emailVerifyCodeExpiresAt) < new Date() || (user.emailVerifyCodeAttempts ?? 0) >= 5) return false;
 
-    if (new Date(user.emailVerifyCodeExpiresAt) < new Date()) return false;
+      const storedBuf = Buffer.from(user.emailVerifyCode, "utf8");
+      const inputBuf = Buffer.from(this.hashCode(code), "utf8");
+      const codeMatch = storedBuf.length === inputBuf.length && timingSafeEqual(storedBuf, inputBuf);
+      if (!codeMatch) {
+        user.emailVerifyCodeAttempts = (user.emailVerifyCodeAttempts ?? 0) + 1;
+        if (user.emailVerifyCodeAttempts >= 5) {
+          user.emailVerifyCode = undefined;
+          user.emailVerifyCodeExpiresAt = undefined;
+        }
+        await repo.save(user);
+        return false;
+      }
 
-    const inputHash = this.hashCode(code);
-    const storedBuf = Buffer.from(user.emailVerifyCode, "utf8");
-    const inputBuf = Buffer.from(inputHash, "utf8");
-    const codeMatch = storedBuf.length === inputBuf.length && timingSafeEqual(storedBuf, inputBuf);
-    if (!codeMatch) return false;
-
-    user.emailVerified = true;
-    user.emailVerifyCode = undefined;
-    user.emailVerifyCodeExpiresAt = undefined;
-    await this.usersRepo.save(user);
-    return true;
+      user.emailVerified = true;
+      user.emailVerifyCode = undefined;
+      user.emailVerifyCodeExpiresAt = undefined;
+      user.emailVerifyCodeAttempts = 0;
+      await repo.save(user);
+      return true;
+    });
   }
 
   async disconnectPlatform(userId: string, platform: string): Promise<User> {

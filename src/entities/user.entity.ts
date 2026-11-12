@@ -72,6 +72,9 @@ export class User {
   @Column({ type: "timestamp", nullable: true })
   emailVerifyCodeExpiresAt?: Date;
 
+  @Column({ type: "int", default: 0 })
+  emailVerifyCodeAttempts!: number;
+
   @Column({ type: "varchar", nullable: true, select: false })
   spotifyRefreshToken?: string;
 
