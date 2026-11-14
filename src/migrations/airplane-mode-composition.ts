@@ -28,156 +28,42 @@ export const airplaneModeComposition = {
   },
   "layers": [
     {
-      "id": "airplane_outer_frame",
+      "id": "airplane_top_scrim",
       "name": "Decor",
-      "type": "decor",
+      "type": "effect",
       "frame": {
         "x": 0,
-        "y": 0,
-        "width": 1010,
-        "height": 1788,
+        "y": -440,
+        "width": 1000,
+        "height": 900,
         "scale": 1,
         "rotation": 0,
         "opacity": 1,
-        "zIndex": 4,
+        "zIndex": 2,
         "locked": true,
         "visible": true
       },
       "interactive": false,
       "anchor": "center",
       "data": {
-        "kind": "panel",
-        "backgroundColor": "transparent",
-        "borderColor": "#121827",
-        "borderWidth": 90,
-        "borderRadius": 490,
+        "kind": "gradient",
+        "borderRadius": 0,
+        "gradientColors": [
+          "rgba(10,12,18,0.82)",
+          "rgba(10,12,18,0.42)",
+          "transparent"
+        ],
+        "gradientStart": {
+          "x": 0,
+          "y": 0
+        },
+        "gradientEnd": {
+          "x": 0,
+          "y": 1
+        },
         "frameSize": {
-          "width": 1010,
-          "height": 1788
-        }
-      },
-      "editPermissions": {
-        "canMove": false,
-        "canResize": false,
-        "canRotate": false,
-        "canDelete": false,
-        "canDuplicate": false,
-        "canEditContent": false,
-        "canEditStyle": false,
-        "canEditOpacity": false,
-        "canToggleVisibility": false,
-        "canReorder": false
-      }
-    },
-    {
-      "id": "airplane_inner_glow",
-      "name": "Decor",
-      "type": "decor",
-      "frame": {
-        "x": 0,
-        "y": 0,
-        "width": 884,
-        "height": 1610,
-        "scale": 1,
-        "rotation": 0,
-        "opacity": 0.92,
-        "zIndex": 5,
-        "locked": true,
-        "visible": true
-      },
-      "interactive": false,
-      "anchor": "center",
-      "data": {
-        "kind": "panel",
-        "backgroundColor": "transparent",
-        "borderColor": "#d5a987",
-        "borderWidth": 14,
-        "borderRadius": 430,
-        "frameSize": {
-          "width": 884,
-          "height": 1610
-        }
-      },
-      "editPermissions": {
-        "canMove": false,
-        "canResize": false,
-        "canRotate": false,
-        "canDelete": false,
-        "canDuplicate": false,
-        "canEditContent": false,
-        "canEditStyle": false,
-        "canEditOpacity": false,
-        "canToggleVisibility": false,
-        "canReorder": false
-      }
-    },
-    {
-      "id": "airplane_inner_trim",
-      "name": "Decor",
-      "type": "decor",
-      "frame": {
-        "x": 0,
-        "y": 0,
-        "width": 850,
-        "height": 1576,
-        "scale": 1,
-        "rotation": 0,
-        "opacity": 0.86,
-        "zIndex": 6,
-        "locked": true,
-        "visible": true
-      },
-      "interactive": false,
-      "anchor": "center",
-      "data": {
-        "kind": "panel",
-        "backgroundColor": "transparent",
-        "borderColor": "#f6d1af",
-        "borderWidth": 5,
-        "borderRadius": 415,
-        "frameSize": {
-          "width": 850,
-          "height": 1576
-        }
-      },
-      "editPermissions": {
-        "canMove": false,
-        "canResize": false,
-        "canRotate": false,
-        "canDelete": false,
-        "canDuplicate": false,
-        "canEditContent": false,
-        "canEditStyle": false,
-        "canEditOpacity": false,
-        "canToggleVisibility": false,
-        "canReorder": false
-      }
-    },
-    {
-      "id": "airplane_top_panel",
-      "name": "Decor",
-      "type": "decor",
-      "frame": {
-        "x": 0,
-        "y": -826,
-        "width": 650,
-        "height": 110,
-        "scale": 1,
-        "rotation": 0,
-        "opacity": 1,
-        "zIndex": 7,
-        "locked": true,
-        "visible": true
-      },
-      "interactive": false,
-      "anchor": "center",
-      "data": {
-        "kind": "panel",
-        "backgroundColor": "#222430",
-        "borderRadius": 56,
-        "frameSize": {
-          "width": 650,
-          "height": 110
+          "width": 1000,
+          "height": 900
         }
       },
       "editPermissions": {
@@ -215,7 +101,7 @@ export const airplaneModeComposition = {
         "uri": null,
         "displayMode": "fill",
         "photoStyle": "fullbleed",
-        "overlayOpacity": 0.12,
+        "overlayOpacity": 0.2,
         "songInfoPosition": "center"
       },
       "bindings": {
@@ -488,6 +374,40 @@ export const airplaneModeComposition = {
       },
       "editPermissions": {
         "canMove": true,
+        "canResize": false,
+        "canRotate": false,
+        "canDelete": false,
+        "canDuplicate": false,
+        "canEditContent": false,
+        "canEditStyle": false,
+        "canEditOpacity": false,
+        "canToggleVisibility": false,
+        "canReorder": false
+      }
+    },
+    {
+      "id": "watermark",
+      "name": "Watermark",
+      "type": "watermark",
+      "frame": {
+        "x": -348,
+        "y": -94,
+        "width": 184,
+        "height": 50,
+        "scale": 1,
+        "rotation": 0,
+        "opacity": 1,
+        "zIndex": 40,
+        "locked": true,
+        "visible": true
+      },
+      "interactive": false,
+      "anchor": "bottom",
+      "data": {
+        "text": "Made with Repitair"
+      },
+      "editPermissions": {
+        "canMove": false,
         "canResize": false,
         "canRotate": false,
         "canDelete": false,
