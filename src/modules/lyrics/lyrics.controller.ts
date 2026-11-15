@@ -9,7 +9,7 @@ export class LyricsController {
 
   @Get("search")
   async search(@Query() query: LyricsQueryDto) {
-    if (!this.lyricsService.isEnabled()) {
+    if (!(await this.lyricsService.isEnabled())) {
       // 503 lets the client tell "feature off" apart from "no match found".
       throw new ServiceUnavailableException({ enabled: false, lyrics: null });
     }

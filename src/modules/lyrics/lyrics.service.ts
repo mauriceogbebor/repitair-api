@@ -1,6 +1,8 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 
+import { PlatformService } from "../platform/platform.service";
+
 const LRCLIB_BASE = "https://lrclib.net/api";
 const UPSTREAM_TIMEOUT_MS = 8000;
 
@@ -33,16 +35,26 @@ type LrclibSearchResult = {
 export class LyricsService {
   private readonly logger = new Logger(LyricsService.name);
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    private readonly platform: PlatformService,
+  ) {}
 
-  /** Lyrics stay on unless explicitly disabled, so the kill switch is opt-out. */
-  isEnabled(): boolean {
-    const raw = this.config.get<string>("LYRICS_ENABLED", "true") ?? "true";
-    return raw.trim().toLowerCase() !== "false";
+  /**
+   * Two-layer kill switch:
+   * - `LYRICS_ENABLED=false` (env) is a hard ops override that wins instantly at
+   *   deploy level and never touches the DB.
+   * - Otherwise the admin-toggleable `lyrics` feature flag decides, so Trust &
+   *   Safety can turn lyrics off from the admin panel without a redeploy.
+   */
+  async isEnabled(): Promise<boolean> {
+    const envRaw = (this.config.get<string>("LYRICS_ENABLED", "true") ?? "true").trim().toLowerCase();
+    if (envRaw === "false") return false;
+    return this.platform.isEnabled("lyrics");
   }
 
   async search(title: string, artist: string): Promise<LyricsResult | null> {
-    if (!this.isEnabled()) return null;
+    if (!(await this.isEnabled())) return null;
 
     const params = new URLSearchParams({
       track_name: title.trim(),
