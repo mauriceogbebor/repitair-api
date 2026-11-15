@@ -375,8 +375,8 @@ export const momentsComposition = {
     "singleSong": true,
     "multiSong": false,
     "maxSongs": 1,
-    "supportsLyrics": false,
-    "supportsManualLyrics": false,
+    "supportsLyrics": true,
+    "supportsManualLyrics": true,
     "supportsDate": false,
     "supportsPhoto": true,
     "supportsAspectRatios": [
