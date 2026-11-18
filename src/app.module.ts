@@ -6,6 +6,7 @@ import { JwtAuthModule } from "./common/modules/jwt-auth.module";
 import { RedisModule } from "./common/modules/redis.module";
 import { AuthRateLimitMiddleware } from "./common/middleware/auth-rate-limit.middleware";
 import { ContactRateLimitMiddleware } from "./common/middleware/contact-rate-limit.middleware";
+import { LyricsRateLimitMiddleware } from "./common/middleware/lyrics-rate-limit.middleware";
 import { MusicRateLimitMiddleware } from "./common/middleware/music-rate-limit.middleware";
 import { RateLimitMiddleware } from "./common/middleware/rate-limit.middleware";
 import { SecurityHeadersMiddleware } from "./common/middleware/security-headers.middleware";
@@ -62,6 +63,7 @@ import {
 import { AdminModule } from "./modules/admin/admin.module";
 import { AuthModule } from "./modules/auth/auth.module";
 import { ContactModule } from "./modules/contact/contact.module";
+import { LyricsModule } from "./modules/lyrics/lyrics.module";
 import { HealthModule } from "./modules/health/health.module";
 import { MusicModule } from "./modules/music/music.module";
 import { AnalyticsModule } from "./modules/analytics/analytics.module";
@@ -172,6 +174,7 @@ import { UsersModule } from "./modules/users/users.module";
     PlatformJobsModule,
     MediaProcessingModule,
     ContactModule,
+    LyricsModule,
     AdminModule,
   ],
 })
@@ -199,6 +202,10 @@ export class AppModule implements NestModule {
     consumer
       .apply(MusicRateLimitMiddleware)
       .forRoutes({ path: "music/*", method: RequestMethod.ALL });
+
+    consumer
+      .apply(LyricsRateLimitMiddleware)
+      .forRoutes({ path: "lyrics/*", method: RequestMethod.ALL });
 
     consumer
       .apply(UploadRateLimitMiddleware)
