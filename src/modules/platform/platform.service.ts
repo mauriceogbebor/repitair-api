@@ -29,6 +29,7 @@ export const DEFAULT_FEATURE_FLAGS: Record<string, { enabled: boolean; descripti
   moderation: { enabled: false, description: "Trust & Safety moderation console (Release 2)", public: false },
   reports: { enabled: false, description: "Content reports queue (Release 2)", public: false },
   publishing: { enabled: false, description: "Public Repit publishing (Release 2)", public: true },
+  lyrics: { enabled: true, description: "Lyrics lookup via the backend proxy (Minion, Moments)", public: false },
 };
 
 export interface HealthComponent {
