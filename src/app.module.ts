@@ -76,6 +76,7 @@ import { SpotlightModule } from "./modules/spotlight/spotlight.module";
 import { TemplatesModule } from "./modules/templates/templates.module";
 import { UploadsModule } from "./modules/uploads/uploads.module";
 import { UsersModule } from "./modules/users/users.module";
+import { WeatherModule } from "./modules/weather/weather.module";
 
 @Module({
   imports: [
@@ -175,6 +176,7 @@ import { UsersModule } from "./modules/users/users.module";
     MediaProcessingModule,
     ContactModule,
     LyricsModule,
+    WeatherModule,
     AdminModule,
   ],
 })
