@@ -1,4 +1,5 @@
 import { BadRequestException } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { Test, TestingModule } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
@@ -113,6 +114,10 @@ describe("RepitsService", () => {
         {
           provide: MediaProcessingService,
           useValue: mockMediaProcessingService,
+        },
+        {
+          provide: ConfigService,
+          useValue: { get: (_key: string, fallback?: string) => fallback },
         },
       ],
     }).compile();

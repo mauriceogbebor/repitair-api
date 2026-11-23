@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, Optional } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
-import { In, Not, QueryFailedError, Repository } from "typeorm";
+import { FindOperator, In, Not, QueryFailedError, Repository } from "typeorm";
 
 import { Repit, Template } from "../../entities";
 import {
@@ -89,8 +90,21 @@ export class RepitsService {
     private readonly templatesRepo: Repository<Template>,
     private readonly uploadsService: UploadsService,
     private readonly mediaProcessingService: MediaProcessingService,
+    private readonly config: ConfigService,
     @Optional() private readonly analytics?: AnalyticsService,
   ) {}
+
+  /**
+   * Which template statuses may back a repit. Normally only "published", but on
+   * non-prod (staging) `ALLOW_DRAFT_TEMPLATE_REPITS=true` also accepts "draft",
+   * so the client's draft-template preview affordance can be exercised end to
+   * end before a template is published. Never enable in production.
+   */
+  private allowedTemplateStatuses(): Template["status"] | FindOperator<Template["status"]> {
+    const allowDraft = (this.config.get<string>("ALLOW_DRAFT_TEMPLATE_REPITS", "false") ?? "false")
+      .trim().toLowerCase() === "true";
+    return allowDraft ? In<Template["status"]>(["published", "draft"]) : "published";
+  }
 
   /** Fire-and-forget analytics emit; never blocks or breaks the create/update path. */
   private emit(name: string, userId: string, properties?: Record<string, unknown>) {
@@ -138,7 +152,7 @@ export class RepitsService {
   async createRepit(userId: string, body: CreateRepitDto) {
     // Validate templateId exists
     const template = await this.templatesRepo.findOne({
-      where: { id: body.templateId, status: "published", isActive: true },
+      where: { id: body.templateId, status: this.allowedTemplateStatuses(), isActive: true },
     });
     if (!template) {
       throw new BadRequestException(`Template "${body.templateId}" does not exist`);
@@ -224,7 +238,7 @@ export class RepitsService {
 
     const effectiveTemplateId = body.templateId ?? existing.templateId;
     const template = await this.templatesRepo.findOne({
-      where: { id: effectiveTemplateId, status: "published", isActive: true },
+      where: { id: effectiveTemplateId, status: this.allowedTemplateStatuses(), isActive: true },
     });
     if (!template) {
       throw new BadRequestException(`Template "${effectiveTemplateId}" does not exist`);
