@@ -16,6 +16,7 @@
     "lint": "tsc --noEmit -p tsconfig.build.json",
     "composition:backfill": "sh ./tools/run-composition-backfill.sh",
     "composition:report": "sh ./tools/run-composition-report.sh",
+    "templates:publish": "node tools/publish-templates.js",
     "audioverse:provision:staging": "sh ./tools/run-audioverse-staging-provision.sh",
     "music:migration:inspect:present": "node tools/inspect-music-migration.js present",
     "music:migration:inspect:absent": "node tools/inspect-music-migration.js absent",

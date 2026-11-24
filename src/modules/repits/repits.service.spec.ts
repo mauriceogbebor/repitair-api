@@ -1,4 +1,5 @@
 import { BadRequestException } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { Test, TestingModule } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
@@ -42,6 +43,7 @@ describe("RepitsService", () => {
   };
 
   const mockAnalytics = { track: jest.fn().mockResolvedValue(undefined) };
+  const mockConfig = { get: jest.fn((_key: string, fallback?: string) => fallback) };
 
   const mockTemplatesRepo = {
     findOne: jest.fn(),
@@ -114,6 +116,10 @@ describe("RepitsService", () => {
           provide: MediaProcessingService,
           useValue: mockMediaProcessingService,
         },
+        {
+          provide: ConfigService,
+          useValue: mockConfig,
+        },
       ],
     }).compile();
 
@@ -121,6 +127,7 @@ describe("RepitsService", () => {
     repository = module.get<Repository<Repit>>(getRepositoryToken(Repit));
 
     jest.clearAllMocks();
+    mockConfig.get.mockImplementation((_key: string, fallback?: string) => fallback);
     mockRepository.merge.mockReset();
     mockRepository.save.mockReset();
     mockTemplatesRepo.findOne.mockResolvedValue({
@@ -213,6 +220,33 @@ describe("RepitsService", () => {
   });
 
   describe("createRepit", () => {
+    it("allows draft templates only when explicitly enabled outside production", async () => {
+      mockConfig.get.mockImplementation((key: string, fallback?: string) =>
+        key === "ALLOW_DRAFT_TEMPLATE_REPITS" ? "true" : key === "NODE_ENV" ? "staging" : fallback);
+      mockTemplatesRepo.findOne.mockResolvedValue(null);
+
+      await expect(service.createRepit("user_1", { templateId: "day" })).rejects.toBeInstanceOf(BadRequestException);
+      expect(mockTemplatesRepo.findOne).toHaveBeenCalledWith({
+        where: { id: "day", status: expect.any(Object), isActive: true },
+      });
+
+      mockConfig.get.mockImplementation((key: string, fallback?: string) =>
+        key === "ALLOW_DRAFT_TEMPLATE_REPITS" ? "true" : key === "NODE_ENV" ? "production" : fallback);
+      await expect(service.createRepit("user_1", { templateId: "day" })).rejects.toBeInstanceOf(BadRequestException);
+      expect(mockTemplatesRepo.findOne).toHaveBeenLastCalledWith({
+        where: { id: "day", status: "published", isActive: true },
+      });
+
+      mockConfig.get.mockImplementation((key: string, fallback?: string) =>
+        key === "ALLOW_DRAFT_TEMPLATE_REPITS" ? "true"
+          : key === "RAILWAY_ENVIRONMENT_NAME" ? "production"
+          : key === "APP_ENV" ? "staging" : fallback);
+      await expect(service.createRepit("user_1", { templateId: "day" })).rejects.toBeInstanceOf(BadRequestException);
+      expect(mockTemplatesRepo.findOne).toHaveBeenLastCalledWith({
+        where: { id: "day", status: "published", isActive: true },
+      });
+    });
+
     it("should create a new repit", async () => {
       const createDto: CreateRepitDto = {
         songTitle: "New Song",
