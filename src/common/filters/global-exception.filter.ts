@@ -81,6 +81,17 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       if (status === HttpStatus.INTERNAL_SERVER_ERROR) {
         message = 'Internal server error';
       }
+    } else if (
+      status === HttpStatus.BAD_REQUEST
+      && /^\/api\/repits(?:\/|$)/.test(request.path)
+      && (request.method === 'POST' || request.method === 'PATCH')
+    ) {
+      // Keep failed create/update validation diagnosable without logging the
+      // request body, photos, tokens, or full composition payload.
+      const details = Array.isArray(message) ? message.join('; ') : message;
+      this.logger.warn(
+        `[${request.method} ${request.path}] validation failed requestId=${requestId ?? 'none'} details=${details.slice(0, 500)}`,
+      );
     }
 
     if (requestId) {
